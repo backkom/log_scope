@@ -1,0 +1,12 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Tauri Dev: log_scope",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "yarn tauri:dev",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

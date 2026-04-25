@@ -263,6 +263,10 @@ viewer 应该：
 开始实现后：
 
 - 首个开发切片建议优先完成 Tauri + TypeScript 前端 + Rust command 的最小闭环，再进入 tail、marker、搜索和 socket。
+- 阶段 0 已采用 Tauri 2 + Vite + React + TypeScript 骨架；前端通过 `@tauri-apps/api/core` 调用 Rust command。
+- 前端包管理器使用 Yarn 1.x；Tauri dev/build 前置命令使用 `yarn dev` 和 `yarn build`。
+- VS Code 调试入口为 `.vscode/launch.json` 中的 `Tauri Dev: log_scope`，本质是在工作区根目录执行 `yarn tauri:dev`。
+- 当前 Rust command 起点为 `health_check` 和 `open_file_placeholder`，用于验证前后端 IPC 闭环；后续阶段 1 应替换或扩展为真实文件打开与可见行范围读取接口。
 - 尽早加入 benchmark fixture 生成器。
 - 尽早加入可重复的性能测试路径。
 - Rust core 与前端之间的 API 要清晰、显式、可版本化。

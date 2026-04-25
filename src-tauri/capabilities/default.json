@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Default desktop permissions for log_scope",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

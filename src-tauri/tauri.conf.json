@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "log_scope",
+  "version": "0.1.0",
+  "identifier": "com.logscope.app",
+  "build": {
+    "beforeDevCommand": "yarn dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "yarn build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "log_scope",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 560
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all"
+  }
+}
