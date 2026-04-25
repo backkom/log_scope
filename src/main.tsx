@@ -32,6 +32,15 @@ type FixtureMetadata = {
   generationDurationMs: number;
 };
 
+type SocketConnectMetadata = {
+  sessionId: number;
+  host: string;
+  port: number;
+  path: string;
+  lineCount: number;
+  protocol: string;
+};
+
 type LogLine = {
   lineNumber: number;
   text: string;
@@ -150,12 +159,15 @@ function App() {
   const [health, setHealth] = React.useState<HealthCheck | null>(null);
   const [placeholder, setPlaceholder] = React.useState<FileOpenPlaceholder | null>(null);
   const [filePath, setFilePath] = React.useState("");
+  const [socketHost, setSocketHost] = React.useState("127.0.0.1");
+  const [socketPort, setSocketPort] = React.useState("8765");
   const [logFile, setLogFile] = React.useState<LogFileMetadata | null>(null);
   const [lineCache, setLineCache] = React.useState<Map<number, string>>(() => new Map());
   const [scrollTop, setScrollTop] = React.useState(0);
   const [viewportHeight, setViewportHeight] = React.useState(0);
   const [jumpLine, setJumpLine] = React.useState("1");
   const [isOpening, setIsOpening] = React.useState(false);
+  const [isConnectingSocket, setIsConnectingSocket] = React.useState(false);
   const [isGeneratingFixture, setIsGeneratingFixture] = React.useState(false);
   const [lastFixture, setLastFixture] = React.useState<FixtureMetadata | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -326,7 +338,7 @@ function App() {
           current && current.sessionId === metadata.sessionId
             ? {
                 ...current,
-                path: metadata.path,
+                path: current.path.startsWith("logscope-frame-v1://") ? current.path : metadata.path,
                 fileSize: metadata.fileSize,
                 lineCount: metadata.lineCount,
               }
@@ -401,6 +413,51 @@ function App() {
   const openLogFile = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     await openPath(filePath.trim());
+  };
+
+  const connectSocket = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalizedHost = socketHost.trim();
+    const parsedPort = Number.parseInt(socketPort, 10);
+    if (!normalizedHost || !Number.isFinite(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+      setError("请输入有效的 socket host 和端口");
+      return;
+    }
+
+    setIsConnectingSocket(true);
+    setError(null);
+    try {
+      const metadata = await invoke<SocketConnectMetadata>("connect_log_socket", {
+        host: normalizedHost,
+        port: parsedPort,
+      });
+      setLogFile({
+        sessionId: metadata.sessionId,
+        path: `${metadata.protocol}://${metadata.host}:${metadata.port}`,
+        fileSize: 0,
+        lineCount: metadata.lineCount,
+        indexDurationMs: 0,
+      });
+      setPlaceholder(null);
+      setLineCache(new Map());
+      setMarkers([]);
+      setSelectedMarker(null);
+      setSelectedPayload(null);
+      setSearchResult(null);
+      setActiveSearchMatch(null);
+      searchCacheRef.current = null;
+      setPendingTailLines(0);
+      setTailNotice("Socket 已连接，正在等待 frame 数据");
+      setScrollTop(0);
+      setJumpLine("1");
+      if (viewportRef.current) {
+        viewportRef.current.scrollTop = 0;
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setIsConnectingSocket(false);
+    }
   };
 
   const generateAndOpenFixture = async () => {
@@ -913,9 +970,25 @@ function App() {
               {isOpening ? "索引中" : "打开文件"}
             </button>
           </form>
-          <button type="button" className="secondary-button" disabled>
-            Socket 连接
-          </button>
+          <form className="socket-form" onSubmit={connectSocket}>
+            <div className="socket-fields">
+              <input
+                value={socketHost}
+                onChange={(event) => setSocketHost(event.target.value)}
+                placeholder="127.0.0.1"
+                aria-label="socket host"
+              />
+              <input
+                value={socketPort}
+                onChange={(event) => setSocketPort(event.target.value)}
+                inputMode="numeric"
+                aria-label="socket port"
+              />
+            </div>
+            <button type="submit" className="secondary-button" disabled={isOpening || isConnectingSocket}>
+              {isConnectingSocket ? "连接中" : "Socket 连接"}
+            </button>
+          </form>
           <button
             type="button"
             className="secondary-button"

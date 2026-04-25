@@ -178,18 +178,30 @@ Rust core 负责：
 - 当前已补充轻量 extractor：单行 JSON 事件（优先用 `event_name` 作为标题）、`ChangeState ... { ... }` 块、Lua `stack traceback:` 块、基础关键字 marker（error/failed/not found/exception/warn/corrupt/currupted）。
 - 当前 marker 索引在打开文件后构建；文件追加或截断刷新后会重建 marker 索引。该方案先保证正确性，后续高频 tail 压测如暴露成本，再改为增量 marker 扫描。
 
-## Socket 协议方向
+## Socket 协议
 
-Socket 协议尚未最终确定，但优先使用 framed protocol，而不是无边界的裸文本流。
+Socket 模式第一版使用 `logscope-frame-v1`，这是面向测试和早期集成的 length-prefixed framed protocol，而不是无边界裸文本流。
 
-建议起点：
+Frame 格式：
 
-- 使用 length-prefixed frame。
-- 每个 frame 包含一条或多条 log record。
-- payload 第一版可以使用 UTF-8 文本或 JSON Lines。
-- 尽早预留协议版本和 record type 字段。
+- 4 字节 big-endian unsigned length，表示后续 JSON payload 的字节数。
+- JSON payload 使用 UTF-8 编码。
+- payload 必须包含 `version: 1` 和 `recordType`。
+- 当前支持 `recordType = "log.batch"`，字段为 `records: [{ "text": "..." }]`；每个 record 的 `text` 表示一条或多条可追加文本，Rust 写入 append-only 临时 log 时会补齐末尾换行。
+- 当前支持 `recordType = "log.text"`，字段为 `payload: "..."`，用于简单文本 frame。
+- 单个 frame 当前限制为 8 MB，避免异常长度导致无限内存增长。
 
-应避免设计成必须在无限 buffer 边界上扫描任意半截 JSON 的协议。
+阶段 5 第一版实现：
+
+- Rust command `connect_log_socket(host, port)` 主动 TCP 连接服务端，连接成功后创建一个临时 socket session 文件。
+- socket reader 后台读取 `logscope-frame-v1` frame，将 record 文本追加到临时文件。
+- 前端继续通过既有 `refresh_log_file`、`get_log_lines`、`get_log_markers` 路径读取 socket session，因此 socket 流复用现有虚拟化 viewer、follow tail、搜索和 marker/minimap 能力。
+- 仓库提供 `scripts/logscope_socket_server.py` 作为本地测试服务端，默认监听 `127.0.0.1:8765`，持续发送随机 log，并定期伪造单行 JSON marker 和 `Send/Receive Message` marker 块。
+
+当前限制：
+
+- socket session 第一版没有显式取消、重连和连接状态事件；连接断开时后台 reader 停止，前端仍可查看已接收内容。
+- marker 仍通过刷新时重建索引获得，后续高频流压测如暴露成本，应改为增量 marker 扫描。
 
 ## 虚拟化 Viewer 要求
 
@@ -362,7 +374,6 @@ marker 规则应设计成可配置的“分层事件提取器”，而不是只�
 - 首个开发切片建议优先完成 Tauri + TypeScript 前端 + Rust command 的最小闭环，再进入 tail、marker、搜索和 socket。
 - 阶段 0 已采用 Tauri 2 + Vite + React + TypeScript 骨架；前端通过 `@tauri-apps/api/core` 调用 Rust command。
 - 前端包管理器使用 Yarn 1.x；Tauri dev/build 前置命令使用 `yarn dev` 和 `yarn build`。
-- 以`yarn run check`代替`yarn check`来执行包检查。
 - VS Code 调试入口为 `.vscode/launch.json` 中的 `Tauri Dev: log_scope`，本质是在工作区根目录执行 `yarn tauri:dev`。
 - 当前 Rust command 包含 `health_check`、`open_file_placeholder`、`open_log_file`、`get_log_lines`；文件查看主链路应优先使用后两个接口。
 - 尽早加入 benchmark fixture 生成器。

@@ -132,6 +132,8 @@
 
 目标：支持连接 IP/端口并接收本项目协议数据。
 
+状态：已完成第一版编码。当前定义 `logscope-frame-v1`：4 字节 big-endian length + UTF-8 JSON payload，payload 包含 `version`、`recordType`，当前支持 `log.batch` records 和 `log.text` payload。Rust command `connect_log_socket(host, port)` 会连接 TCP 服务端，创建临时 socket session 文件，后台读取 frame 并追加文本；前端可输入 host/port 建立连接，socket session 复用既有 `refresh_log_file`、虚拟化 viewer、follow tail、搜索和 marker/minimap 路径。仓库新增 `scripts/logscope_socket_server.py`，VS Code launch 中新增 `LogScope Socket Server`，默认监听 `127.0.0.1:8765` 并持续产生随机 log、单行 JSON marker 和 Send/Receive Message marker 块。仍需补充显式取消、连接状态事件、断线重连、背压策略和高频 socket burst 压测。
+
 任务：
 
 - 定义 length-prefixed frame v1 协议，包含 version、record type、payload。

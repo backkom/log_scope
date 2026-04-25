@@ -135,9 +135,16 @@ button:disabled {
 }
 
 .open-form,
+.socket-form,
 .jump-form,
 .search-form {
   display: grid;
+  gap: 8px;
+}
+
+.socket-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px;
   gap: 8px;
 }
 

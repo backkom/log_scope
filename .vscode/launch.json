@@ -7,6 +7,23 @@
       "request": "launch",
       "command": "yarn tauri:dev",
       "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "LogScope Socket Server",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/logscope_socket_server.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8765",
+        "--interval",
+        "0.08",
+        "--batch-size",
+        "8"
+      ]
     }
   ]
 }

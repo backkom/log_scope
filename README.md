@@ -26,7 +26,7 @@ yarn tauri:dev
 常用检查：
 
 ```bash
-yarn run check
+yarn run checktsc
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 

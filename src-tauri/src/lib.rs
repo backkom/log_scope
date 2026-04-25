@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fs::{self, File},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    net::TcpStream,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -78,6 +79,17 @@ struct FixtureMetadata {
     file_size: u64,
     line_count: usize,
     generation_duration_ms: u128,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SocketConnectMetadata {
+    session_id: u64,
+    host: String,
+    port: u16,
+    path: String,
+    line_count: usize,
+    protocol: &'static str,
 }
 
 #[derive(serde::Serialize)]
@@ -198,6 +210,21 @@ struct OpenTextBlock {
     lines: Vec<String>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SocketFrame {
+    version: u16,
+    record_type: String,
+    payload: Option<String>,
+    records: Option<Vec<SocketRecord>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SocketRecord {
+    text: String,
+}
+
 #[tauri::command]
 fn health_check() -> HealthCheck {
     HealthCheck {
@@ -250,6 +277,61 @@ async fn generate_log_fixture(size_mb: u64) -> Result<FixtureMetadata, String> {
         .await
         .map_err(|err| format!("failed to join fixture generation task: {err}"))?
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn connect_log_socket(
+    host: String,
+    port: u16,
+    state: tauri::State<'_, AppState>,
+) -> Result<SocketConnectMetadata, String> {
+    let normalized_host = host.trim().to_string();
+    if normalized_host.is_empty() {
+        return Err("请输入 socket host".to_string());
+    }
+
+    let address = format!("{normalized_host}:{port}");
+    let stream = tauri::async_runtime::spawn_blocking(move || TcpStream::connect(address))
+        .await
+        .map_err(|err| format!("failed to join socket connect task: {err}"))?
+        .map_err(|err| format!("failed to connect socket: {err}"))?;
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let socket_dir = std::env::temp_dir().join("log_scope").join("socket");
+    fs::create_dir_all(&socket_dir)
+        .map_err(|err| format!("failed to create socket log dir: {err}"))?;
+    let safe_host = safe_socket_filename_part(&normalized_host);
+    let path = socket_dir.join(format!("socket-{safe_host}-{port}-{suffix}.log"));
+    File::create(&path).map_err(|err| format!("failed to create socket log file: {err}"))?;
+
+    let session = LogSession::open(path.clone()).map_err(|err| err.to_string())?;
+    let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed) + 1;
+    {
+        let mut sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "log session state is unavailable".to_string())?;
+        sessions.insert(session_id, Arc::new(Mutex::new(session)));
+    }
+
+    let writer_path = path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(err) = read_socket_frames_to_file(stream, writer_path) {
+            eprintln!("log_scope socket reader stopped: {err}");
+        }
+    });
+
+    Ok(SocketConnectMetadata {
+        session_id,
+        host: normalized_host,
+        port,
+        path: path.to_string_lossy().into_owned(),
+        line_count: 0,
+        protocol: "logscope-frame-v1",
+    })
 }
 
 #[tauri::command]
@@ -1448,6 +1530,87 @@ fn generate_fixture(size_mb: u64) -> std::io::Result<FixtureMetadata> {
     })
 }
 
+fn read_socket_frames_to_file(mut stream: TcpStream, path: PathBuf) -> std::io::Result<()> {
+    const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
+    let file = File::options().append(true).open(path)?;
+    let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
+
+    loop {
+        let mut length_bytes = [0_u8; 4];
+        stream.read_exact(&mut length_bytes)?;
+        let frame_len = u32::from_be_bytes(length_bytes) as usize;
+        if frame_len == 0 || frame_len > MAX_FRAME_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid socket frame length: {frame_len}"),
+            ));
+        }
+
+        let mut payload = vec![0_u8; frame_len];
+        stream.read_exact(&mut payload)?;
+        let frame: SocketFrame = serde_json::from_slice(&payload).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid socket frame json: {err}"),
+            )
+        })?;
+
+        if frame.version != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unsupported socket protocol version: {}", frame.version),
+            ));
+        }
+
+        match frame.record_type.as_str() {
+            "log.batch" => {
+                if let Some(records) = frame.records {
+                    for record in records {
+                        write_socket_text_record(&mut writer, &record.text)?;
+                    }
+                }
+            }
+            "log.text" => {
+                if let Some(payload) = frame.payload {
+                    write_socket_text_record(&mut writer, &payload)?;
+                }
+            }
+            other => {
+                write_socket_text_record(
+                    &mut writer,
+                    &format!(
+                        "00:00:00\tWARN unsupported socket record_type={other} in logscope-frame-v1"
+                    ),
+                )?;
+            }
+        }
+
+        writer.flush()?;
+    }
+}
+
+fn safe_socket_filename_part(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn write_socket_text_record<W: Write>(writer: &mut W, text: &str) -> std::io::Result<()> {
+    writer.write_all(text.as_bytes())?;
+    if !text.ends_with('\n') {
+        writer.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1457,6 +1620,7 @@ pub fn run() {
             open_file_placeholder,
             open_log_file,
             generate_log_fixture,
+            connect_log_socket,
             get_log_lines,
             get_log_markers,
             get_marker_payload,
