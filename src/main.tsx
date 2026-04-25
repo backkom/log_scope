@@ -130,6 +130,12 @@ type LogToken = {
   text: string;
 };
 
+type SelectedWordRange = {
+  lineNumber: number;
+  start: number;
+  end: number;
+};
+
 const ROW_HEIGHT = 24;
 const BOTTOM_PADDING_ROWS = 1;
 const OVERSCAN_ROWS = 80;
@@ -168,6 +174,8 @@ function App() {
   const [searchFindAll, setSearchFindAll] = React.useState(true);
   const [searchResult, setSearchResult] = React.useState<LogSearchResult | null>(null);
   const [activeSearchMatch, setActiveSearchMatch] = React.useState<LogSearchMatch | null>(null);
+  const [selectedWord, setSelectedWord] = React.useState("");
+  const [selectedWordRange, setSelectedWordRange] = React.useState<SelectedWordRange | null>(null);
   const [isSearching, setIsSearching] = React.useState(false);
   const [findBarOpen, setFindBarOpen] = React.useState(false);
   const searchCacheRef = React.useRef<SearchCache | null>(null);
@@ -432,6 +440,30 @@ function App() {
     [logFile, viewportHeight],
   );
 
+  const isLineInViewport = React.useCallback(
+    (line: number) => {
+      const viewport = viewportRef.current;
+      if (!logFile || !viewport) {
+        return false;
+      }
+      const lineTop = (line - 1) * ROW_HEIGHT;
+      const lineBottom = lineTop + ROW_HEIGHT;
+      const viewportTop = viewport.scrollTop;
+      const viewportBottom = viewportTop + viewport.clientHeight;
+      return lineBottom > viewportTop && lineTop < viewportBottom;
+    },
+    [logFile],
+  );
+
+  const revealSearchMatchIfNeeded = React.useCallback(
+    (match: LogSearchMatch) => {
+      if (!isLineInViewport(match.lineNumber)) {
+        scrollToLineCentered(match.lineNumber);
+      }
+    },
+    [isLineInViewport, scrollToLineCentered],
+  );
+
   const selectMarker = React.useCallback(
     async (marker: LogMarker) => {
       if (!logFile) {
@@ -496,7 +528,7 @@ function App() {
         const match = getActiveSearchMatch(nextResult);
         setActiveSearchMatch(match);
         if (match) {
-          scrollToLineCentered(match.lineNumber);
+          revealSearchMatchIfNeeded(match);
         }
         return;
       }
@@ -552,7 +584,7 @@ function App() {
       const match = getActiveSearchMatch(result);
       setActiveSearchMatch(match);
       if (match) {
-        scrollToLineCentered(match.lineNumber);
+        revealSearchMatchIfNeeded(match);
       }
     } catch (err) {
       setError(String(err));
@@ -560,6 +592,31 @@ function App() {
       setIsSearching(false);
     }
   };
+
+  React.useEffect(() => {
+    const updateSelectedWord = () => {
+      const viewport = viewportRef.current;
+      const selection = window.getSelection();
+      if (!viewport || !selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode) {
+        setSelectedWord("");
+        setSelectedWordRange(null);
+        return;
+      }
+      if (!viewport.contains(selection.anchorNode) || !viewport.contains(selection.focusNode)) {
+        setSelectedWord("");
+        setSelectedWordRange(null);
+        return;
+      }
+
+      const text = selection.toString().trim();
+      const selectedRange = getSelectedWordRange(selection);
+      setSelectedWord(isSelectableWord(text) && selectedRange ? text : "");
+      setSelectedWordRange(isSelectableWord(text) ? selectedRange : null);
+    };
+
+    document.addEventListener("selectionchange", updateSelectedWord);
+    return () => document.removeEventListener("selectionchange", updateSelectedWord);
+  }, []);
 
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -600,7 +657,19 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [findBarOpen, searchQuery, logFile, activeSearchMatch, searchCaseSensitive, searchRegex, searchWholeWord, searchWrapAround, firstVisibleLine]);
+  }, [
+    findBarOpen,
+    searchQuery,
+    logFile,
+    activeSearchMatch,
+    searchCaseSensitive,
+    searchRegex,
+    searchWholeWord,
+    searchWrapAround,
+    searchFindAll,
+    firstVisibleLine,
+    revealSearchMatchIfNeeded,
+  ]);
 
   const totalHeight = logFile ? logFile.lineCount * ROW_HEIGHT : 0;
   const scrollSpaceHeight = logFile
@@ -1055,6 +1124,7 @@ function App() {
                         visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
                       }${activeSearchLine === line.lineNumber ? " has-active-search" : ""} ${getSeverityClass(line.text, logColorMode)}`}
                       key={line.lineNumber}
+                      data-line-number={line.lineNumber}
                     >
                       <span className="line-number">{line.lineNumber}</span>
                       <code title={line.text ?? ""}>
@@ -1067,7 +1137,10 @@ function App() {
                               searchRegex,
                               searchWholeWord,
                               logColorMode,
+                              line.lineNumber,
                               activeSearchLine === line.lineNumber,
+                              selectedWord,
+                              selectedWordRange,
                             )}
                       </code>
                     </div>
@@ -1480,7 +1553,10 @@ function renderLogLine(
   useRegex: boolean,
   wholeWord: boolean,
   colorMode: "full" | "severity" | "off",
+  lineNumber: number,
   activeLine: boolean,
+  selectedWord: string,
+  selectedWordRange: SelectedWordRange | null,
 ) {
   const tokens =
     colorMode === "full"
@@ -1492,6 +1568,13 @@ function renderLogLine(
           },
         ];
   const searchRanges = searchQuery ? findSearchRanges(text, searchQuery, caseSensitive, useRegex, wholeWord) : [];
+  const selectedWordRanges = selectedWord
+    ? findExactWordRanges(
+        text,
+        selectedWord,
+        selectedWordRange?.lineNumber === lineNumber ? selectedWordRange : null,
+      )
+    : [];
   let absoluteOffset = 0;
 
   return tokens.map((token, tokenIndex) => {
@@ -1499,7 +1582,7 @@ function renderLogLine(
     const tokenEnd = tokenStart + token.text.length;
     absoluteOffset += token.text.length;
 
-    if (searchRanges.length === 0) {
+    if (searchRanges.length === 0 && selectedWordRanges.length === 0) {
       return (
         <span className={`log-token token-${token.kind}`} key={tokenIndex}>
           {token.text}
@@ -1507,13 +1590,13 @@ function renderLogLine(
       );
     }
 
-    const pieces = splitTokenByRanges(token.text, tokenStart, tokenEnd, searchRanges);
+    const pieces = splitTokenByDecorationRanges(token.text, tokenStart, tokenEnd, searchRanges, selectedWordRanges);
     return pieces.map((piece, pieceIndex) => {
       return (
         <span
-          className={`log-token token-${token.kind}${piece.matched ? " search-hit" : ""}${
-            piece.matched && activeLine ? " is-active" : ""
-          }`}
+          className={`log-token token-${token.kind}${piece.searchMatched ? " search-hit" : ""}${
+            piece.searchMatched && activeLine ? " is-active" : ""
+          }${piece.selectedWordMatched ? " selected-word-hit" : ""}`}
           key={`${tokenIndex}-${pieceIndex}-${piece.start}`}
         >
           {piece.text}
@@ -1614,6 +1697,75 @@ function findSearchRanges(
   return ranges;
 }
 
+function findExactWordRanges(text: string, word: string, excludedRange: { start: number; end: number } | null) {
+  const ranges: Array<{ start: number; end: number }> = [];
+  if (!word) {
+    return ranges;
+  }
+
+  let offset = 0;
+  while (offset <= text.length) {
+    const foundAt = text.indexOf(word, offset);
+    if (foundAt === -1) {
+      break;
+    }
+    const end = foundAt + word.length;
+    if (
+      isWordBoundary(text[foundAt - 1]) &&
+      isWordBoundary(text[end]) &&
+      !(excludedRange && excludedRange.start === foundAt && excludedRange.end === end)
+    ) {
+      ranges.push({ start: foundAt, end });
+    }
+    offset = end > foundAt ? end : foundAt + 1;
+  }
+
+  return ranges;
+}
+
+function isSelectableWord(value: string) {
+  return value.length > 0 && value.length <= 256 && !/\s/.test(value);
+}
+
+function getSelectedWordRange(selection: Selection): SelectedWordRange | null {
+  if (selection.rangeCount === 0) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+  const startCode = getLogCodeElement(range.startContainer);
+  const endCode = getLogCodeElement(range.endContainer);
+  if (!startCode || startCode !== endCode) {
+    return null;
+  }
+
+  const row = startCode.closest<HTMLElement>(".log-row");
+  const lineNumber = row ? Number.parseInt(row.dataset.lineNumber ?? "", 10) : Number.NaN;
+  if (!Number.isFinite(lineNumber)) {
+    return null;
+  }
+
+  const beforeSelection = range.cloneRange();
+  beforeSelection.selectNodeContents(startCode);
+  beforeSelection.setEnd(range.startContainer, range.startOffset);
+  const start = beforeSelection.toString().length;
+  const end = start + range.toString().trim().length;
+  if (end <= start) {
+    return null;
+  }
+
+  return { lineNumber, start, end };
+}
+
+function getLogCodeElement(node: Node) {
+  const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+  return element?.closest<HTMLElement>(".log-row code") ?? null;
+}
+
+function isWordBoundary(value: string | undefined) {
+  return value === undefined || !/[A-Za-z0-9_]/.test(value);
+}
+
 function buildSearchPattern(query: string, caseSensitive: boolean, useRegex: boolean, wholeWord: boolean) {
   try {
     const body = useRegex ? query : escapeRegExp(query);
@@ -1638,45 +1790,52 @@ function toAsciiLowerCase(value: string) {
   return value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 }
 
-function splitTokenByRanges(
+function splitTokenByDecorationRanges(
   tokenText: string,
   tokenStart: number,
   tokenEnd: number,
-  ranges: Array<{ start: number; end: number }>,
+  searchRanges: Array<{ start: number; end: number }>,
+  selectedWordRanges: Array<{ start: number; end: number }>,
 ) {
-  const pieces: Array<{ text: string; matched: boolean; start: number }> = [];
-  let cursor = tokenStart;
-
-  for (const range of ranges) {
+  const boundaries = new Set<number>([tokenStart, tokenEnd]);
+  for (const range of [...searchRanges, ...selectedWordRanges]) {
     const start = Math.max(tokenStart, range.start);
     const end = Math.min(tokenEnd, range.end);
-    if (end <= tokenStart || start >= tokenEnd || start >= end) {
-      continue;
+    if (start < end) {
+      boundaries.add(start);
+      boundaries.add(end);
     }
-    if (start > cursor) {
-      pieces.push({
-        text: tokenText.slice(cursor - tokenStart, start - tokenStart),
-        matched: false,
-        start: cursor,
-      });
+  }
+
+  const sortedBoundaries = Array.from(boundaries).sort((left, right) => left - right);
+  const pieces: Array<{
+    text: string;
+    searchMatched: boolean;
+    selectedWordMatched: boolean;
+    start: number;
+  }> = [];
+
+  for (let index = 0; index < sortedBoundaries.length - 1; index += 1) {
+    const start = sortedBoundaries[index];
+    const end = sortedBoundaries[index + 1];
+    if (start >= end) {
+      continue;
     }
     pieces.push({
       text: tokenText.slice(start - tokenStart, end - tokenStart),
-      matched: true,
+      searchMatched: rangeContains(searchRanges, start, end),
+      selectedWordMatched: rangeContains(selectedWordRanges, start, end),
       start,
     });
-    cursor = end;
   }
 
-  if (cursor < tokenEnd) {
-    pieces.push({
-      text: tokenText.slice(cursor - tokenStart),
-      matched: false,
-      start: cursor,
-    });
-  }
+  return pieces.length > 0
+    ? pieces
+    : [{ text: tokenText, searchMatched: false, selectedWordMatched: false, start: tokenStart }];
+}
 
-  return pieces.length > 0 ? pieces : [{ text: tokenText, matched: false, start: tokenStart }];
+function rangeContains(ranges: Array<{ start: number; end: number }>, start: number, end: number) {
+  return ranges.some((range) => range.start <= start && range.end >= end);
 }
 
 function getSeverityClass(text: string | undefined, colorMode: "full" | "severity" | "off") {

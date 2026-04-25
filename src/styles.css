@@ -403,6 +403,12 @@ button:disabled {
   color: #ffffff;
 }
 
+.selected-word-hit {
+  border-radius: 3px;
+  outline: 1px solid #9fc6ff;
+  box-shadow: inset 0 0 0 1px rgba(159, 198, 255, 0.35);
+}
+
 .empty-state {
   display: grid;
   align-content: center;
