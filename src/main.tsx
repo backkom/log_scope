@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import JsonView from "react18-json-view";
 import "react18-json-view/src/style.css";
 import "react18-json-view/src/dark.css";
@@ -166,6 +167,8 @@ function App() {
   const [scrollTop, setScrollTop] = React.useState(0);
   const [viewportHeight, setViewportHeight] = React.useState(0);
   const [jumpLine, setJumpLine] = React.useState("1");
+  const [gotoBarOpen, setGotoBarOpen] = React.useState(false);
+  const [selectedLine, setSelectedLine] = React.useState<number | null>(null);
   const [isOpening, setIsOpening] = React.useState(false);
   const [isConnectingSocket, setIsConnectingSocket] = React.useState(false);
   const [isGeneratingFixture, setIsGeneratingFixture] = React.useState(false);
@@ -192,6 +195,7 @@ function App() {
   const [findBarOpen, setFindBarOpen] = React.useState(false);
   const searchCacheRef = React.useRef<SearchCache | null>(null);
   const findInputRef = React.useRef<HTMLInputElement | null>(null);
+  const gotoInputRef = React.useRef<HTMLInputElement | null>(null);
   const [logColorMode, setLogColorMode] = React.useState<"full" | "severity" | "off">("full");
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const globalMinimapRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -210,6 +214,48 @@ function App() {
       .then(setHealth)
       .catch((err: unknown) => setError(String(err)));
   }, []);
+
+  React.useEffect(() => {
+    const title = logFile?.path ? `${logFile.path} - log_scope` : "log_scope";
+    document.title = title;
+    void getCurrentWindow().setTitle(title).catch((err: unknown) => {
+      console.warn("Unable to set Tauri window title", err);
+    });
+  }, [logFile?.path]);
+
+  React.useEffect(() => {
+    if (!gotoBarOpen) {
+      return;
+    }
+
+    const focusInput = () => {
+      if (gotoInputRef.current) {
+        gotoInputRef.current.focus();
+        gotoInputRef.current.select();
+      }
+    };
+
+    focusInput();
+    const animationFrameId = requestAnimationFrame(focusInput);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [gotoBarOpen]);
+
+  React.useEffect(() => {
+    if (!findBarOpen) {
+      return;
+    }
+
+    const focusInput = () => {
+      if (findInputRef.current) {
+        findInputRef.current.focus();
+        findInputRef.current.select();
+      }
+    };
+
+    focusInput();
+    const animationFrameId = requestAnimationFrame(focusInput);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [findBarOpen]);
 
   const closeFindBar = React.useCallback(() => {
     setFindBarOpen(false);
@@ -485,13 +531,16 @@ function App() {
   };
 
   const scrollToLineCentered = React.useCallback(
-    (line: number) => {
+    (line: number, options?: { markLine?: boolean }) => {
       if (!logFile || !viewportRef.current) {
         return;
       }
       const safeLine = Math.min(Math.max(1, line), Math.max(logFile.lineCount, 1));
       const centeredScrollTop = (safeLine - 1) * ROW_HEIGHT - Math.max(0, viewportHeight - ROW_HEIGHT) / 2;
       viewportRef.current.scrollTop = Math.max(0, centeredScrollTop);
+      if (options?.markLine) {
+        setSelectedLine(safeLine);
+      }
       setPendingTailLines(0);
     },
     [logFile, viewportHeight],
@@ -543,13 +592,66 @@ function App() {
     [logFile, scrollToLineCentered],
   );
 
+  const focusViewer = React.useCallback(() => {
+    requestAnimationFrame(() => {
+      viewportRef.current?.focus({ preventScroll: true });
+    });
+  }, []);
+
   const jumpToInputLine = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const parsed = Number.parseInt(jumpLine, 10);
-    if (Number.isFinite(parsed)) {
-      scrollToLine(parsed);
-    }
+    const targetLine =
+      logFile && Number.isFinite(parsed)
+        ? Math.min(Math.max(1, parsed), Math.max(logFile.lineCount, 1))
+        : selectedLine;
+    setGotoBarOpen(false);
+    setSelectedLine(null);
+    focusViewer();
+    requestAnimationFrame(() => selectVisibleLineText(targetLine));
   };
+
+  const closeGotoLineBar = React.useCallback(() => {
+    setGotoBarOpen(false);
+    setSelectedLine(null);
+    focusViewer();
+  }, [focusViewer]);
+
+  const openGotoLineBar = React.useCallback(() => {
+    setGotoBarOpen(true);
+    setJumpLine(String(firstVisibleLine));
+    scrollToLineCentered(firstVisibleLine, { markLine: true });
+  }, [firstVisibleLine, scrollToLineCentered]);
+
+  const jumpToLineFromText = React.useCallback(
+    (text: string) => {
+      const parsed = Number.parseInt(text, 10);
+      if (!Number.isFinite(parsed)) {
+        return;
+      }
+      scrollToLineCentered(parsed, { markLine: true });
+    },
+    [scrollToLineCentered],
+  );
+
+  const selectVisibleLineText = React.useCallback((lineNumber: number | null) => {
+    if (!lineNumber || !viewportRef.current) {
+      return;
+    }
+
+    const codeElement = viewportRef.current.querySelector<HTMLElement>(
+      `[data-line-number="${lineNumber}"] code`,
+    );
+    if (!codeElement) {
+      return;
+    }
+
+    const range = document.createRange();
+    range.selectNodeContents(codeElement);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, []);
 
   const runSearch = async (
     direction: "next" | "previous",
@@ -687,13 +789,8 @@ function App() {
         }
         setSearchResult(null);
         setActiveSearchMatch(null);
+        setSelectedLine(null);
         setFindBarOpen(true);
-        requestAnimationFrame(() => {
-          if (findInputRef.current) {
-            findInputRef.current.focus();
-            findInputRef.current.select();
-          }
-        });
         if (queryToUse) {
           void runSearch("next", {
             query: queryToUse,
@@ -703,9 +800,17 @@ function App() {
           });
         }
       }
+      if (event.ctrlKey && event.key.toLowerCase() === "g") {
+        event.preventDefault();
+        openGotoLineBar();
+      }
       if (event.key === "Escape" && findBarOpen) {
         event.preventDefault();
         setFindBarOpen(false);
+      }
+      if (event.key === "Escape" && gotoBarOpen) {
+        event.preventDefault();
+        closeGotoLineBar();
       }
       if (event.key === "F3" && (findBarOpen || searchQuery)) {
         event.preventDefault();
@@ -716,6 +821,7 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
     findBarOpen,
+    gotoBarOpen,
     searchQuery,
     logFile,
     activeSearchMatch,
@@ -725,6 +831,8 @@ function App() {
     searchWrapAround,
     searchFindAll,
     firstVisibleLine,
+    openGotoLineBar,
+    closeGotoLineBar,
     revealSearchMatchIfNeeded,
   ]);
 
@@ -751,9 +859,15 @@ function App() {
     [lineCache, renderedLineCount, requestedStartLine],
   );
   const activePath = logFile?.path ?? placeholder?.path ?? "尚未打开文件";
-  const activeStatus = logFile
-    ? `${formatBytes(logFile.fileSize)} · ${logFile.lineCount.toLocaleString()} 行 · ${followTail ? "跟随 tail" : "阅读锁定"}`
-    : placeholder?.message ?? "阶段 2：输入路径打开文件，支持追加刷新和 follow tail";
+  const activeStatus = placeholder?.message ?? "阶段 2：输入路径打开文件，支持追加刷新和 follow tail";
+  const statusItems = logFile
+    ? [
+        `大小 ${formatBytes(logFile.fileSize)}`,
+        `行数 ${logFile.lineCount.toLocaleString()}`,
+        followTail ? "跟随 tail" : "阅读锁定",
+        `Marker ${markers.length.toLocaleString()}`,
+      ]
+    : [activeStatus, "大小 -", "行数 -", "阅读锁定", `Marker ${markers.length.toLocaleString()}`];
   const visibleMarkerLines = React.useMemo(
     () => new Set(markers.map((marker) => marker.startLine)),
     [markers],
@@ -1030,17 +1144,9 @@ function App() {
 
         <section className="panel-section">
           <h2>定位</h2>
-          <form className="jump-form" onSubmit={jumpToInputLine}>
-            <input
-              value={jumpLine}
-              onChange={(event) => setJumpLine(event.target.value)}
-              inputMode="numeric"
-              aria-label="跳转行号"
-            />
-            <button type="submit" className="secondary-button" disabled={!logFile}>
-              跳转
-            </button>
-          </form>
+          <button type="button" className="secondary-button" onClick={openGotoLineBar} disabled={!logFile}>
+            跳转行号 (Ctrl+G)
+          </button>
           <div className="toolbar-buttons">
             <button type="button" className="secondary-button" onClick={() => scrollToLine(1)} disabled={!logFile}>
               顶部
@@ -1089,13 +1195,8 @@ function App() {
             type="button"
             className="secondary-button"
             onClick={() => {
+              setSelectedLine(null);
               setFindBarOpen(true);
-              requestAnimationFrame(() => {
-                if (findInputRef.current) {
-                  findInputRef.current.focus();
-                  findInputRef.current.select();
-                }
-              });
             }}
           >
             打开查找 (⌘F)
@@ -1155,8 +1256,8 @@ function App() {
       <section className="viewer-area">
         <header className="viewer-toolbar">
           <div>
-            <strong>{activePath}</strong>
-            <span>{activeStatus}</span>
+            <strong>Log viewer</strong>
+            <span>{logFile ? "Ctrl+G 跳转行号" : activePath}</span>
           </div>
         </header>
 
@@ -1175,6 +1276,7 @@ function App() {
           className="viewer-layout"
           ref={viewportRef}
           aria-label="log viewer"
+          tabIndex={-1}
           onScroll={(event) => {
             const nextScrollTop = event.currentTarget.scrollTop;
             setScrollTop(nextScrollTop);
@@ -1195,7 +1297,9 @@ function App() {
                     <div
                       className={`log-row${line.text === undefined ? " is-loading" : ""}${
                         visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
-                      }${activeSearchLine === line.lineNumber ? " has-active-search" : ""} ${getSeverityClass(line.text, logColorMode)}`}
+                      }${activeSearchLine === line.lineNumber ? " has-active-search" : ""}${
+                        selectedLine === line.lineNumber ? " has-selected-line" : ""
+                      } ${getSeverityClass(line.text, logColorMode)}`}
                       key={line.lineNumber}
                       data-line-number={line.lineNumber}
                     >
@@ -1246,6 +1350,33 @@ function App() {
             </div>
           )}
         </div>
+
+        {gotoBarOpen ? (
+          <form className="goto-line-bar" onSubmit={jumpToInputLine}>
+            <input
+              ref={gotoInputRef}
+              value={jumpLine}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setJumpLine(nextValue);
+                jumpToLineFromText(nextValue);
+              }}
+              inputMode="numeric"
+              placeholder="输入行数"
+              aria-label="输入行数"
+              onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  closeGotoLineBar();
+                }
+              }}
+            />
+            <button type="submit" className="find-bar-btn" disabled={!logFile}>
+              Go
+            </button>
+          </form>
+        ) : null}
 
         {findBarOpen && (
           <div className="find-bar-overlay">
@@ -1322,12 +1453,16 @@ function App() {
               placeholder="查找"
               aria-label="查找文本"
               onKeyDown={(event) => {
+                event.stopPropagation();
                 if (event.key === "Escape") {
                   event.preventDefault();
                   closeFindBar();
                 } else if (event.key === "Enter") {
                   event.preventDefault();
-                  void runSearch(event.shiftKey ? "previous" : "next");
+                  void (async () => {
+                    await runSearch(event.shiftKey ? "previous" : "next");
+                    focusViewer();
+                  })();
                 }
               }}
             />
@@ -1374,6 +1509,11 @@ function App() {
 
         {error ? <p className="error-message">{error}</p> : null}
         {tailNotice ? <p className="tail-notice">{tailNotice}</p> : null}
+        <footer className="viewer-status-bar" aria-label="log 状态栏">
+          {statusItems.map((item) => (
+            <strong key={item}>{item}</strong>
+          ))}
+        </footer>
       </section>
     </main>
   );

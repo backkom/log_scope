@@ -2,6 +2,9 @@
   --log-viewer-bg: rgb(40, 41, 35);
   --log-viewer-grid: #4c5046;
   --log-viewer-scrollbar: #6f7568;
+  --viewer-toolbar-height: 44px;
+  --global-minimap-row-height: 58px;
+  --status-bar-height: 28px;
 
   color: #1e2428;
   background: #f4f6f7;
@@ -220,7 +223,7 @@ button:disabled {
 .viewer-area {
   position: relative;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
+  grid-template-rows: var(--viewer-toolbar-height) var(--global-minimap-row-height) minmax(0, 1fr) auto auto;
   min-width: 0;
   min-height: 0;
   background: var(--log-viewer-bg);
@@ -229,7 +232,8 @@ button:disabled {
 .viewer-toolbar {
   display: flex;
   align-items: center;
-  min-height: 64px;
+  justify-content: flex-start;
+  height: var(--viewer-toolbar-height);
   border-bottom: 1px solid #d9dee2;
   background: #fbfcfc;
   padding: 0 20px;
@@ -238,6 +242,8 @@ button:disabled {
 .viewer-toolbar div {
   display: grid;
   min-width: 0;
+  width: 100%;
+  text-align: left;
 }
 
 .viewer-toolbar strong,
@@ -248,9 +254,62 @@ button:disabled {
 }
 
 .global-minimap-bar {
+  height: var(--global-minimap-row-height);
   border-bottom: 1px solid #565a4f;
   background: var(--log-viewer-bg);
   padding: 6px 10px 7px;
+}
+
+.goto-line-bar {
+  position: absolute;
+  z-index: 8;
+  top: 50%;
+  left: 50%;
+  width: min(420px, calc(100% - 48px));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  border: 1px solid #565a4f;
+  border-radius: 7px;
+  background: #343731;
+  padding: 0 12px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+  transform: translate(-50%, -50%);
+  animation: goto-line-pop-in 0.12s ease-out;
+}
+
+@keyframes goto-line-pop-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.goto-line-bar input {
+  flex: 1;
+  min-height: 28px;
+  border: 1px solid #565a4f;
+  border-radius: 4px;
+  background: #242720;
+  color: #e0e4e0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  padding: 0 8px;
+}
+
+.goto-line-bar input::placeholder {
+  color: #8a8e85;
+}
+
+.goto-line-bar input:focus {
+  outline: none;
+  border-color: #18706a;
+  box-shadow: 0 0 0 1px #18706a;
 }
 
 .global-minimap {
@@ -377,6 +436,16 @@ button:disabled {
 .log-row.has-active-search .line-number,
 .log-row.has-active-search code {
   background: #243142;
+}
+
+.log-row.has-selected-line .line-number,
+.log-row.has-selected-line code {
+  background: #263d3a;
+}
+
+.log-row.has-selected-line {
+  outline: 1px solid #44b6aa;
+  outline-offset: -1px;
 }
 
 .log-row.has-marker .line-number {
@@ -567,9 +636,40 @@ button:disabled {
   padding: 10px 20px;
 }
 
+.viewer-status-bar {
+  position: absolute;
+  z-index: 6;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: var(--status-bar-height);
+  overflow: hidden;
+  border-top: 1px solid #565a4f;
+  background: #252820;
+  color: #b9c2b6;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  padding: 0 12px;
+}
+
+.viewer-status-bar strong {
+  flex: 0 0 auto;
+  color: #e0e4e0;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 /* ---- Inline Find Bar (Ctrl+F) ---- */
 
 .find-bar-overlay {
+  position: absolute;
+  z-index: 7;
+  left: 0;
+  right: 0;
+  bottom: var(--status-bar-height);
   display: flex;
   align-items: center;
   gap: 4px;
