@@ -7,6 +7,13 @@
   text-rendering: optimizeLegibility;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -14,23 +21,51 @@
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
 }
 
 button {
   font: inherit;
 }
 
+input {
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid #cfd8dd;
+  border-radius: 7px;
+  background: #ffffff;
+  color: inherit;
+  font: inherit;
+  padding: 0 10px;
+}
+
+input:focus,
+button:focus-visible {
+  outline: 2px solid #2f7dd1;
+  outline-offset: 2px;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .source-panel {
   display: flex;
   flex-direction: column;
   gap: 28px;
+  min-height: 0;
+  overflow-y: auto;
   border-right: 1px solid #d9dee2;
   background: #ffffff;
   padding: 24px;
@@ -81,7 +116,7 @@ button {
   border-radius: 7px;
   border: 1px solid transparent;
   padding: 0 12px;
-  text-align: left;
+  text-align: center;
 }
 
 .primary-button {
@@ -93,6 +128,18 @@ button {
   color: #758087;
   background: #f1f4f5;
   border-color: #dce2e5;
+}
+
+.open-form,
+.jump-form {
+  display: grid;
+  gap: 8px;
+}
+
+.toolbar-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 
 .status-list {
@@ -120,6 +167,7 @@ button {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
+  min-height: 0;
 }
 
 .viewer-toolbar {
@@ -144,30 +192,62 @@ button {
 }
 
 .viewer-layout {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: rgb(40, 41, 35);
+  scrollbar-color: #6f7568 rgb(40, 41, 35);
+}
+
+.viewer-scroll-space {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 72px;
-  min-height: 0;
+  min-height: 100%;
+}
+
+.empty-scroll-space {
+  height: 100%;
 }
 
 .log-viewport {
-  overflow: hidden;
-  background: #101418;
+  position: sticky;
+  top: 0;
+  align-self: start;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: rgb(40, 41, 35);
   color: #d8dee3;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 13px;
   line-height: 24px;
-  padding: 12px 0;
+  scrollbar-color: #6f7568 rgb(40, 41, 35);
+}
+
+.empty-scroll-space .log-viewport {
+  height: 100%;
+  overflow: hidden;
+}
+
+.visible-lines {
+  position: relative;
+  width: max-content;
+  min-width: 100%;
 }
 
 .log-row {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr);
-  min-height: 24px;
+  height: 24px;
+  min-width: max-content;
 }
 
 .line-number {
+  position: sticky;
+  left: 0;
   padding-right: 14px;
-  color: #68737d;
+  background: rgb(40, 41, 35);
+  color: rgb(144, 145, 139);
   text-align: right;
   user-select: none;
 }
@@ -179,13 +259,47 @@ button {
   white-space: nowrap;
 }
 
+.log-row.is-loading code::before {
+  display: block;
+  width: min(360px, 42vw);
+  height: 8px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: #4e5247;
+  content: "";
+}
+
+.empty-state {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  min-height: 100%;
+  padding: 24px;
+  color: #aeb8bf;
+}
+
+.empty-state strong {
+  color: #eef3f6;
+  font-size: 18px;
+}
+
+.empty-state span {
+  max-width: 460px;
+  color: #8996a0;
+}
+
 .minimap-placeholder {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  z-index: 2;
   width: 72px;
-  height: 100%;
-  border-left: 1px solid #293139;
+  height: 100vh;
+  max-height: 100%;
+  border-left: 1px solid #565a4f;
   background:
-    linear-gradient(#212a31 1px, transparent 1px) 0 0 / 100% 12px,
-    #161c21;
+    linear-gradient(#4c5046 1px, transparent 1px) 0 0 / 100% 12px,
+    rgb(40, 41, 35);
 }
 
 .error-message {
@@ -199,9 +313,11 @@ button {
 @media (max-width: 760px) {
   .app-shell {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .source-panel {
+    max-height: 42vh;
     border-right: 0;
     border-bottom: 1px solid #d9dee2;
   }

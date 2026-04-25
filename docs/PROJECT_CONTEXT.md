@@ -142,6 +142,14 @@ Rust core 负责：
 
 前端不应该持有完整 log 文本。前端应向 Rust 请求可见行范围和 marker 摘要。
 
+阶段 1 当前实现：
+
+- Rust command `open_log_file(path)` 打开 UTF-8/UTF-8 lossy 文本文件，建立当前文件 session，并返回 `sessionId`、路径、文件大小和行数。
+- Rust command `get_log_lines(sessionId, startLine, lineCount)` 只读取指定行范围，返回 1-based 行号和文本。
+- Rust command `generate_log_fixture(sizeMb)` 可在系统临时目录生成指定大小的合成 log fixture；前端提供 50MB fixture 一键生成并打开入口，用于阶段 1 手工性能验证。
+- 当前行索引只保存 `line_number -> byte_offset`，原始文件内容仍保留在磁盘；读取可见行时通过 seek + byte range 读取。
+- 当前文件索引在 Tauri async blocking 线程池中构建，并返回索引耗时；后续 100 MB 以上体验优化应继续补充进度状态和取消。
+
 ## Socket 协议方向
 
 Socket 协议尚未最终确定，但优先使用 framed protocol，而不是无边界的裸文本流。
@@ -163,6 +171,9 @@ viewer 应该：
 
 - 只渲染可见行和少量 overscan。
 - 初期使用固定行高，便于性能优化和位置映射。
+- 阶段 1 前端固定行高为 24px，滚动时按可见区高度和 overscan 计算 `get_log_lines` 请求范围。
+- 阶段 1 前端维护有界行缓存，快速滚动时先渲染目标行号和占位行，待 Rust 返回后逐行填充；不缓存完整文件内容。
+- 应用根布局固定在 100vh 内，左侧操作栏和右侧 viewer 分别滚动，避免滚动 log 时带动操作栏；右侧 viewer 外层只负责纵向滚动，滚动条位于 minimap 右侧；log 文本列内部独立负责横向滚动，minimap 不参与横向滚动上下文。
 - 大文件默认关闭自动换行，参考 CudaText 的降级思想。
 - 支持行号 gutter，并避免布局抖动。
 - 搜索高亮和语义行标记只作用在可见范围或摘要数据上。
@@ -266,7 +277,7 @@ viewer 应该：
 - 阶段 0 已采用 Tauri 2 + Vite + React + TypeScript 骨架；前端通过 `@tauri-apps/api/core` 调用 Rust command。
 - 前端包管理器使用 Yarn 1.x；Tauri dev/build 前置命令使用 `yarn dev` 和 `yarn build`。
 - VS Code 调试入口为 `.vscode/launch.json` 中的 `Tauri Dev: log_scope`，本质是在工作区根目录执行 `yarn tauri:dev`。
-- 当前 Rust command 起点为 `health_check` 和 `open_file_placeholder`，用于验证前后端 IPC 闭环；后续阶段 1 应替换或扩展为真实文件打开与可见行范围读取接口。
+- 当前 Rust command 包含 `health_check`、`open_file_placeholder`、`open_log_file`、`get_log_lines`；文件查看主链路应优先使用后两个接口。
 - 尽早加入 benchmark fixture 生成器。
 - 尽早加入可重复的性能测试路径。
 - Rust core 与前端之间的 API 要清晰、显式、可版本化。
