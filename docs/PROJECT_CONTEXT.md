@@ -50,12 +50,15 @@
 
 右侧：
 
-- 以 minimap/micromap 风格展示当前已知数据的全局概览。
+- minimap/micromap 分为两层：log 上方的置顶全局 marker 条横向展示整个 log 的 marker 分布；右侧 minimap 类似代码编辑器 minimap，纵向展示当前 8 个视口范围内的 marker 分布并承载视口滑块交互。
 - 不展示原始文本内容。
 - 展示从 log 中提炼出的语义信息。
 - 某些带特殊标记的行可以解析出 JSON 数据。
 - 这些特殊行应以不同颜色的符号展示，例如小圆点。
-- 在 minimap 上按住滑动可以影响左侧 viewer 的滚动位置。
+- 右侧 minimap 的视口矩形高度固定为 minimap 可见高度的 1/8，因此右侧 minimap 当前展示范围为 8 个当前视口高度的 log 区间。矩形在该区间顶部时其上边与滑动轨道上边对齐，在该区间底部时其下边与滑动轨道下边对齐。
+- 按住右侧 minimap 视口矩形拖动时，行为必须等同于拖动全文件滚动条滑块：矩形 top 在整个轨道中的比例映射到整个 log 的可滚动范围；手动滚动 viewer 时，矩形位置必须按同一比例同步更新。
+- 在右侧 minimap 视口矩形内点击不改变视口；点击矩形上方让 viewer 向上移动一个当前视口范围，点击矩形下方让 viewer 向下移动一个当前视口范围。
+- 右侧 minimap 内 marker 的纵向位置必须按该 8 个视口的当前展示范围连续计算，而不是按整个 log 或固定块计算；拖动滑块时 marker 位置要随视口变化同步更新。顶部全局 marker 条继续负责展示整个 log 的全局 marker 分布。
 - 点击语义小圆点后，以 JSON viewer 展示对应解析数据。
 
 ## 架构决策
@@ -161,7 +164,11 @@ Rust core 负责：
 - 消息 body 尝试按严格 JSON 解析；解析失败时保留 raw text 并标记 `parse_status = raw`，不影响 marker 生成。
 - 消息 marker 的颜色由 `message_id` 通过稳定 hash 计算得到，同一个消息 ID 在多次运行中应得到同一个颜色。
 - 消息 marker 在 minimap 横向位置由 `message_id / max_message_id` 决定，`max_message_id` 使用当前 session 已识别消息中的最大 ID；同一个消息 ID 在同一个 session 中应保持同一横向位置。
-- 前端右侧 minimap 第一版使用 Canvas 绘制 marker；消息 marker 使用三角形，`Receive` 和 `Send` 使用不同朝向；其他 marker 使用圆点。点击 marker 后跳转到对应行并加载 payload；可见行中的 marker 起始行会做轻量背景标记。
+- 前端 minimap 使用两张 Canvas：顶部全局 marker 条横向映射整个 log 的行号范围；右侧 minimap 按当前 8 个视口高度的连续局部范围纵向映射 marker。消息 marker 使用三角形，`Receive` 和 `Send` 使用不同朝向；其他 marker 使用圆点。顶部全局 marker 条点击 marker 后跳转到对应行并加载 payload；可见行中的 marker 起始行会做轻量背景标记。
+- 右侧 minimap 同时维护两个坐标系：
+  - 滑块坐标系：矩形高度固定为 Canvas 高度的 1/8；矩形 top 在整个轨道中的比例映射为全文件 viewer 可滚动范围。拖动矩形只使用全文件范围，不受右侧当前 marker 展示范围限制。
+  - Marker 坐标系：右侧 Canvas 展示一个连续的 8 视口窗口。该窗口由当前 `firstVisibleLine` 和全文件滚动比例共同计算，使当前视口范围映射到矩形框内部；marker 只在落入该窗口时绘制，并按窗口内相对行号映射到纵向位置。
+- 右侧 minimap 的滑块位置、marker 窗口和 viewer 可见行都必须由同一个当前视口状态派生；拖动滑块时需要立即同步 viewer scrollTop/firstVisibleLine，使 marker 位置和矩形位置一起更新。矩形内点击不改变视口，矩形上/下方点击分别按一个当前视口高度向上/向下翻动。
 - 当前已补充轻量 extractor：单行 JSON 事件（优先用 `event_name` 作为标题）、`ChangeState ... { ... }` 块、Lua `stack traceback:` 块、基础关键字 marker（error/failed/not found/exception/warn/corrupt/currupted）。
 - 当前 marker 索引在打开文件后构建；文件追加或截断刷新后会重建 marker 索引。该方案先保证正确性，后续高频 tail 压测如暴露成本，再改为增量 marker 扫描。
 

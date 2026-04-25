@@ -93,6 +93,8 @@ const OVERSCAN_ROWS = 80;
 const MAX_CACHED_LINES = 2_000;
 const TAIL_REFRESH_INTERVAL_MS = 1_000;
 const MINIMAP_WIDTH = 72;
+const GLOBAL_MINIMAP_HEIGHT = 44;
+const RIGHT_MINIMAP_FRAME_RATIO = 1 / 8;
 
 function App() {
   const [health, setHealth] = React.useState<HealthCheck | null>(null);
@@ -113,8 +115,18 @@ function App() {
   const [markers, setMarkers] = React.useState<LogMarker[]>([]);
   const [selectedMarker, setSelectedMarker] = React.useState<LogMarker | null>(null);
   const [selectedPayload, setSelectedPayload] = React.useState<MarkerPayload | null>(null);
+  const [globalMinimapWidth, setGlobalMinimapWidth] = React.useState(1);
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
-  const minimapRef = React.useRef<HTMLCanvasElement | null>(null);
+  const globalMinimapRef = React.useRef<HTMLCanvasElement | null>(null);
+  const localMinimapRef = React.useRef<HTMLCanvasElement | null>(null);
+  const localMinimapDragRef = React.useRef<{
+    pointerId: number;
+    pointerOffsetY: number;
+    minStartLine: number;
+    maxStartLine: number;
+    canvasHeight: number;
+    frameHeight: number;
+  } | null>(null);
 
   React.useEffect(() => {
     invoke<HealthCheck>("health_check")
@@ -137,6 +149,19 @@ function App() {
     updateHeight();
     const observer = new ResizeObserver(updateHeight);
     observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
+
+  React.useEffect(() => {
+    const canvas = globalMinimapRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const updateWidth = () => setGlobalMinimapWidth(Math.max(1, canvas.clientWidth));
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(canvas);
     return () => observer.disconnect();
   }, []);
 
@@ -389,6 +414,11 @@ function App() {
     () => new Set(markers.map((marker) => marker.startLine)),
     [markers],
   );
+  const viewportLineCount = Math.max(1, Math.ceil(Math.max(viewportHeight, ROW_HEIGHT) / ROW_HEIGHT));
+  const rightMinimapRange = React.useMemo(
+    () => getRightMinimapRange(firstVisibleLine, viewportLineCount, Math.max(1, logFile?.lineCount ?? 1)),
+    [firstVisibleLine, logFile?.lineCount, viewportLineCount],
+  );
 
   React.useEffect(() => {
     if (isNearBottom) {
@@ -397,7 +427,49 @@ function App() {
   }, [isNearBottom]);
 
   React.useEffect(() => {
-    const canvas = minimapRef.current;
+    const canvas = globalMinimapRef.current;
+    if (!canvas || !logFile) {
+      return;
+    }
+
+    const width = Math.max(globalMinimapWidth, 1);
+    const pixelRatio = window.devicePixelRatio || 1;
+    canvas.width = width * pixelRatio;
+    canvas.height = GLOBAL_MINIMAP_HEIGHT * pixelRatio;
+    canvas.style.height = `${GLOBAL_MINIMAP_HEIGHT}px`;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    context.clearRect(0, 0, width, GLOBAL_MINIMAP_HEIGHT);
+    context.fillStyle = "rgb(40, 41, 35)";
+    context.fillRect(0, 0, width, GLOBAL_MINIMAP_HEIGHT);
+    context.strokeStyle = "#4c5046";
+    context.lineWidth = 1;
+    for (let x = 0; x < width; x += 48) {
+      context.beginPath();
+      context.moveTo(x + 0.5, 0);
+      context.lineTo(x + 0.5, GLOBAL_MINIMAP_HEIGHT);
+      context.stroke();
+    }
+
+    for (const marker of markers) {
+      const point = markerGlobalMinimapPoint(marker, logFile.lineCount, width, GLOBAL_MINIMAP_HEIGHT);
+      context.fillStyle = marker.color;
+      if (marker.kind === "message") {
+        drawMessageTriangle(context, point.x, point.y, selectedMarker?.id === marker.id ? 5 : 4, marker.direction);
+      } else {
+        context.beginPath();
+        context.arc(point.x, point.y, selectedMarker?.id === marker.id ? 4 : 3, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+  }, [globalMinimapWidth, logFile, markers, selectedMarker?.id]);
+
+  React.useEffect(() => {
+    const canvas = localMinimapRef.current;
     if (!canvas || !logFile) {
       return;
     }
@@ -426,7 +498,11 @@ function App() {
     }
 
     for (const marker of markers) {
-      const point = markerMinimapPoint(marker, logFile.lineCount, height);
+      if (marker.startLine < rightMinimapRange.startLine || marker.startLine > rightMinimapRange.endLine) {
+        continue;
+      }
+
+      const point = markerRightMinimapPoint(marker, rightMinimapRange.startLine, rightMinimapRange.lineCount, height);
       context.fillStyle = marker.color;
       if (marker.kind === "message") {
         drawMessageTriangle(context, point.x, point.y, selectedMarker?.id === marker.id ? 6 : 5, marker.direction);
@@ -436,10 +512,13 @@ function App() {
         context.fill();
       }
     }
-  }, [logFile, markers, selectedMarker?.id, viewportHeight]);
 
-  const handleMinimapClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!logFile || markers.length === 0) {
+    const frame = getRightMinimapFrame(firstVisibleLine, viewportLineCount, logFile.lineCount, height);
+    drawViewportFrame(context, frame.top, frame.height);
+  }, [firstVisibleLine, logFile, markers, rightMinimapRange, selectedMarker?.id, viewportHeight, viewportLineCount]);
+
+  const handleGlobalMinimapClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!logFile) {
       return;
     }
 
@@ -449,7 +528,7 @@ function App() {
     const nearest = markers
       .map((marker) => ({
         marker,
-        distance: distanceToMarker(marker, logFile.lineCount, rect.height, x, y),
+        distance: distanceToGlobalMarker(marker, logFile.lineCount, rect.width, rect.height, x, y),
       }))
       .sort((left, right) => left.distance - right.distance)[0];
 
@@ -458,7 +537,58 @@ function App() {
       return;
     }
 
-    scrollToLine(Math.round((y / Math.max(rect.height, 1)) * logFile.lineCount));
+    scrollToLine(Math.round((x / Math.max(rect.width, 1)) * logFile.lineCount));
+  };
+
+  const handleLocalMinimapPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!logFile) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const y = event.clientY - rect.top;
+    const frame = getRightMinimapFrame(firstVisibleLine, viewportLineCount, logFile.lineCount, rect.height);
+    if (y >= frame.top && y <= frame.top + frame.height) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      localMinimapDragRef.current = {
+        pointerId: event.pointerId,
+        pointerOffsetY: y - frame.top,
+        minStartLine: 1,
+        maxStartLine: getMaxStartLine(logFile.lineCount, viewportLineCount),
+        canvasHeight: Math.max(rect.height, 1),
+        frameHeight: frame.height,
+      };
+      return;
+    }
+
+    const direction = y < frame.top ? -1 : 1;
+    scrollToLine(firstVisibleLine + direction * viewportLineCount);
+  };
+
+  const handleLocalMinimapPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = localMinimapDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const y = event.clientY - rect.top;
+    const maxFrameTop = Math.max(0, drag.canvasHeight - drag.frameHeight);
+    const nextFrameTop = Math.max(0, Math.min(maxFrameTop, y - drag.pointerOffsetY));
+    const topRatio = maxFrameTop > 0 ? nextFrameTop / maxFrameTop : 0;
+    const nextLine = Math.round(drag.minStartLine + topRatio * Math.max(0, drag.maxStartLine - drag.minStartLine));
+    scrollToLine(nextLine);
+  };
+
+  const stopLocalMinimapDrag = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = localMinimapDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    localMinimapDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   };
 
   return (
@@ -624,6 +754,17 @@ function App() {
           </div>
         </header>
 
+        <div className="global-minimap-bar">
+          <canvas
+            className="global-minimap"
+            ref={globalMinimapRef}
+            width="1024"
+            height={GLOBAL_MINIMAP_HEIGHT}
+            aria-label="global marker minimap"
+            onClick={handleGlobalMinimapClick}
+          />
+        </div>
+
         <div
           className="viewer-layout"
           ref={viewportRef}
@@ -659,12 +800,15 @@ function App() {
               </div>
 
               <canvas
-                className="minimap-placeholder"
-                ref={minimapRef}
+                className="minimap-placeholder local-minimap"
+                ref={localMinimapRef}
                 width={MINIMAP_WIDTH}
                 height="640"
-                aria-label="marker minimap"
-                onClick={handleMinimapClick}
+                aria-label="local marker minimap"
+                onPointerDown={handleLocalMinimapPointerDown}
+                onPointerMove={handleLocalMinimapPointerMove}
+                onPointerUp={stopLocalMinimapDrag}
+                onPointerCancel={stopLocalMinimapDrag}
               />
             </div>
           ) : (
@@ -704,26 +848,84 @@ function formatBytes(bytes: number) {
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
-function markerMinimapPoint(marker: LogMarker, totalLines: number, height: number) {
+function getRightMinimapRange(firstVisibleLine: number, viewportLineCount: number, totalLines: number) {
+  const requestedLineCount = Math.max(viewportLineCount, Math.round(viewportLineCount / RIGHT_MINIMAP_FRAME_RATIO));
+  const lineCount = Math.min(Math.max(totalLines, 1), requestedLineCount);
+  const maxRangeStartLine = Math.max(1, totalLines - lineCount + 1);
+  const maxViewportStartLine = getMaxStartLine(totalLines, viewportLineCount);
+  const scrollRatio = maxViewportStartLine > 1 ? (firstVisibleLine - 1) / (maxViewportStartLine - 1) : 0;
+  const localScrollableLines = Math.max(0, lineCount - viewportLineCount);
+  const continuousStartLine = firstVisibleLine - scrollRatio * localScrollableLines;
+  const startLine = Math.max(1, Math.min(maxRangeStartLine, Math.round(continuousStartLine)));
+  const endLine = Math.min(totalLines, startLine + lineCount - 1);
+  return { startLine, endLine, lineCount: Math.max(1, endLine - startLine + 1) };
+}
+
+function getMaxStartLine(totalLines: number, viewportLineCount: number) {
+  return Math.max(1, totalLines - viewportLineCount + 1);
+}
+
+function getRightMinimapFrame(
+  firstVisibleLine: number,
+  viewportLineCount: number,
+  totalLines: number,
+  height: number,
+) {
+  const frameHeight = Math.max(1, height * RIGHT_MINIMAP_FRAME_RATIO);
+  const maxFrameTop = Math.max(0, height - frameHeight);
+  const maxStartLine = getMaxStartLine(totalLines, viewportLineCount);
+  const topRatio = maxStartLine > 1 ? (firstVisibleLine - 1) / (maxStartLine - 1) : 0;
+  const top = Math.max(0, Math.min(maxFrameTop, topRatio * maxFrameTop));
+  return { top, height: frameHeight };
+}
+
+function markerGlobalMinimapPoint(marker: LogMarker, totalLines: number, width: number, height: number) {
+  const margin = 7;
+  const usableHeight = height - margin * 2;
+  const x = Math.max(5, Math.min(width - 5, ((marker.startLine - 1) / Math.max(totalLines, 1)) * width));
+  const y =
+    marker.kind === "message"
+      ? margin + Math.max(0, Math.min(1, marker.laneRatio)) * usableHeight
+      : height / 2;
+  return { x, y };
+}
+
+function markerRightMinimapPoint(marker: LogMarker, rangeStartLine: number, rangeLineCount: number, height: number) {
   const margin = 7;
   const usableWidth = MINIMAP_WIDTH - margin * 2;
   const x =
     marker.kind === "message"
       ? margin + Math.max(0, Math.min(1, marker.laneRatio)) * usableWidth
       : MINIMAP_WIDTH / 2;
-  const y = Math.max(5, Math.min(height - 5, ((marker.startLine - 1) / Math.max(totalLines, 1)) * height));
+  const y = Math.max(
+    5,
+    Math.min(height - 5, ((marker.startLine - rangeStartLine) / Math.max(rangeLineCount, 1)) * height),
+  );
   return { x, y };
 }
 
-function distanceToMarker(
+function distanceToGlobalMarker(
   marker: LogMarker,
   totalLines: number,
+  width: number,
   height: number,
   x: number,
   y: number,
 ) {
-  const point = markerMinimapPoint(marker, totalLines, height);
+  const point = markerGlobalMinimapPoint(marker, totalLines, width, height);
   return Math.hypot(point.x - x, point.y - y);
+}
+
+function drawViewportFrame(context: CanvasRenderingContext2D, top: number, height: number) {
+  context.save();
+  context.fillStyle = "rgba(219, 235, 224, 0.08)";
+  context.strokeStyle = "#dbeee5";
+  context.lineWidth = 1.5;
+  context.beginPath();
+  context.roundRect(5, top + 0.75, MINIMAP_WIDTH - 10, Math.max(1, height - 1.5), 4);
+  context.fill();
+  context.stroke();
+  context.restore();
 }
 
 function drawMessageTriangle(
