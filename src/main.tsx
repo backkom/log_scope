@@ -1,6 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import JsonView from "react18-json-view";
+import "react18-json-view/src/style.css";
+import "react18-json-view/src/dark.css";
 import "./styles.css";
 
 type HealthCheck = {
@@ -47,9 +50,40 @@ type LogRefreshMetadata = {
   path: string;
   fileSize: number;
   lineCount: number;
+  markerCount: number;
   appendedBytes: number;
   appendedLines: number;
   wasTruncated: boolean;
+};
+
+type LogMarker = {
+  id: string;
+  kind: string;
+  title: string;
+  color: string;
+  startLine: number;
+  endLine: number;
+  startByte: number;
+  endByte: number;
+  lineTime: string;
+  direction: string;
+  messageId: number;
+  messageName: string;
+  parseStatus: string;
+};
+
+type LogMarkerRange = {
+  sessionId: number;
+  totalMarkers: number;
+  markers: LogMarker[];
+};
+
+type MarkerPayload = {
+  markerId: string;
+  rawText: string;
+  parseStatus: string;
+  parsedJson: unknown | null;
+  parseError: string | null;
 };
 
 const ROW_HEIGHT = 24;
@@ -57,6 +91,7 @@ const BOTTOM_PADDING_ROWS = 1;
 const OVERSCAN_ROWS = 80;
 const MAX_CACHED_LINES = 2_000;
 const TAIL_REFRESH_INTERVAL_MS = 1_000;
+const MINIMAP_WIDTH = 72;
 
 function App() {
   const [health, setHealth] = React.useState<HealthCheck | null>(null);
@@ -74,12 +109,21 @@ function App() {
   const [followTail, setFollowTail] = React.useState(true);
   const [pendingTailLines, setPendingTailLines] = React.useState(0);
   const [tailNotice, setTailNotice] = React.useState<string | null>(null);
+  const [markers, setMarkers] = React.useState<LogMarker[]>([]);
+  const [selectedMarker, setSelectedMarker] = React.useState<LogMarker | null>(null);
+  const [selectedPayload, setSelectedPayload] = React.useState<MarkerPayload | null>(null);
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
+  const minimapRef = React.useRef<HTMLCanvasElement | null>(null);
 
   React.useEffect(() => {
     invoke<HealthCheck>("health_check")
       .then(setHealth)
       .catch((err: unknown) => setError(String(err)));
+  }, []);
+
+  const loadMarkers = React.useCallback(async (sessionId: number) => {
+    const range = await invoke<LogMarkerRange>("get_log_markers", { sessionId });
+    setMarkers(range.markers);
   }, []);
 
   React.useEffect(() => {
@@ -193,6 +237,9 @@ function App() {
               }
             : current,
         );
+        if (metadata.appendedBytes > 0 || metadata.wasTruncated) {
+          await loadMarkers(metadata.sessionId);
+        }
         setError(null);
       } catch (err) {
         if (!cancelled) {
@@ -206,7 +253,7 @@ function App() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [followTail, logFile?.sessionId]);
+  }, [followTail, loadMarkers, logFile?.sessionId]);
 
   const runPlaceholder = async () => {
     setError(null);
@@ -234,10 +281,14 @@ function App() {
       setLogFile(metadata);
       setPlaceholder(null);
       setLineCache(new Map());
+      setMarkers([]);
+      setSelectedMarker(null);
+      setSelectedPayload(null);
       setPendingTailLines(0);
       setTailNotice(null);
       setScrollTop(0);
       setJumpLine("1");
+      await loadMarkers(metadata.sessionId);
       if (viewportRef.current) {
         viewportRef.current.scrollTop = 0;
       }
@@ -277,6 +328,28 @@ function App() {
     setPendingTailLines(0);
   };
 
+  const selectMarker = React.useCallback(
+    async (marker: LogMarker) => {
+      if (!logFile) {
+        return;
+      }
+      setSelectedMarker(marker);
+      setSelectedPayload(null);
+      scrollToLine(marker.startLine);
+      try {
+        const payload = await invoke<MarkerPayload>("get_marker_payload", {
+          sessionId: logFile.sessionId,
+          markerId: marker.id,
+        });
+        setSelectedPayload(payload);
+        setError(null);
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [logFile],
+  );
+
   const jumpToInputLine = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const parsed = Number.parseInt(jumpLine, 10);
@@ -311,12 +384,76 @@ function App() {
   const activeStatus = logFile
     ? `${formatBytes(logFile.fileSize)} · ${logFile.lineCount.toLocaleString()} 行 · ${followTail ? "跟随 tail" : "阅读锁定"}`
     : placeholder?.message ?? "阶段 2：输入路径打开文件，支持追加刷新和 follow tail";
+  const visibleMarkerLines = React.useMemo(
+    () => new Set(markers.map((marker) => marker.startLine)),
+    [markers],
+  );
 
   React.useEffect(() => {
     if (isNearBottom) {
       setPendingTailLines(0);
     }
   }, [isNearBottom]);
+
+  React.useEffect(() => {
+    const canvas = minimapRef.current;
+    if (!canvas || !logFile) {
+      return;
+    }
+
+    const height = Math.max(viewportHeight, 1);
+    const pixelRatio = window.devicePixelRatio || 1;
+    canvas.width = MINIMAP_WIDTH * pixelRatio;
+    canvas.height = height * pixelRatio;
+    canvas.style.height = `${height}px`;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    context.clearRect(0, 0, MINIMAP_WIDTH, height);
+    context.fillStyle = "rgb(40, 41, 35)";
+    context.fillRect(0, 0, MINIMAP_WIDTH, height);
+    context.strokeStyle = "#4c5046";
+    context.lineWidth = 1;
+    for (let y = 0; y < height; y += 12) {
+      context.beginPath();
+      context.moveTo(0, y + 0.5);
+      context.lineTo(MINIMAP_WIDTH, y + 0.5);
+      context.stroke();
+    }
+
+    for (const marker of markers) {
+      const y = Math.max(3, Math.min(height - 3, ((marker.startLine - 1) / Math.max(logFile.lineCount, 1)) * height));
+      context.fillStyle = marker.color;
+      context.beginPath();
+      context.arc(marker.direction === "Receive" ? 46 : 26, y, selectedMarker?.id === marker.id ? 4 : 3, 0, Math.PI * 2);
+      context.fill();
+    }
+  }, [logFile, markers, selectedMarker?.id, viewportHeight]);
+
+  const handleMinimapClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!logFile || markers.length === 0) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const y = event.clientY - rect.top;
+    const nearest = markers
+      .map((marker) => ({
+        marker,
+        distance: Math.abs(((marker.startLine - 1) / Math.max(logFile.lineCount, 1)) * rect.height - y),
+      }))
+      .sort((left, right) => left.distance - right.distance)[0];
+
+    if (nearest && nearest.distance <= 10) {
+      void selectMarker(nearest.marker);
+      return;
+    }
+
+    scrollToLine(Math.round((y / Math.max(rect.height, 1)) * logFile.lineCount));
+  };
 
   return (
     <main className="app-shell">
@@ -372,6 +509,10 @@ function App() {
             <div>
               <dt>索引</dt>
               <dd>{logFile ? `${logFile.indexDurationMs} ms` : "-"}</dd>
+            </div>
+            <div>
+              <dt>Marker</dt>
+              <dd>{logFile ? markers.length.toLocaleString() : "-"}</dd>
             </div>
             <div>
               <dt>Fixture</dt>
@@ -434,6 +575,38 @@ function App() {
             </button>
           ) : null}
         </section>
+
+        <section className="panel-section marker-panel">
+          <h2>Marker</h2>
+          {selectedMarker ? (
+            <>
+              <button type="button" className="marker-summary" onClick={() => scrollToLine(selectedMarker.startLine)}>
+                <span className={`marker-dot marker-dot-${selectedMarker.direction.toLowerCase()}`} />
+                <strong>{selectedMarker.title}</strong>
+                <small>
+                  {selectedMarker.direction} · L{selectedMarker.startLine} · {selectedMarker.parseStatus}
+                </small>
+              </button>
+              {!selectedPayload ? <pre className="payload-preview">载入中...</pre> : null}
+              {selectedPayload?.parsedJson ? (
+                <div className="json-tree-viewer">
+                  <JsonView
+                    src={selectedPayload.parsedJson}
+                    collapsed={2}
+                    collapseStringsAfterLength={240}
+                    collapseObjectsAfterLength={80}
+                    enableClipboard
+                  />
+                </div>
+              ) : selectedPayload ? (
+                <pre className="payload-preview">{selectedPayload.rawText || "(empty payload)"}</pre>
+              ) : null}
+              {selectedPayload?.parseError ? <p className="payload-note">{selectedPayload.parseError}</p> : null}
+            </>
+          ) : (
+            <p className="panel-hint">{markers.length > 0 ? "点击右侧 marker 查看消息内容" : "当前文件未识别到消息 marker"}</p>
+          )}
+        </section>
       </aside>
 
       <section className="viewer-area">
@@ -466,7 +639,9 @@ function App() {
                 <div className="visible-lines" style={{ transform: `translateY(${visibleOffset}px)` }}>
                   {renderedLines.map((line) => (
                     <div
-                      className={`log-row${line.text === undefined ? " is-loading" : ""}`}
+                      className={`log-row${line.text === undefined ? " is-loading" : ""}${
+                        visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
+                      }`}
                       key={line.lineNumber}
                     >
                       <span className="line-number">{line.lineNumber}</span>
@@ -476,7 +651,14 @@ function App() {
                 </div>
               </div>
 
-              <canvas className="minimap-placeholder" width="72" height="640" aria-label="minimap placeholder" />
+              <canvas
+                className="minimap-placeholder"
+                ref={minimapRef}
+                width={MINIMAP_WIDTH}
+                height="640"
+                aria-label="marker minimap"
+                onClick={handleMinimapClick}
+              />
             </div>
           ) : (
             <div className="viewer-scroll-space empty-scroll-space">
@@ -487,7 +669,7 @@ function App() {
                 </div>
               </div>
 
-              <canvas className="minimap-placeholder" width="72" height="640" aria-label="minimap placeholder" />
+              <canvas className="minimap-placeholder" width={MINIMAP_WIDTH} height="640" aria-label="minimap placeholder" />
             </div>
           )}
         </div>

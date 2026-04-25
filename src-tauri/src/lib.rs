@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::{BufReader, Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -35,6 +35,8 @@ struct LogSession {
     path: PathBuf,
     file_size: u64,
     line_offsets: Vec<u64>,
+    markers: Vec<LogMarker>,
+    marker_payloads: HashMap<String, MarkerPayload>,
     index_duration_ms: u128,
     ended_with_newline: bool,
 }
@@ -56,6 +58,7 @@ struct LogRefreshMetadata {
     path: String,
     file_size: u64,
     line_count: usize,
+    marker_count: usize,
     appended_bytes: u64,
     appended_lines: usize,
     was_truncated: bool,
@@ -85,6 +88,57 @@ struct LogLineRange {
     line_count: usize,
     total_lines: usize,
     lines: Vec<LogLine>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogMarker {
+    id: String,
+    kind: String,
+    title: String,
+    color: String,
+    start_line: usize,
+    end_line: usize,
+    start_byte: u64,
+    end_byte: u64,
+    line_time: String,
+    direction: String,
+    message_id: u64,
+    message_name: String,
+    parse_status: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkerPayload {
+    marker_id: String,
+    raw_text: String,
+    parse_status: String,
+    parsed_json: Option<serde_json::Value>,
+    parse_error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogMarkerRange {
+    session_id: u64,
+    total_markers: usize,
+    markers: Vec<LogMarker>,
+}
+
+struct MessageHeader {
+    line_time: String,
+    direction: String,
+    message_id: u64,
+    message_name: String,
+}
+
+struct OpenMarker {
+    header: MessageHeader,
+    id: String,
+    start_line: usize,
+    start_byte: u64,
+    body_lines: Vec<String>,
 }
 
 #[tauri::command]
@@ -170,6 +224,72 @@ fn get_log_lines(
 }
 
 #[tauri::command]
+fn get_log_markers(
+    session_id: u64,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    state: tauri::State<'_, AppState>,
+) -> Result<LogMarkerRange, String> {
+    let session = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "log session state is unavailable".to_string())?;
+        Arc::clone(
+            sessions
+                .get(&session_id)
+                .ok_or_else(|| format!("log session {session_id} was not found"))?,
+        )
+    };
+
+    let session = session
+        .lock()
+        .map_err(|_| format!("log session {session_id} is unavailable"))?;
+    let start_line = start_line.unwrap_or(1);
+    let end_line = end_line.unwrap_or(usize::MAX);
+    let markers = session
+        .markers
+        .iter()
+        .filter(|marker| marker.end_line >= start_line && marker.start_line <= end_line)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    Ok(LogMarkerRange {
+        session_id,
+        total_markers: session.markers.len(),
+        markers,
+    })
+}
+
+#[tauri::command]
+fn get_marker_payload(
+    session_id: u64,
+    marker_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<MarkerPayload, String> {
+    let session = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "log session state is unavailable".to_string())?;
+        Arc::clone(
+            sessions
+                .get(&session_id)
+                .ok_or_else(|| format!("log session {session_id} was not found"))?,
+        )
+    };
+
+    let session = session
+        .lock()
+        .map_err(|_| format!("log session {session_id} is unavailable"))?;
+    session
+        .marker_payloads
+        .get(&marker_id)
+        .cloned()
+        .ok_or_else(|| format!("marker {marker_id} was not found"))
+}
+
+#[tauri::command]
 async fn refresh_log_file(
     session_id: u64,
     state: tauri::State<'_, AppState>,
@@ -202,12 +322,15 @@ impl LogSession {
         let file = File::open(&path)?;
         let file_size = file.metadata()?.len();
         let (line_offsets, ended_with_newline) = build_line_index(file, file_size)?;
+        let (markers, marker_payloads) = scan_message_markers(&path, file_size)?;
         let index_duration_ms = started_at.elapsed().as_millis();
 
         Ok(Self {
             path,
             file_size,
             line_offsets,
+            markers,
+            marker_payloads,
             index_duration_ms,
             ended_with_newline,
         })
@@ -225,6 +348,7 @@ impl LogSession {
             self.file_size = new_file_size;
             self.line_offsets = line_offsets;
             self.ended_with_newline = ended_with_newline;
+            self.rebuild_markers()?;
 
             return Ok(self.refresh_metadata(
                 session_id,
@@ -261,6 +385,7 @@ impl LogSession {
 
         self.file_size = new_file_size;
         self.ended_with_newline = buffer.last().is_some_and(|byte| *byte == b'\n');
+        self.rebuild_markers()?;
 
         Ok(self.refresh_metadata(
             session_id,
@@ -282,10 +407,18 @@ impl LogSession {
             path: self.path.to_string_lossy().into_owned(),
             file_size: self.file_size,
             line_count: self.line_offsets.len(),
+            marker_count: self.markers.len(),
             appended_bytes,
             appended_lines,
             was_truncated,
         }
+    }
+
+    fn rebuild_markers(&mut self) -> std::io::Result<()> {
+        let (markers, marker_payloads) = scan_message_markers(&self.path, self.file_size)?;
+        self.markers = markers;
+        self.marker_payloads = marker_payloads;
+        Ok(())
     }
 
     fn read_lines(
@@ -340,6 +473,192 @@ impl LogSession {
             lines,
         })
     }
+}
+
+fn scan_message_markers(
+    path: &PathBuf,
+    file_size: u64,
+) -> std::io::Result<(Vec<LogMarker>, HashMap<String, MarkerPayload>)> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::with_capacity(1024 * 1024, file);
+    let mut raw_line = Vec::new();
+    let mut line_number = 0_usize;
+    let mut byte_offset = 0_u64;
+    let mut next_marker_index = 1_usize;
+    let mut open_marker: Option<OpenMarker> = None;
+    let mut markers = Vec::new();
+    let mut payloads = HashMap::new();
+
+    loop {
+        raw_line.clear();
+        let read_count = reader.read_until(b'\n', &mut raw_line)?;
+        if read_count == 0 {
+            break;
+        }
+
+        line_number += 1;
+        let line_start_byte = byte_offset;
+        let line_end_byte = line_start_byte + read_count as u64;
+        byte_offset = line_end_byte;
+        let line_text = decode_log_line(&raw_line);
+
+        if let Some(header) = parse_message_header(&line_text) {
+            if let Some(current) = open_marker.take() {
+                close_message_marker(
+                    current,
+                    line_number.saturating_sub(1),
+                    line_start_byte,
+                    &mut markers,
+                    &mut payloads,
+                );
+            }
+
+            let marker_id = format!("message-{next_marker_index}");
+            next_marker_index += 1;
+            open_marker = Some(OpenMarker {
+                header,
+                id: marker_id,
+                start_line: line_number,
+                start_byte: line_start_byte,
+                body_lines: Vec::new(),
+            });
+            continue;
+        }
+
+        if is_message_separator(&line_text) {
+            if let Some(current) = open_marker.take() {
+                close_message_marker(current, line_number, line_end_byte, &mut markers, &mut payloads);
+                continue;
+            }
+        }
+
+        if let Some(current) = open_marker.as_mut() {
+            current.body_lines.push(line_text);
+        }
+    }
+
+    if let Some(current) = open_marker.take() {
+        close_message_marker(current, line_number, file_size, &mut markers, &mut payloads);
+    }
+
+    Ok((markers, payloads))
+}
+
+fn close_message_marker(
+    marker: OpenMarker,
+    end_line: usize,
+    end_byte: u64,
+    markers: &mut Vec<LogMarker>,
+    payloads: &mut HashMap<String, MarkerPayload>,
+) {
+    let raw_text = trim_body_lines(&marker.body_lines);
+    let parsed_json = serde_json::from_str::<serde_json::Value>(&raw_text);
+    let (parse_status, parsed_json, parse_error) = match parsed_json {
+        Ok(value) => ("ok".to_string(), Some(value), None),
+        Err(err) if raw_text.trim().is_empty() => ("raw".to_string(), None, None),
+        Err(err) => ("raw".to_string(), None, Some(err.to_string())),
+    };
+    let color = if marker.header.direction == "Receive" {
+        "#4da3ff"
+    } else {
+        "#42c77a"
+    };
+
+    payloads.insert(
+        marker.id.clone(),
+        MarkerPayload {
+            marker_id: marker.id.clone(),
+            raw_text,
+            parse_status: parse_status.clone(),
+            parsed_json,
+            parse_error,
+        },
+    );
+
+    markers.push(LogMarker {
+        id: marker.id,
+        kind: "message".to_string(),
+        title: format!(
+            "[{}] {}",
+            marker.header.message_id, marker.header.message_name
+        ),
+        color: color.to_string(),
+        start_line: marker.start_line,
+        end_line,
+        start_byte: marker.start_byte,
+        end_byte,
+        line_time: marker.header.line_time,
+        direction: marker.header.direction,
+        message_id: marker.header.message_id,
+        message_name: marker.header.message_name,
+        parse_status,
+    });
+}
+
+fn parse_message_header(line: &str) -> Option<MessageHeader> {
+    let (line_time, content) = line.split_once('\t')?;
+    if !is_hhmmss(line_time) {
+        return None;
+    }
+
+    let content = content.trim();
+    let content = content.trim_matches('=').trim();
+    let (direction, rest) = if let Some(rest) = content.strip_prefix("Receive Message ([") {
+        ("Receive", rest)
+    } else if let Some(rest) = content.strip_prefix("Send Message ([") {
+        ("Send", rest)
+    } else {
+        return None;
+    };
+    let (message_id, rest) = rest.split_once(']')?;
+    let message_id = message_id.parse::<u64>().ok()?;
+    let rest = rest.trim_start();
+    let (message_name, _) = rest.split_once(')')?;
+    let message_name = message_name.trim();
+    if message_name.is_empty() {
+        return None;
+    }
+
+    Some(MessageHeader {
+        line_time: line_time.to_string(),
+        direction: direction.to_string(),
+        message_id,
+        message_name: message_name.to_string(),
+    })
+}
+
+fn is_hhmmss(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 8
+        && bytes[2] == b':'
+        && bytes[5] == b':'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 2 || index == 5 || byte.is_ascii_digit())
+}
+
+fn is_message_separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.len() >= 12 && trimmed.bytes().all(|byte| byte == b'=')
+}
+
+fn decode_log_line(raw_line: &[u8]) -> String {
+    let line = raw_line.strip_suffix(b"\n").unwrap_or(raw_line);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    String::from_utf8_lossy(line).into_owned()
+}
+
+fn trim_body_lines(lines: &[String]) -> String {
+    let mut start = 0;
+    let mut end = lines.len();
+    while start < end && lines[start].trim().is_empty() {
+        start += 1;
+    }
+    while end > start && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    lines[start..end].join("\n")
 }
 
 fn build_line_index(file: File, file_size: u64) -> std::io::Result<(Vec<u64>, bool)> {
@@ -447,6 +766,8 @@ pub fn run() {
             open_log_file,
             generate_log_fixture,
             get_log_lines,
+            get_log_markers,
+            get_marker_payload,
             refresh_log_file
         ])
         .run(tauri::generate_context!())
@@ -547,6 +868,104 @@ mod tests {
         assert_eq!(metadata.line_count, 1);
         assert_eq!(range.lines[0].text, "fresh");
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn extracts_send_and_receive_message_markers() {
+        let path = test_file_path("messages.log");
+        fs::write(
+            &path,
+            concat!(
+                "13:05:41\t========= Send Message ([10] GETSERVER) [05:05:41] =========\n",
+                "{\n",
+                "    \"AppVersion\": 300\n",
+                "}\n",
+                "============================================\n",
+                "\n",
+                "13:05:42\tOpenUI\tUIShield\n",
+                "13:05:42\t========= Receive Message ([43] S_LOGIN_RESULT) [05:05:42] =========\n",
+                "\n",
+                "13:05:42\tGOT LOGIN RESPOSE\t1\n",
+            ),
+        )
+        .unwrap();
+
+        let session = LogSession::open(path.clone()).unwrap();
+
+        assert_eq!(session.markers.len(), 2);
+        assert_eq!(session.markers[0].title, "[10] GETSERVER");
+        assert_eq!(session.markers[0].direction, "Send");
+        assert_eq!(session.markers[0].start_line, 1);
+        assert_eq!(session.markers[0].end_line, 5);
+        assert_eq!(session.markers[0].parse_status, "ok");
+        assert_eq!(session.markers[1].title, "[43] S_LOGIN_RESULT");
+        assert_eq!(session.markers[1].parse_status, "raw");
+
+        let payload = session
+            .marker_payloads
+            .get(&session.markers[0].id)
+            .expect("payload exists");
+        assert_eq!(payload.parsed_json.as_ref().unwrap()["AppVersion"], 300);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn keeps_multiline_csv_message_as_raw_payload() {
+        let path = test_file_path("csv-message.log");
+        fs::write(
+            &path,
+            concat!(
+                "13:05:42\t========= Receive Message ([342] S_GET_CSVFILE_RESULT) [21:07:24, 0.058000] =========\n",
+                "{\n",
+                "    \"File\": {\n",
+                "        \"Data\": \"A,B\n",
+                "1,2\n",
+                "\",\n",
+                "        \"Info\": {\"Filename\": \"BadJsonCsv.csv\"}\n",
+                "    },\n",
+                "    \"Result\": 1\n",
+                "}\n",
+                "============================================\n",
+            ),
+        )
+        .unwrap();
+
+        let session = LogSession::open(path.clone()).unwrap();
+
+        assert_eq!(session.markers.len(), 1);
+        assert_eq!(session.markers[0].message_id, 342);
+        assert_eq!(session.markers[0].parse_status, "raw");
+        let payload = session
+            .marker_payloads
+            .get(&session.markers[0].id)
+            .expect("payload exists");
+        assert!(payload.raw_text.contains("BadJsonCsv.csv"));
+        assert!(payload.parse_error.is_some());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn scans_real_game_log_when_available() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("com.sevenpirates.monster.gameLog.log");
+        if !path.exists() {
+            return;
+        }
+
+        let session = LogSession::open(path).unwrap();
+
+        assert!(session.markers.len() >= 100);
+        assert!(session
+            .markers
+            .iter()
+            .any(|marker| marker.message_id == 342
+                && marker.message_name == "S_GET_CSVFILE_RESULT"));
+        assert!(session
+            .markers
+            .iter()
+            .any(|marker| marker.message_id == 42 && marker.message_name == "LOGIN"));
     }
 
     #[test]

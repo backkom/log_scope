@@ -67,12 +67,12 @@ button:disabled {
 .source-panel {
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: 16px;
   min-height: 0;
   overflow-y: auto;
   border-right: 1px solid #d9dee2;
   background: #ffffff;
-  padding: 24px;
+  padding: 18px;
 }
 
 .brand {
@@ -104,7 +104,7 @@ button:disabled {
 
 .panel-section {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .panel-section h2 {
@@ -164,7 +164,7 @@ button:disabled {
 
 .status-list {
   display: grid;
-  gap: 10px;
+  gap: 6px;
   margin: 0;
 }
 
@@ -284,6 +284,15 @@ button:disabled {
   white-space: nowrap;
 }
 
+.log-row.has-marker .line-number,
+.log-row.has-marker code {
+  background: #31372f;
+}
+
+.log-row.has-marker .line-number {
+  color: #c4d2c4;
+}
+
 .empty-state {
   display: grid;
   align-content: center;
@@ -315,6 +324,108 @@ button:disabled {
   background:
     linear-gradient(var(--log-viewer-grid) 1px, transparent 1px) 0 0 / 100% 12px,
     var(--log-viewer-bg);
+}
+
+.minimap-placeholder:not(:disabled) {
+  cursor: crosshair;
+}
+
+.marker-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.marker-summary {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 4px 8px;
+  align-items: center;
+  min-height: 44px;
+  border: 1px solid #dce2e5;
+  border-radius: 7px;
+  background: #f7faf9;
+  color: #273137;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.marker-summary strong,
+.marker-summary small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marker-summary small {
+  grid-column: 2;
+  color: #69757c;
+}
+
+.marker-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+}
+
+.marker-dot-receive {
+  background: #4da3ff;
+}
+
+.marker-dot-send {
+  background: #42c77a;
+}
+
+.payload-preview {
+  min-height: 220px;
+  max-height: none;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid #dce2e5;
+  border-radius: 7px;
+  background: #182125;
+  color: #dfe8e6;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 10px;
+  white-space: pre;
+}
+
+.json-tree-viewer {
+  min-height: 220px;
+  overflow: auto;
+  border: 1px solid #dce2e5;
+  border-radius: 7px;
+  background: #182125;
+  padding: 10px;
+}
+
+.json-tree-viewer .json-view {
+  background: transparent;
+  color: #dfe8e6;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  --json-property: #79d39a;
+  --json-index: #8db7ff;
+  --json-number: #8db7ff;
+  --json-string: #f0bd7a;
+  --json-boolean: #ff8eb3;
+  --json-null: #ff8eb3;
+}
+
+.payload-note,
+.panel-hint {
+  margin: 0;
+  color: #69757c;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.payload-note {
+  color: #9d5d25;
 }
 
 .error-message {

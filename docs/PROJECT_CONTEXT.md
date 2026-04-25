@@ -152,6 +152,16 @@ Rust core 负责：
 - 当前文件索引在 Tauri async blocking 线程池中构建，并返回索引耗时；后续 100 MB 以上体验优化应继续补充进度状态和取消。
 - 阶段 2 第一版使用前端定时调用 `refresh_log_file` 的轮询模型，而不是直接引入平台文件 watcher；该方案优先保证 Windows/macOS 行为一致，后续如轮询成本或延迟不可接受再替换为 watcher。
 
+阶段 3 第一版当前实现：
+
+- Rust command `get_log_markers(sessionId, startLine?, endLine?)` 返回当前 session 的 marker 摘要，可按行范围过滤。
+- Rust command `get_marker_payload(sessionId, markerId)` 按需返回 marker body；前端不在 marker 摘要中持有完整 payload。
+- 当前已实现 `Send Message` / `Receive Message` 网络消息块提取，字段包括 `direction`、`message_id`、`message_name`、起止行号、起止字节偏移、颜色和 JSON 解析状态。
+- 消息块结束规则：优先遇到 `============================================` 分隔线结束；若缺少分隔线，则遇到下一条消息 header 前结束；文件结尾仍会关闭当前块。
+- 消息 body 尝试按严格 JSON 解析；解析失败时保留 raw text 并标记 `parse_status = raw`，不影响 marker 生成。
+- 前端右侧 minimap 第一版使用 Canvas 绘制 marker 点，点击 marker 后跳转到对应行并加载 payload；可见行中的 marker 起始行会做轻量背景标记。
+- 当前 marker 索引在打开文件后构建；文件追加或截断刷新后会重建 marker 索引。该方案先保证正确性，后续高频 tail 压测如暴露成本，再改为增量 marker 扫描。
+
 ## Socket 协议方向
 
 Socket 协议尚未最终确定，但优先使用 framed protocol，而不是无边界的裸文本流。
@@ -227,12 +237,43 @@ viewer 应该：
 
 某些 log 行包含特殊标记，可以从中解析 JSON 数据。
 
+阶段 3 需要优先支持“多行消息事件”提取，典型格式如下：
+
+- header 行包含时间、方向、消息 ID 和消息名，例如 `13:05:42	========= Receive Message ([342] S_GET_CSVFILE_RESULT) ... =========`。
+- 消息体从 header 后一行开始，到下一条 header 前结束。
+- header 中至少提取 `direction`、`message_id`、`message_name`、起始行号和字节偏移；消息体优先按 JSON 解析，解析失败时仍保留原始文本并生成诊断状态。
+
+marker 规则应设计成可配置的“分层事件提取器”，而不是只内置单一语法：
+
+- `start_pattern`：用户可配置的 header 正则，使用命名捕获组提取字段。
+- `body_strategy`：第一版支持 `until_next_start`，即消息体延续到下一条 header 前。
+- `body_parser`：第一版支持 `json` 和 `text`；JSON 可以是 pretty-printed 多行对象。
+- `field_mapping`：把正则捕获组映射到标准字段，例如 `message_id`、`message_name`、`direction`、`timestamp`。
+- `marker_type/color`：可根据方向、消息名、ID 范围或用户规则映射。
+
+内置默认规则建议覆盖 `Send Message` / `Receive Message` 格式：
+
+```text
+^(?<line_time>\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)\s+=+\s*(?<direction>Receive|Send)\s+Message\s*\(\[(?<message_id>\d+)\]\s*(?<message_name>[^)\]]+?)\)\s*(?<meta>\[[^\]]*\])?\s*=+\s*$
+```
+
+真实游戏日志中消息块会和普通日志混排。已确认的形态包括：
+
+- 时间戳普通单行日志，例如初始化、网络状态、UI 打开、错误提示。
+- 单行 JSON 事件，例如包含 `event_name` 的埋点日志。
+- 以时间戳行开头、后续不带时间戳的多行块，例如 `ChangeState ... { ... }`、`_CheckProducts [`、`DataPatch: ...`。
+- Lua `stack traceback:` 多行错误堆栈。
+- 很长的 HTML/文本响应，可能跨多行且不适合作为 JSON 解析。
+- Unity 富文本包裹的 JSON，例如 `<color=red>{ ... }</color>`。
+- `Send Message` / `Receive Message` 消息块通常以一行 `============================================` 分隔，但解析不应只依赖该分隔线；下一条 header 仍应作为可靠结束边界。
+
+因此阶段 3 的解析必须保持“原始行索引是主数据，结构化事件是旁路索引”的模型：任何规则无法识别或解析失败的内容都继续作为普通 log 行展示，不丢弃、不阻塞 viewer。第一版只对高价值结构生成 marker：网络消息、可解析 JSON 行/块、错误堆栈和可配置关键字；普通日志只用于文本展示和搜索。
+
 尚未确定的设计点：
 
-- 特殊 marker 的精确语法。
-- JSON payload 是嵌在文本行中，还是通过 frame metadata 传递。
-- marker type 到颜色/形状的映射规则。
-- JSON 解析失败时是否生成 warning marker。
+- 规则配置文件格式和 UI 编辑方式。
+- marker type 到颜色/形状的完整映射规则。
+- JSON 解析失败时诊断 marker 的展示细节。
 
 第一版应做到：
 
