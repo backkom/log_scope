@@ -1,4 +1,8 @@
 :root {
+  --log-viewer-bg: rgb(40, 41, 35);
+  --log-viewer-grid: #4c5046;
+  --log-viewer-scrollbar: #6f7568;
+
   color: #1e2428;
   background: #f4f6f7;
   font-family:
@@ -168,6 +172,7 @@ button:disabled {
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
+  background: var(--log-viewer-bg);
 }
 
 .viewer-toolbar {
@@ -195,14 +200,15 @@ button:disabled {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  background: rgb(40, 41, 35);
-  scrollbar-color: #6f7568 rgb(40, 41, 35);
+  background: var(--log-viewer-bg);
+  scrollbar-color: var(--log-viewer-scrollbar) var(--log-viewer-bg);
 }
 
 .viewer-scroll-space {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 72px;
   min-height: 100%;
+  background: var(--log-viewer-bg);
 }
 
 .empty-scroll-space {
@@ -216,12 +222,12 @@ button:disabled {
   min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  background: rgb(40, 41, 35);
+  background: var(--log-viewer-bg);
   color: #d8dee3;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 13px;
   line-height: 24px;
-  scrollbar-color: #6f7568 rgb(40, 41, 35);
+  scrollbar-color: var(--log-viewer-scrollbar) var(--log-viewer-bg);
 }
 
 .empty-scroll-space .log-viewport {
@@ -233,6 +239,7 @@ button:disabled {
   position: relative;
   width: max-content;
   min-width: 100%;
+  background: var(--log-viewer-bg);
 }
 
 .log-row {
@@ -240,13 +247,14 @@ button:disabled {
   grid-template-columns: 64px minmax(0, 1fr);
   height: 24px;
   min-width: max-content;
+  background: var(--log-viewer-bg);
 }
 
 .line-number {
   position: sticky;
   left: 0;
   padding-right: 14px;
-  background: rgb(40, 41, 35);
+  background: var(--log-viewer-bg);
   color: rgb(144, 145, 139);
   text-align: right;
   user-select: none;
@@ -255,18 +263,9 @@ button:disabled {
 .log-row code {
   overflow: hidden;
   padding: 0 16px;
+  background: var(--log-viewer-bg);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.log-row.is-loading code::before {
-  display: block;
-  width: min(360px, 42vw);
-  height: 8px;
-  margin-top: 8px;
-  border-radius: 999px;
-  background: #4e5247;
-  content: "";
 }
 
 .empty-state {
@@ -298,8 +297,8 @@ button:disabled {
   max-height: 100%;
   border-left: 1px solid #565a4f;
   background:
-    linear-gradient(#4c5046 1px, transparent 1px) 0 0 / 100% 12px,
-    rgb(40, 41, 35);
+    linear-gradient(var(--log-viewer-grid) 1px, transparent 1px) 0 0 / 100% 12px,
+    var(--log-viewer-bg);
 }
 
 .error-message {
