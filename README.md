@@ -11,4 +11,5 @@ micromap/minimap 概念和查找/导航体验。
 项目记忆和后续 AI 工作入口：
 
 - [项目上下文](docs/PROJECT_CONTEXT.md)
+- [实现计划](docs/IMPLEMENTATION_PLAN.md)
 - [AI / Agent 工作说明](AGENTS.md)

@@ -4,6 +4,8 @@
 
 本文档是 `log_scope` 的长期项目记忆。后续 AI agent 和开发者在做项目决策前应先阅读本文档；当需求、架构、取舍或实现细节发生变化时，必须同步更新本文档。
 
+分阶段实现计划见 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)。后续实现应优先按该计划拆分小步交付，并在实际约束变化时同步更新计划和本文档。
+
 ## 产品目标
 
 构建一个面向 Windows 和 macOS 的高性能、只读 log 可视化桌面工具。
@@ -260,6 +262,7 @@ viewer 应该：
 
 开始实现后：
 
+- 首个开发切片建议优先完成 Tauri + TypeScript 前端 + Rust command 的最小闭环，再进入 tail、marker、搜索和 socket。
 - 尽早加入 benchmark fixture 生成器。
 - 尽早加入可重复的性能测试路径。
 - Rust core 与前端之间的 API 要清晰、显式、可版本化。
