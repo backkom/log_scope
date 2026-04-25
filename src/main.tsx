@@ -354,6 +354,19 @@ function App() {
     setPendingTailLines(0);
   };
 
+  const scrollToLineCentered = React.useCallback(
+    (line: number) => {
+      if (!logFile || !viewportRef.current) {
+        return;
+      }
+      const safeLine = Math.min(Math.max(1, line), Math.max(logFile.lineCount, 1));
+      const centeredScrollTop = (safeLine - 1) * ROW_HEIGHT - Math.max(0, viewportHeight - ROW_HEIGHT) / 2;
+      viewportRef.current.scrollTop = Math.max(0, centeredScrollTop);
+      setPendingTailLines(0);
+    },
+    [logFile, viewportHeight],
+  );
+
   const selectMarker = React.useCallback(
     async (marker: LogMarker) => {
       if (!logFile) {
@@ -361,7 +374,7 @@ function App() {
       }
       setSelectedMarker(marker);
       setSelectedPayload(null);
-      scrollToLine(marker.startLine);
+      scrollToLineCentered(marker.startLine);
       try {
         const payload = await invoke<MarkerPayload>("get_marker_payload", {
           sessionId: logFile.sessionId,
@@ -373,7 +386,7 @@ function App() {
         setError(String(err));
       }
     },
-    [logFile],
+    [logFile, scrollToLineCentered],
   );
 
   const jumpToInputLine = (event: React.FormEvent<HTMLFormElement>) => {
@@ -446,14 +459,9 @@ function App() {
     context.clearRect(0, 0, width, GLOBAL_MINIMAP_HEIGHT);
     context.fillStyle = "rgb(40, 41, 35)";
     context.fillRect(0, 0, width, GLOBAL_MINIMAP_HEIGHT);
-    context.strokeStyle = "#4c5046";
-    context.lineWidth = 1;
-    for (let x = 0; x < width; x += 48) {
-      context.beginPath();
-      context.moveTo(x + 0.5, 0);
-      context.lineTo(x + 0.5, GLOBAL_MINIMAP_HEIGHT);
-      context.stroke();
-    }
+
+    const frame = getGlobalMinimapFrame(firstVisibleLine, viewportLineCount, logFile.lineCount, width);
+    drawViewportFrame(context, frame.left, 0, frame.width, GLOBAL_MINIMAP_HEIGHT, "#ff5a5f");
 
     for (const marker of markers) {
       const point = markerGlobalMinimapPoint(marker, logFile.lineCount, width, GLOBAL_MINIMAP_HEIGHT);
@@ -466,7 +474,7 @@ function App() {
         context.fill();
       }
     }
-  }, [globalMinimapWidth, logFile, markers, selectedMarker?.id]);
+  }, [firstVisibleLine, globalMinimapWidth, logFile, markers, selectedMarker?.id, viewportLineCount]);
 
   React.useEffect(() => {
     const canvas = localMinimapRef.current;
@@ -488,14 +496,9 @@ function App() {
     context.clearRect(0, 0, MINIMAP_WIDTH, height);
     context.fillStyle = "rgb(40, 41, 35)";
     context.fillRect(0, 0, MINIMAP_WIDTH, height);
-    context.strokeStyle = "#4c5046";
-    context.lineWidth = 1;
-    for (let y = 0; y < height; y += 12) {
-      context.beginPath();
-      context.moveTo(0, y + 0.5);
-      context.lineTo(MINIMAP_WIDTH, y + 0.5);
-      context.stroke();
-    }
+
+    const frame = getRightMinimapFrame(firstVisibleLine, viewportLineCount, logFile.lineCount, height);
+    drawViewportFrame(context, 0, frame.top, MINIMAP_WIDTH, frame.height);
 
     for (const marker of markers) {
       if (marker.startLine < rightMinimapRange.startLine || marker.startLine > rightMinimapRange.endLine) {
@@ -512,9 +515,6 @@ function App() {
         context.fill();
       }
     }
-
-    const frame = getRightMinimapFrame(firstVisibleLine, viewportLineCount, logFile.lineCount, height);
-    drawViewportFrame(context, frame.top, frame.height);
   }, [firstVisibleLine, logFile, markers, rightMinimapRange, selectedMarker?.id, viewportHeight, viewportLineCount]);
 
   const handleGlobalMinimapClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -547,6 +547,20 @@ function App() {
 
     const rect = event.currentTarget.getBoundingClientRect();
     const y = event.clientY - rect.top;
+    const x = event.clientX - rect.left;
+    const nearest = markers
+      .filter((marker) => marker.startLine >= rightMinimapRange.startLine && marker.startLine <= rightMinimapRange.endLine)
+      .map((marker) => ({
+        marker,
+        distance: distanceToRightMarker(marker, rightMinimapRange.startLine, rightMinimapRange.lineCount, rect.height, x, y),
+      }))
+      .sort((left, right) => left.distance - right.distance)[0];
+
+    if (nearest && nearest.distance <= 12) {
+      void selectMarker(nearest.marker);
+      return;
+    }
+
     const frame = getRightMinimapFrame(firstVisibleLine, viewportLineCount, logFile.lineCount, rect.height);
     if (y >= frame.top && y <= frame.top + frame.height) {
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -879,6 +893,13 @@ function getRightMinimapFrame(
   return { top, height: frameHeight };
 }
 
+function getGlobalMinimapFrame(firstVisibleLine: number, viewportLineCount: number, totalLines: number, width: number) {
+  const safeTotalLines = Math.max(1, totalLines);
+  const left = Math.max(0, Math.min(width, ((firstVisibleLine - 1) / safeTotalLines) * width));
+  const frameWidth = Math.max(1, Math.min(width - left, (viewportLineCount / safeTotalLines) * width));
+  return { left, width: frameWidth };
+}
+
 function markerGlobalMinimapPoint(marker: LogMarker, totalLines: number, width: number, height: number) {
   const margin = 7;
   const usableHeight = height - margin * 2;
@@ -916,15 +937,36 @@ function distanceToGlobalMarker(
   return Math.hypot(point.x - x, point.y - y);
 }
 
-function drawViewportFrame(context: CanvasRenderingContext2D, top: number, height: number) {
+function distanceToRightMarker(
+  marker: LogMarker,
+  rangeStartLine: number,
+  rangeLineCount: number,
+  height: number,
+  x: number,
+  y: number,
+) {
+  const point = markerRightMinimapPoint(marker, rangeStartLine, rangeLineCount, height);
+  return Math.hypot(point.x - x, point.y - y);
+}
+
+function drawViewportFrame(
+  context: CanvasRenderingContext2D,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  strokeStyle?: string,
+) {
   context.save();
   context.fillStyle = "rgba(219, 235, 224, 0.08)";
-  context.strokeStyle = "#dbeee5";
-  context.lineWidth = 1.5;
-  context.beginPath();
-  context.roundRect(5, top + 0.75, MINIMAP_WIDTH - 10, Math.max(1, height - 1.5), 4);
-  context.fill();
-  context.stroke();
+  const safeWidth = Math.max(1, width);
+  const safeHeight = Math.max(1, height);
+  context.fillRect(left, top, safeWidth, safeHeight);
+  if (strokeStyle) {
+    context.strokeStyle = strokeStyle;
+    context.lineWidth = 1.5;
+    context.strokeRect(left + 0.75, top + 0.75, Math.max(1, safeWidth - 1.5), Math.max(1, safeHeight - 1.5));
+  }
   context.restore();
 }
 

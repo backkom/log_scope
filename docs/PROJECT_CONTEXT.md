@@ -55,10 +55,13 @@
 - 展示从 log 中提炼出的语义信息。
 - 某些带特殊标记的行可以解析出 JSON 数据。
 - 这些特殊行应以不同颜色的符号展示，例如小圆点。
-- 右侧 minimap 的视口矩形高度固定为 minimap 可见高度的 1/8，因此右侧 minimap 当前展示范围为 8 个当前视口高度的 log 区间。矩形在该区间顶部时其上边与滑动轨道上边对齐，在该区间底部时其下边与滑动轨道下边对齐。
+- minimap 不显示网格底纹；顶部全局 marker 条和右侧 minimap 与其它视图之间保留清晰分隔线。
+- 顶部全局 marker 条和右侧 minimap 都需要显示当前视口对应的半透明矩形。顶部矩形需要红色线框以增强可见性，宽度由当前视口行数决定，视口越高则覆盖的 log 行数越多、矩形越宽；右侧矩形保持无边线。
+- 右侧 minimap 的视口矩形高度固定为 minimap 可见高度的 1/8，因此右侧 minimap 当前展示范围为 8 个当前视口高度的 log 区间。矩形贴边绘制、无外边距；矩形在该区间顶部时其上边与滑动轨道上边对齐，在该区间底部时其下边与滑动轨道下边对齐。
 - 按住右侧 minimap 视口矩形拖动时，行为必须等同于拖动全文件滚动条滑块：矩形 top 在整个轨道中的比例映射到整个 log 的可滚动范围；手动滚动 viewer 时，矩形位置必须按同一比例同步更新。
 - 在右侧 minimap 视口矩形内点击不改变视口；点击矩形上方让 viewer 向上移动一个当前视口范围，点击矩形下方让 viewer 向下移动一个当前视口范围。
 - 右侧 minimap 内 marker 的纵向位置必须按该 8 个视口的当前展示范围连续计算，而不是按整个 log 或固定块计算；拖动滑块时 marker 位置要随视口变化同步更新。顶部全局 marker 条继续负责展示整个 log 的全局 marker 分布。
+- 点击顶部全局 marker 条或右侧 minimap 中的 marker 时，统一选中 marker、加载 payload，并将该 marker 起始行居中到 viewer；此时右侧 minimap 不再额外执行翻页或拖动响应。
 - 点击语义小圆点后，以 JSON viewer 展示对应解析数据。
 
 ## 架构决策
@@ -164,7 +167,7 @@ Rust core 负责：
 - 消息 body 尝试按严格 JSON 解析；解析失败时保留 raw text 并标记 `parse_status = raw`，不影响 marker 生成。
 - 消息 marker 的颜色由 `message_id` 通过稳定 hash 计算得到，同一个消息 ID 在多次运行中应得到同一个颜色。
 - 消息 marker 在 minimap 横向位置由 `message_id / max_message_id` 决定，`max_message_id` 使用当前 session 已识别消息中的最大 ID；同一个消息 ID 在同一个 session 中应保持同一横向位置。
-- 前端 minimap 使用两张 Canvas：顶部全局 marker 条横向映射整个 log 的行号范围；右侧 minimap 按当前 8 个视口高度的连续局部范围纵向映射 marker。消息 marker 使用三角形，`Receive` 和 `Send` 使用不同朝向；其他 marker 使用圆点。顶部全局 marker 条点击 marker 后跳转到对应行并加载 payload；可见行中的 marker 起始行会做轻量背景标记。
+- 前端 minimap 使用两张 Canvas：顶部全局 marker 条横向映射整个 log 的行号范围，并绘制当前视口对应的红色线框矩形；右侧 minimap 按当前 8 个视口高度的连续局部范围纵向映射 marker，并绘制贴边、无边线的视口矩形。消息 marker 使用三角形，`Receive` 和 `Send` 使用不同朝向；其他 marker 使用圆点。点击任一 minimap 中的 marker 后，viewer 将 marker 起始行居中并加载 payload；可见行中的 marker 起始行会做轻量背景标记。
 - 右侧 minimap 同时维护两个坐标系：
   - 滑块坐标系：矩形高度固定为 Canvas 高度的 1/8；矩形 top 在整个轨道中的比例映射为全文件 viewer 可滚动范围。拖动矩形只使用全文件范围，不受右侧当前 marker 展示范围限制。
   - Marker 坐标系：右侧 Canvas 展示一个连续的 8 视口窗口。该窗口由当前 `firstVisibleLine` 和全文件滚动比例共同计算，使当前视口范围映射到矩形框内部；marker 只在落入该窗口时绘制，并按窗口内相对行号映射到纵向位置。
