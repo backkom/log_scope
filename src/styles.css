@@ -237,6 +237,24 @@ button:disabled {
   scrollbar-color: var(--log-viewer-scrollbar) var(--log-viewer-bg);
 }
 
+.viewer-layout::-webkit-scrollbar,
+.log-viewport::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.viewer-layout::-webkit-scrollbar-track,
+.log-viewport::-webkit-scrollbar-track {
+  background: var(--log-viewer-bg);
+}
+
+.viewer-layout::-webkit-scrollbar-thumb,
+.log-viewport::-webkit-scrollbar-thumb {
+  border: 3px solid var(--log-viewer-bg);
+  border-radius: 999px;
+  background: var(--log-viewer-scrollbar);
+}
+
 .viewer-scroll-space {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 72px;

@@ -199,6 +199,7 @@ viewer 应该：
 - 阶段 1 前端固定行高为 24px，滚动时按可见区高度和 overscan 计算 `get_log_lines` 请求范围。
 - 阶段 1 前端维护有界行缓存，快速滚动时先渲染目标行号和占位行，待 Rust 返回后逐行填充；不缓存完整文件内容。
 - 应用根布局固定在 100vh 内，左侧操作栏和右侧 viewer 分别滚动，避免滚动 log 时带动操作栏；右侧 viewer 外层只负责纵向滚动，滚动条位于 minimap 右侧；log 文本列内部独立负责横向滚动，minimap 不参与横向滚动上下文。
+- viewer 纵向滚动条和 log 文本横向滚动条的轨道背景必须与 log 文本背景色一致，避免在深色文本区右侧或底部露出平台默认浅色滚动槽。
 - 快速滚动时，viewer 外层滚动空间、sticky viewport、可见行容器、行号 gutter 和占位行都必须铺固定深色背景，避免数据尚未刷新时露出默认白底；占位行不显示横向 skeleton 条，以免加载延迟被放大成闪屏。
 - viewer 滚动空间必须至少覆盖当前 viewport，并在文本总高度后保留一行底部余量，避免短文件或滚动到底时最后一行被 sticky/overflow 边界裁剪。
 - 大文件默认关闭自动换行，参考 CudaText 的降级思想。
@@ -335,6 +336,7 @@ marker 规则应设计成可配置的“分层事件提取器”，而不是只�
 - 首个开发切片建议优先完成 Tauri + TypeScript 前端 + Rust command 的最小闭环，再进入 tail、marker、搜索和 socket。
 - 阶段 0 已采用 Tauri 2 + Vite + React + TypeScript 骨架；前端通过 `@tauri-apps/api/core` 调用 Rust command。
 - 前端包管理器使用 Yarn 1.x；Tauri dev/build 前置命令使用 `yarn dev` 和 `yarn build`。
+- 以`yarn run check`代替`yarn check`来执行包检查。
 - VS Code 调试入口为 `.vscode/launch.json` 中的 `Tauri Dev: log_scope`，本质是在工作区根目录执行 `yarn tauri:dev`。
 - 当前 Rust command 包含 `health_check`、`open_file_placeholder`、`open_log_file`、`get_log_lines`；文件查看主链路应优先使用后两个接口。
 - 尽早加入 benchmark fixture 生成器。
