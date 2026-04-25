@@ -105,6 +105,7 @@ struct LogMarker {
     direction: String,
     message_id: u64,
     message_name: String,
+    lane_ratio: f64,
     parse_status: String,
 }
 
@@ -139,6 +140,17 @@ struct OpenMarker {
     start_line: usize,
     start_byte: u64,
     body_lines: Vec<String>,
+}
+
+struct OpenTextBlock {
+    id: String,
+    kind: String,
+    title: String,
+    color: String,
+    line_time: String,
+    start_line: usize,
+    start_byte: u64,
+    lines: Vec<String>,
 }
 
 #[tauri::command]
@@ -322,7 +334,7 @@ impl LogSession {
         let file = File::open(&path)?;
         let file_size = file.metadata()?.len();
         let (line_offsets, ended_with_newline) = build_line_index(file, file_size)?;
-        let (markers, marker_payloads) = scan_message_markers(&path, file_size)?;
+        let (markers, marker_payloads) = scan_log_markers(&path, file_size)?;
         let index_duration_ms = started_at.elapsed().as_millis();
 
         Ok(Self {
@@ -415,7 +427,7 @@ impl LogSession {
     }
 
     fn rebuild_markers(&mut self) -> std::io::Result<()> {
-        let (markers, marker_payloads) = scan_message_markers(&self.path, self.file_size)?;
+        let (markers, marker_payloads) = scan_log_markers(&self.path, self.file_size)?;
         self.markers = markers;
         self.marker_payloads = marker_payloads;
         Ok(())
@@ -475,7 +487,7 @@ impl LogSession {
     }
 }
 
-fn scan_message_markers(
+fn scan_log_markers(
     path: &PathBuf,
     file_size: u64,
 ) -> std::io::Result<(Vec<LogMarker>, HashMap<String, MarkerPayload>)> {
@@ -486,6 +498,8 @@ fn scan_message_markers(
     let mut byte_offset = 0_u64;
     let mut next_marker_index = 1_usize;
     let mut open_marker: Option<OpenMarker> = None;
+    let mut open_stack: Option<OpenTextBlock> = None;
+    let mut open_change_state: Option<OpenTextBlock> = None;
     let mut markers = Vec::new();
     let mut payloads = HashMap::new();
 
@@ -501,6 +515,30 @@ fn scan_message_markers(
         let line_end_byte = line_start_byte + read_count as u64;
         byte_offset = line_end_byte;
         let line_text = decode_log_line(&raw_line);
+        let timestamp_content = split_timestamped_line(&line_text);
+
+        if let Some(current) = open_stack.take() {
+            if timestamp_content.is_some() || parse_message_header(&line_text).is_some() {
+                close_text_marker(current, line_number.saturating_sub(1), line_start_byte, &mut markers, &mut payloads);
+            } else {
+                let mut current = current;
+                current.lines.push(line_text);
+                open_stack = Some(current);
+                continue;
+            }
+        }
+
+        if let Some(current) = open_change_state.take() {
+            let done = line_text.trim() == "}";
+            let mut current = current;
+            current.lines.push(line_text);
+            if done {
+                close_text_marker(current, line_number, line_end_byte, &mut markers, &mut payloads);
+            } else {
+                open_change_state = Some(current);
+            }
+            continue;
+        }
 
         if let Some(header) = parse_message_header(&line_text) {
             if let Some(current) = open_marker.take() {
@@ -534,12 +572,116 @@ fn scan_message_markers(
 
         if let Some(current) = open_marker.as_mut() {
             current.body_lines.push(line_text);
+            continue;
+        }
+
+        if line_text.trim() == "stack traceback:" {
+            let marker_id = format!("stack-{next_marker_index}");
+            next_marker_index += 1;
+            open_stack = Some(OpenTextBlock {
+                id: marker_id,
+                kind: "error_stack".to_string(),
+                title: "stack traceback".to_string(),
+                color: "#f46d75".to_string(),
+                line_time: String::new(),
+                start_line: line_number,
+                start_byte: line_start_byte,
+                lines: vec![line_text],
+            });
+            continue;
+        }
+
+        if let Some((line_time, content)) = timestamp_content {
+            if let Some(value) = parse_timestamped_json(content) {
+                let marker_id = format!("json-{next_marker_index}");
+                next_marker_index += 1;
+                let title = value
+                    .get("event_name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("JSON event")
+                    .to_string();
+                push_json_marker(
+                    marker_id,
+                    "json_event",
+                    title,
+                    "#b693ff",
+                    line_number,
+                    line_start_byte,
+                    line_end_byte,
+                    line_time,
+                    content.to_string(),
+                    value,
+                    &mut markers,
+                    &mut payloads,
+                );
+                continue;
+            }
+
+            if content.starts_with("ChangeState") {
+                let marker_id = format!("state-{next_marker_index}");
+                next_marker_index += 1;
+                if content.contains('{') && !content.trim_end().ends_with('}') {
+                    open_change_state = Some(OpenTextBlock {
+                        id: marker_id,
+                        kind: "state_change".to_string(),
+                        title: content.trim_end_matches('{').trim().to_string(),
+                        color: "#f0c84b".to_string(),
+                        line_time: line_time.to_string(),
+                        start_line: line_number,
+                        start_byte: line_start_byte,
+                        lines: vec![content.to_string()],
+                    });
+                } else {
+                    push_raw_marker(
+                        marker_id,
+                        "state_change",
+                        content.to_string(),
+                        "#f0c84b",
+                        line_number,
+                        line_number,
+                        line_start_byte,
+                        line_end_byte,
+                        line_time,
+                        content.to_string(),
+                        &mut markers,
+                        &mut payloads,
+                    );
+                }
+                continue;
+            }
+
+            if let Some((kind, title, color)) = keyword_marker(content) {
+                let marker_id = format!("keyword-{next_marker_index}");
+                next_marker_index += 1;
+                push_raw_marker(
+                    marker_id,
+                    kind,
+                    title,
+                    color,
+                    line_number,
+                    line_number,
+                    line_start_byte,
+                    line_end_byte,
+                    line_time,
+                    content.to_string(),
+                    &mut markers,
+                    &mut payloads,
+                );
+            }
         }
     }
 
     if let Some(current) = open_marker.take() {
         close_message_marker(current, line_number, file_size, &mut markers, &mut payloads);
     }
+    if let Some(current) = open_stack.take() {
+        close_text_marker(current, line_number, file_size, &mut markers, &mut payloads);
+    }
+    if let Some(current) = open_change_state.take() {
+        close_text_marker(current, line_number, file_size, &mut markers, &mut payloads);
+    }
+
+    apply_message_lanes(&mut markers);
 
     Ok((markers, payloads))
 }
@@ -558,11 +700,7 @@ fn close_message_marker(
         Err(err) if raw_text.trim().is_empty() => ("raw".to_string(), None, None),
         Err(err) => ("raw".to_string(), None, Some(err.to_string())),
     };
-    let color = if marker.header.direction == "Receive" {
-        "#4da3ff"
-    } else {
-        "#42c77a"
-    };
+    let color = color_for_message_id(marker.header.message_id);
 
     payloads.insert(
         marker.id.clone(),
@@ -591,7 +729,138 @@ fn close_message_marker(
         direction: marker.header.direction,
         message_id: marker.header.message_id,
         message_name: marker.header.message_name,
+        lane_ratio: 0.0,
         parse_status,
+    });
+}
+
+fn close_text_marker(
+    marker: OpenTextBlock,
+    end_line: usize,
+    end_byte: u64,
+    markers: &mut Vec<LogMarker>,
+    payloads: &mut HashMap<String, MarkerPayload>,
+) {
+    let raw_text = trim_body_lines(&marker.lines);
+    let parsed_json = serde_json::from_str::<serde_json::Value>(&raw_text);
+    let (parse_status, parsed_json, parse_error) = match parsed_json {
+        Ok(value) => ("ok".to_string(), Some(value), None),
+        Err(err) if raw_text.trim().is_empty() => ("raw".to_string(), None, None),
+        Err(err) => ("raw".to_string(), None, Some(err.to_string())),
+    };
+
+    payloads.insert(
+        marker.id.clone(),
+        MarkerPayload {
+            marker_id: marker.id.clone(),
+            raw_text,
+            parse_status: parse_status.clone(),
+            parsed_json,
+            parse_error,
+        },
+    );
+
+    markers.push(LogMarker {
+        id: marker.id,
+        kind: marker.kind,
+        title: marker.title,
+        color: marker.color,
+        start_line: marker.start_line,
+        end_line,
+        start_byte: marker.start_byte,
+        end_byte,
+        line_time: marker.line_time,
+        direction: String::new(),
+        message_id: 0,
+        message_name: String::new(),
+        lane_ratio: 0.5,
+        parse_status,
+    });
+}
+
+fn push_json_marker(
+    marker_id: String,
+    kind: &str,
+    title: String,
+    color: &str,
+    line_number: usize,
+    start_byte: u64,
+    end_byte: u64,
+    line_time: &str,
+    raw_text: String,
+    parsed_json: serde_json::Value,
+    markers: &mut Vec<LogMarker>,
+    payloads: &mut HashMap<String, MarkerPayload>,
+) {
+    payloads.insert(
+        marker_id.clone(),
+        MarkerPayload {
+            marker_id: marker_id.clone(),
+            raw_text,
+            parse_status: "ok".to_string(),
+            parsed_json: Some(parsed_json),
+            parse_error: None,
+        },
+    );
+
+    markers.push(LogMarker {
+        id: marker_id,
+        kind: kind.to_string(),
+        title,
+        color: color.to_string(),
+        start_line: line_number,
+        end_line: line_number,
+        start_byte,
+        end_byte,
+        line_time: line_time.to_string(),
+        direction: String::new(),
+        message_id: 0,
+        message_name: String::new(),
+        lane_ratio: 0.5,
+        parse_status: "ok".to_string(),
+    });
+}
+
+fn push_raw_marker(
+    marker_id: String,
+    kind: &str,
+    title: String,
+    color: &str,
+    start_line: usize,
+    end_line: usize,
+    start_byte: u64,
+    end_byte: u64,
+    line_time: &str,
+    raw_text: String,
+    markers: &mut Vec<LogMarker>,
+    payloads: &mut HashMap<String, MarkerPayload>,
+) {
+    payloads.insert(
+        marker_id.clone(),
+        MarkerPayload {
+            marker_id: marker_id.clone(),
+            raw_text,
+            parse_status: "raw".to_string(),
+            parsed_json: None,
+            parse_error: None,
+        },
+    );
+
+    markers.push(LogMarker {
+        id: marker_id,
+        kind: kind.to_string(),
+        title,
+        color: color.to_string(),
+        start_line,
+        end_line,
+        start_byte,
+        end_byte,
+        line_time: line_time.to_string(),
+        direction: String::new(),
+        message_id: 0,
+        message_name: String::new(),
+        lane_ratio: 0.5,
+        parse_status: "raw".to_string(),
     });
 }
 
@@ -625,6 +894,62 @@ fn parse_message_header(line: &str) -> Option<MessageHeader> {
         message_id,
         message_name: message_name.to_string(),
     })
+}
+
+fn split_timestamped_line(line: &str) -> Option<(&str, &str)> {
+    let (line_time, content) = line.split_once('\t')?;
+    if is_hhmmss(line_time) {
+        Some((line_time, content))
+    } else {
+        None
+    }
+}
+
+fn parse_timestamped_json(content: &str) -> Option<serde_json::Value> {
+    let trimmed = content.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    serde_json::from_str(trimmed).ok()
+}
+
+fn keyword_marker(content: &str) -> Option<(&'static str, String, &'static str)> {
+    let lower = content.to_ascii_lowercase();
+    if lower.contains("error")
+        || lower.contains("failed")
+        || lower.contains("not found")
+        || lower.contains("exception")
+    {
+        return Some(("keyword", content.to_string(), "#f46d75"));
+    }
+    if lower.contains("warn") || lower.contains("corrupt") || lower.contains("currupted") {
+        return Some(("keyword", content.to_string(), "#f0c84b"));
+    }
+    None
+}
+
+fn color_for_message_id(message_id: u64) -> String {
+    let mut value = message_id.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    value ^= value >> 33;
+    value = value.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    let hue = value % 360;
+    format!("hsl({hue}, 72%, 58%)")
+}
+
+fn apply_message_lanes(markers: &mut [LogMarker]) {
+    let max_message_id = markers
+        .iter()
+        .filter(|marker| marker.kind == "message")
+        .map(|marker| marker.message_id)
+        .max()
+        .unwrap_or(0);
+    if max_message_id == 0 {
+        return;
+    }
+
+    for marker in markers.iter_mut().filter(|marker| marker.kind == "message") {
+        marker.lane_ratio = (marker.message_id as f64 / max_message_id as f64).clamp(0.0, 1.0);
+    }
 }
 
 fn is_hhmmss(value: &str) -> bool {
@@ -906,6 +1231,77 @@ mod tests {
             .get(&session.markers[0].id)
             .expect("payload exists");
         assert_eq!(payload.parsed_json.as_ref().unwrap()["AppVersion"], 300);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn gives_same_message_id_stable_color_and_lane() {
+        let path = test_file_path("message-lanes.log");
+        fs::write(
+            &path,
+            concat!(
+                "13:05:41\t========= Send Message ([42] LOGIN) [05:05:41] =========\n",
+                "{}\n",
+                "============================================\n",
+                "13:05:42\t========= Receive Message ([84] PING) [05:05:42] =========\n",
+                "{}\n",
+                "============================================\n",
+                "13:05:43\t========= Receive Message ([42] LOGIN) [05:05:43] =========\n",
+                "{}\n",
+                "============================================\n",
+            ),
+        )
+        .unwrap();
+
+        let session = LogSession::open(path.clone()).unwrap();
+        let login_markers = session
+            .markers
+            .iter()
+            .filter(|marker| marker.message_id == 42)
+            .collect::<Vec<_>>();
+
+        assert_eq!(login_markers.len(), 2);
+        assert_eq!(login_markers[0].color, login_markers[1].color);
+        assert_eq!(login_markers[0].lane_ratio, login_markers[1].lane_ratio);
+        assert_eq!(login_markers[0].lane_ratio, 0.5);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn extracts_json_state_stack_and_keyword_markers() {
+        let path = test_file_path("mixed-markers.log");
+        fs::write(
+            &path,
+            concat!(
+                "13:04:34\t{\"event_name\":\"c_p_010_launch_game\",\"value\":1}\n",
+                "13:05:41\tChangeState\tInit\tframe\t1\t{\n",
+                "    \"n\": 0\n",
+                "}\n",
+                "stack traceback:\n",
+                "\tApplication.lua:28: in function <Application.lua:27>\n",
+                "13:05:42\tSaves/SaveFunc.lua:6: FuncUnlock not found: 149\n",
+            ),
+        )
+        .unwrap();
+
+        let session = LogSession::open(path.clone()).unwrap();
+
+        assert!(session
+            .markers
+            .iter()
+            .any(|marker| marker.kind == "json_event" && marker.title == "c_p_010_launch_game"));
+        assert!(session
+            .markers
+            .iter()
+            .any(|marker| marker.kind == "state_change" && marker.start_line == 2 && marker.end_line == 4));
+        assert!(session
+            .markers
+            .iter()
+            .any(|marker| marker.kind == "error_stack" && marker.start_line == 5 && marker.end_line == 6));
+        assert!(session
+            .markers
+            .iter()
+            .any(|marker| marker.kind == "keyword" && marker.start_line == 7));
         fs::remove_file(path).unwrap();
     }
 

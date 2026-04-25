@@ -75,7 +75,7 @@
 
 目标：从 log 行提取语义事件，并在 minimap 与 JSON viewer 中展示。
 
-状态：已完成第一版编码。当前支持 `Send Message` / `Receive Message` 消息块提取、marker 摘要 API、按需 payload API、严格 JSON 尝试解析与 raw fallback、Canvas minimap marker 点绘制、点击 marker 跳转并查看 payload。已使用 `com.sevenpirates.monster.gameLog.log` 做可选回归测试。仍需补充更多 extractor，例如单行 JSON 事件、Lua stack traceback、ChangeState、用户自定义关键字/正则规则，并在高频 tail 场景下验证是否需要把 marker 重建改为增量扫描。
+状态：已完成第一版编码。当前支持 `Send Message` / `Receive Message` 消息块提取、marker 摘要 API、按需 payload API、严格 JSON 尝试解析与 raw fallback、Canvas minimap marker 绘制、点击 marker 跳转并查看 payload。消息 marker 颜色由消息 ID 稳定计算，横向位置按 `message_id / max_message_id` 计算，收/发使用不同朝向三角形。已补充单行 JSON 事件、Lua stack traceback、ChangeState、基础关键字 extractor。已使用 `com.sevenpirates.monster.gameLog.log` 做可选回归测试。仍需补充用户自定义关键字/正则规则，并在高频 tail 场景下验证是否需要把 marker 重建改为增量扫描。
 
 任务：
 

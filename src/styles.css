@@ -369,14 +369,6 @@ button:disabled {
   border-radius: 999px;
 }
 
-.marker-dot-receive {
-  background: #4da3ff;
-}
-
-.marker-dot-send {
-  background: #42c77a;
-}
-
 .payload-preview {
   min-height: 220px;
   max-height: none;

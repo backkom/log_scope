@@ -69,6 +69,7 @@ type LogMarker = {
   direction: string;
   messageId: number;
   messageName: string;
+  laneRatio: number;
   parseStatus: string;
 };
 
@@ -425,11 +426,15 @@ function App() {
     }
 
     for (const marker of markers) {
-      const y = Math.max(3, Math.min(height - 3, ((marker.startLine - 1) / Math.max(logFile.lineCount, 1)) * height));
+      const point = markerMinimapPoint(marker, logFile.lineCount, height);
       context.fillStyle = marker.color;
-      context.beginPath();
-      context.arc(marker.direction === "Receive" ? 46 : 26, y, selectedMarker?.id === marker.id ? 4 : 3, 0, Math.PI * 2);
-      context.fill();
+      if (marker.kind === "message") {
+        drawMessageTriangle(context, point.x, point.y, selectedMarker?.id === marker.id ? 6 : 5, marker.direction);
+      } else {
+        context.beginPath();
+        context.arc(point.x, point.y, selectedMarker?.id === marker.id ? 4 : 3, 0, Math.PI * 2);
+        context.fill();
+      }
     }
   }, [logFile, markers, selectedMarker?.id, viewportHeight]);
 
@@ -439,15 +444,16 @@ function App() {
     }
 
     const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
     const nearest = markers
       .map((marker) => ({
         marker,
-        distance: Math.abs(((marker.startLine - 1) / Math.max(logFile.lineCount, 1)) * rect.height - y),
+        distance: distanceToMarker(marker, logFile.lineCount, rect.height, x, y),
       }))
       .sort((left, right) => left.distance - right.distance)[0];
 
-    if (nearest && nearest.distance <= 10) {
+    if (nearest && nearest.distance <= 12) {
       void selectMarker(nearest.marker);
       return;
     }
@@ -581,10 +587,11 @@ function App() {
           {selectedMarker ? (
             <>
               <button type="button" className="marker-summary" onClick={() => scrollToLine(selectedMarker.startLine)}>
-                <span className={`marker-dot marker-dot-${selectedMarker.direction.toLowerCase()}`} />
+                <span className="marker-dot" style={{ background: selectedMarker.color }} />
                 <strong>{selectedMarker.title}</strong>
                 <small>
-                  {selectedMarker.direction} · L{selectedMarker.startLine} · {selectedMarker.parseStatus}
+                  {selectedMarker.kind} {selectedMarker.direction ? `· ${selectedMarker.direction}` : ""} · L
+                  {selectedMarker.startLine} · {selectedMarker.parseStatus}
                 </small>
               </button>
               {!selectedPayload ? <pre className="payload-preview">载入中...</pre> : null}
@@ -695,6 +702,50 @@ function formatBytes(bytes: number) {
   }
 
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
+function markerMinimapPoint(marker: LogMarker, totalLines: number, height: number) {
+  const margin = 7;
+  const usableWidth = MINIMAP_WIDTH - margin * 2;
+  const x =
+    marker.kind === "message"
+      ? margin + Math.max(0, Math.min(1, marker.laneRatio)) * usableWidth
+      : MINIMAP_WIDTH / 2;
+  const y = Math.max(5, Math.min(height - 5, ((marker.startLine - 1) / Math.max(totalLines, 1)) * height));
+  return { x, y };
+}
+
+function distanceToMarker(
+  marker: LogMarker,
+  totalLines: number,
+  height: number,
+  x: number,
+  y: number,
+) {
+  const point = markerMinimapPoint(marker, totalLines, height);
+  return Math.hypot(point.x - x, point.y - y);
+}
+
+function drawMessageTriangle(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  size: number,
+  direction: string,
+) {
+  const receive = direction === "Receive";
+  context.beginPath();
+  if (receive) {
+    context.moveTo(x, y + size);
+    context.lineTo(x - size, y - size);
+    context.lineTo(x + size, y - size);
+  } else {
+    context.moveTo(x, y - size);
+    context.lineTo(x - size, y + size);
+    context.lineTo(x + size, y + size);
+  }
+  context.closePath();
+  context.fill();
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

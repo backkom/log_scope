@@ -159,7 +159,10 @@ Rust core 负责：
 - 当前已实现 `Send Message` / `Receive Message` 网络消息块提取，字段包括 `direction`、`message_id`、`message_name`、起止行号、起止字节偏移、颜色和 JSON 解析状态。
 - 消息块结束规则：优先遇到 `============================================` 分隔线结束；若缺少分隔线，则遇到下一条消息 header 前结束；文件结尾仍会关闭当前块。
 - 消息 body 尝试按严格 JSON 解析；解析失败时保留 raw text 并标记 `parse_status = raw`，不影响 marker 生成。
-- 前端右侧 minimap 第一版使用 Canvas 绘制 marker 点，点击 marker 后跳转到对应行并加载 payload；可见行中的 marker 起始行会做轻量背景标记。
+- 消息 marker 的颜色由 `message_id` 通过稳定 hash 计算得到，同一个消息 ID 在多次运行中应得到同一个颜色。
+- 消息 marker 在 minimap 横向位置由 `message_id / max_message_id` 决定，`max_message_id` 使用当前 session 已识别消息中的最大 ID；同一个消息 ID 在同一个 session 中应保持同一横向位置。
+- 前端右侧 minimap 第一版使用 Canvas 绘制 marker；消息 marker 使用三角形，`Receive` 和 `Send` 使用不同朝向；其他 marker 使用圆点。点击 marker 后跳转到对应行并加载 payload；可见行中的 marker 起始行会做轻量背景标记。
+- 当前已补充轻量 extractor：单行 JSON 事件（优先用 `event_name` 作为标题）、`ChangeState ... { ... }` 块、Lua `stack traceback:` 块、基础关键字 marker（error/failed/not found/exception/warn/corrupt/currupted）。
 - 当前 marker 索引在打开文件后构建；文件追加或截断刷新后会重建 marker 索引。该方案先保证正确性，后续高频 tail 压测如暴露成本，再改为增量 marker 扫描。
 
 ## Socket 协议方向
