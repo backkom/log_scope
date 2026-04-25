@@ -146,6 +146,22 @@ button:disabled {
   gap: 8px;
 }
 
+.follow-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #465158;
+  font-size: 14px;
+}
+
+.follow-toggle input {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  min-height: 16px;
+  margin: 0;
+}
+
 .status-list {
   display: grid;
   gap: 10px;
@@ -306,6 +322,14 @@ button:disabled {
   border-top: 1px solid #f1b8b8;
   background: #fff0f0;
   color: #9d2525;
+  padding: 10px 20px;
+}
+
+.tail-notice {
+  margin: 0;
+  border-top: 1px solid #d7c68b;
+  background: #fff8df;
+  color: #6e5a12;
   padding: 10px 20px;
 }
 

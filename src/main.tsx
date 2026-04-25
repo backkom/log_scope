@@ -42,9 +42,21 @@ type LogLineRange = {
   lines: LogLine[];
 };
 
+type LogRefreshMetadata = {
+  sessionId: number;
+  path: string;
+  fileSize: number;
+  lineCount: number;
+  appendedBytes: number;
+  appendedLines: number;
+  wasTruncated: boolean;
+};
+
 const ROW_HEIGHT = 24;
+const BOTTOM_PADDING_ROWS = 1;
 const OVERSCAN_ROWS = 80;
 const MAX_CACHED_LINES = 2_000;
+const TAIL_REFRESH_INTERVAL_MS = 1_000;
 
 function App() {
   const [health, setHealth] = React.useState<HealthCheck | null>(null);
@@ -59,6 +71,9 @@ function App() {
   const [isGeneratingFixture, setIsGeneratingFixture] = React.useState(false);
   const [lastFixture, setLastFixture] = React.useState<FixtureMetadata | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [followTail, setFollowTail] = React.useState(true);
+  const [pendingTailLines, setPendingTailLines] = React.useState(0);
+  const [tailNotice, setTailNotice] = React.useState<string | null>(null);
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
@@ -133,6 +148,66 @@ function App() {
     };
   }, [firstVisibleLine, logFile, requestedStartLine, requestedLineCount]);
 
+  React.useEffect(() => {
+    if (!logFile) {
+      return;
+    }
+
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const metadata = await invoke<LogRefreshMetadata>("refresh_log_file", {
+          sessionId: logFile.sessionId,
+        });
+        if (cancelled) {
+          return;
+        }
+
+        if (metadata.wasTruncated) {
+          setLineCache(new Map());
+          setPendingTailLines(0);
+          setTailNotice("文件已截断或轮转，已按当前文件重新建立索引");
+          if (viewportRef.current) {
+            viewportRef.current.scrollTop = 0;
+          }
+        } else if (metadata.appendedLines > 0) {
+          setTailNotice(null);
+          if (followTail) {
+            requestAnimationFrame(() => {
+              if (viewportRef.current) {
+                viewportRef.current.scrollTop = metadata.lineCount * ROW_HEIGHT;
+              }
+            });
+          } else {
+            setPendingTailLines((current) => current + metadata.appendedLines);
+          }
+        }
+
+        setLogFile((current) =>
+          current && current.sessionId === metadata.sessionId
+            ? {
+                ...current,
+                path: metadata.path,
+                fileSize: metadata.fileSize,
+                lineCount: metadata.lineCount,
+              }
+            : current,
+        );
+        setError(null);
+      } catch (err) {
+        if (!cancelled) {
+          setError(String(err));
+        }
+      }
+    };
+
+    const intervalId = window.setInterval(refresh, TAIL_REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [followTail, logFile?.sessionId]);
+
   const runPlaceholder = async () => {
     setError(null);
     try {
@@ -159,6 +234,8 @@ function App() {
       setLogFile(metadata);
       setPlaceholder(null);
       setLineCache(new Map());
+      setPendingTailLines(0);
+      setTailNotice(null);
       setScrollTop(0);
       setJumpLine("1");
       if (viewportRef.current) {
@@ -197,6 +274,7 @@ function App() {
     }
     const safeLine = Math.min(Math.max(1, line), Math.max(logFile.lineCount, 1));
     viewportRef.current.scrollTop = (safeLine - 1) * ROW_HEIGHT;
+    setPendingTailLines(0);
   };
 
   const jumpToInputLine = (event: React.FormEvent<HTMLFormElement>) => {
@@ -208,6 +286,12 @@ function App() {
   };
 
   const totalHeight = logFile ? logFile.lineCount * ROW_HEIGHT : 0;
+  const scrollSpaceHeight = logFile
+    ? Math.max(totalHeight + BOTTOM_PADDING_ROWS * ROW_HEIGHT, viewportHeight)
+    : 0;
+  const isNearBottom = logFile
+    ? scrollTop + viewportHeight >= Math.max(0, totalHeight - ROW_HEIGHT * 2)
+    : false;
   const visibleOffset = (requestedStartLine - 1) * ROW_HEIGHT - scrollTop;
   const renderedLineCount = logFile
     ? Math.min(requestedLineCount, Math.max(logFile.lineCount - requestedStartLine + 1, 0))
@@ -225,8 +309,14 @@ function App() {
   );
   const activePath = logFile?.path ?? placeholder?.path ?? "尚未打开文件";
   const activeStatus = logFile
-    ? `${formatBytes(logFile.fileSize)} · ${logFile.lineCount.toLocaleString()} 行 · 虚拟化只读`
-    : placeholder?.message ?? "阶段 1：输入路径打开文件并按可见范围读取";
+    ? `${formatBytes(logFile.fileSize)} · ${logFile.lineCount.toLocaleString()} 行 · ${followTail ? "跟随 tail" : "阅读锁定"}`
+    : placeholder?.message ?? "阶段 2：输入路径打开文件，支持追加刷新和 follow tail";
+
+  React.useEffect(() => {
+    if (isNearBottom) {
+      setPendingTailLines(0);
+    }
+  }, [isNearBottom]);
 
   return (
     <main className="app-shell">
@@ -316,6 +406,33 @@ function App() {
               底部
             </button>
           </div>
+          <label className="follow-toggle">
+            <input
+              type="checkbox"
+              checked={followTail}
+              onChange={(event) => {
+                const enabled = event.target.checked;
+                setFollowTail(enabled);
+                if (enabled && logFile) {
+                  setPendingTailLines(0);
+                  requestAnimationFrame(() => scrollToLine(logFile.lineCount));
+                }
+              }}
+            />
+            <span>Follow tail</span>
+          </label>
+          {pendingTailLines > 0 ? (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                setPendingTailLines(0);
+                scrollToLine(logFile?.lineCount ?? 1);
+              }}
+            >
+              查看 {pendingTailLines.toLocaleString()} 行新增
+            </button>
+          ) : null}
         </section>
       </aside>
 
@@ -331,10 +448,20 @@ function App() {
           className="viewer-layout"
           ref={viewportRef}
           aria-label="log viewer"
-          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+          onScroll={(event) => {
+            const nextScrollTop = event.currentTarget.scrollTop;
+            setScrollTop(nextScrollTop);
+            if (
+              logFile &&
+              nextScrollTop + event.currentTarget.clientHeight >=
+                Math.max(0, logFile.lineCount * ROW_HEIGHT - ROW_HEIGHT * 2)
+            ) {
+              setPendingTailLines(0);
+            }
+          }}
         >
           {logFile ? (
-            <div className="viewer-scroll-space" style={{ height: totalHeight }}>
+            <div className="viewer-scroll-space" style={{ height: scrollSpaceHeight }}>
               <div className="log-viewport" style={{ height: viewportHeight || undefined }}>
                 <div className="visible-lines" style={{ transform: `translateY(${visibleOffset}px)` }}>
                   {renderedLines.map((line) => (
@@ -366,6 +493,7 @@ function App() {
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
+        {tailNotice ? <p className="tail-notice">{tailNotice}</p> : null}
       </section>
     </main>
   );

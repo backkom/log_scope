@@ -28,7 +28,7 @@ struct FileOpenPlaceholder {
 #[derive(Default)]
 struct AppState {
     next_session_id: AtomicU64,
-    sessions: Mutex<HashMap<u64, Arc<LogSession>>>,
+    sessions: Mutex<HashMap<u64, Arc<Mutex<LogSession>>>>,
 }
 
 struct LogSession {
@@ -36,6 +36,7 @@ struct LogSession {
     file_size: u64,
     line_offsets: Vec<u64>,
     index_duration_ms: u128,
+    ended_with_newline: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -46,6 +47,18 @@ struct LogFileMetadata {
     file_size: u64,
     line_count: usize,
     index_duration_ms: u128,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogRefreshMetadata {
+    session_id: u64,
+    path: String,
+    file_size: u64,
+    line_count: usize,
+    appended_bytes: u64,
+    appended_lines: usize,
+    was_truncated: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -114,7 +127,7 @@ async fn open_log_file(
         .sessions
         .lock()
         .map_err(|_| "log session state is unavailable".to_string())?;
-    sessions.insert(session_id, Arc::new(session));
+    sessions.insert(session_id, Arc::new(Mutex::new(session)));
 
     Ok(metadata)
 }
@@ -147,9 +160,40 @@ fn get_log_lines(
         )
     };
 
+    let session = session
+        .lock()
+        .map_err(|_| format!("log session {session_id} is unavailable"))?;
+
     session
         .read_lines(session_id, start_line, line_count)
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn refresh_log_file(
+    session_id: u64,
+    state: tauri::State<'_, AppState>,
+) -> Result<LogRefreshMetadata, String> {
+    let session = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "log session state is unavailable".to_string())?;
+        Arc::clone(
+            sessions
+                .get(&session_id)
+                .ok_or_else(|| format!("log session {session_id} was not found"))?,
+        )
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut session = session
+            .lock()
+            .map_err(|_| format!("log session {session_id} is unavailable"))?;
+        session.refresh(session_id).map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| format!("failed to join file refresh task: {err}"))?
 }
 
 impl LogSession {
@@ -157,7 +201,7 @@ impl LogSession {
         let started_at = Instant::now();
         let file = File::open(&path)?;
         let file_size = file.metadata()?.len();
-        let line_offsets = build_line_index(file, file_size)?;
+        let (line_offsets, ended_with_newline) = build_line_index(file, file_size)?;
         let index_duration_ms = started_at.elapsed().as_millis();
 
         Ok(Self {
@@ -165,7 +209,83 @@ impl LogSession {
             file_size,
             line_offsets,
             index_duration_ms,
+            ended_with_newline,
         })
+    }
+
+    fn refresh(&mut self, session_id: u64) -> std::io::Result<LogRefreshMetadata> {
+        let metadata = fs::metadata(&self.path)?;
+        let new_file_size = metadata.len();
+        let old_file_size = self.file_size;
+        let old_line_count = self.line_offsets.len();
+
+        if new_file_size < old_file_size {
+            let file = File::open(&self.path)?;
+            let (line_offsets, ended_with_newline) = build_line_index(file, new_file_size)?;
+            self.file_size = new_file_size;
+            self.line_offsets = line_offsets;
+            self.ended_with_newline = ended_with_newline;
+
+            return Ok(self.refresh_metadata(
+                session_id,
+                0,
+                self.line_offsets.len().saturating_sub(old_line_count),
+                true,
+            ));
+        }
+
+        if new_file_size == old_file_size {
+            return Ok(self.refresh_metadata(session_id, 0, 0, false));
+        }
+
+        let appended_bytes = new_file_size - old_file_size;
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(old_file_size))?;
+        let mut buffer = vec![0; appended_bytes as usize];
+        file.read_exact(&mut buffer)?;
+
+        if self.line_offsets.is_empty() && !buffer.is_empty() {
+            self.line_offsets.push(0);
+        } else if self.ended_with_newline && !buffer.is_empty() {
+            self.line_offsets.push(old_file_size);
+        }
+
+        for (index, byte) in buffer.iter().enumerate() {
+            if *byte == b'\n' {
+                let next_offset = old_file_size + index as u64 + 1;
+                if next_offset < new_file_size {
+                    self.line_offsets.push(next_offset);
+                }
+            }
+        }
+
+        self.file_size = new_file_size;
+        self.ended_with_newline = buffer.last().is_some_and(|byte| *byte == b'\n');
+
+        Ok(self.refresh_metadata(
+            session_id,
+            appended_bytes,
+            self.line_offsets.len().saturating_sub(old_line_count),
+            false,
+        ))
+    }
+
+    fn refresh_metadata(
+        &self,
+        session_id: u64,
+        appended_bytes: u64,
+        appended_lines: usize,
+        was_truncated: bool,
+    ) -> LogRefreshMetadata {
+        LogRefreshMetadata {
+            session_id,
+            path: self.path.to_string_lossy().into_owned(),
+            file_size: self.file_size,
+            line_count: self.line_offsets.len(),
+            appended_bytes,
+            appended_lines,
+            was_truncated,
+        }
     }
 
     fn read_lines(
@@ -222,21 +342,24 @@ impl LogSession {
     }
 }
 
-fn build_line_index(file: File, file_size: u64) -> std::io::Result<Vec<u64>> {
+fn build_line_index(file: File, file_size: u64) -> std::io::Result<(Vec<u64>, bool)> {
     if file_size == 0 {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     }
 
     let mut reader = BufReader::with_capacity(1024 * 1024, file);
     let mut line_offsets = vec![0];
     let mut absolute_offset = 0_u64;
     let mut buffer = [0_u8; 1024 * 1024];
+    let mut ended_with_newline = false;
 
     loop {
         let read_count = reader.read(&mut buffer)?;
         if read_count == 0 {
             break;
         }
+
+        ended_with_newline = buffer[read_count - 1] == b'\n';
 
         for (index, byte) in buffer[..read_count].iter().enumerate() {
             if *byte == b'\n' {
@@ -250,7 +373,7 @@ fn build_line_index(file: File, file_size: u64) -> std::io::Result<Vec<u64>> {
         absolute_offset += read_count as u64;
     }
 
-    Ok(line_offsets)
+    Ok((line_offsets, ended_with_newline))
 }
 
 fn split_lines(buffer: &[u8]) -> Vec<String> {
@@ -323,7 +446,8 @@ pub fn run() {
             open_file_placeholder,
             open_log_file,
             generate_log_fixture,
-            get_log_lines
+            get_log_lines,
+            refresh_log_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running log_scope");
@@ -384,6 +508,48 @@ mod tests {
     }
 
     #[test]
+    fn refresh_indexes_appended_lines_without_rebuilding() {
+        let path = test_file_path("append.log");
+        fs::write(&path, b"one\n").unwrap();
+        let mut session = LogSession::open(path.clone()).unwrap();
+
+        append_bytes(&path, b"two\nthree").unwrap();
+        let metadata = session.refresh(9).unwrap();
+        let range = session.read_lines(9, 1, 10).unwrap();
+
+        assert_eq!(metadata.session_id, 9);
+        assert_eq!(metadata.appended_bytes, 9);
+        assert_eq!(metadata.appended_lines, 2);
+        assert!(!metadata.was_truncated);
+        assert_eq!(
+            range
+                .lines
+                .iter()
+                .map(|line| (line.line_number, line.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, "one"), (2, "two"), (3, "three")]
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn refresh_rebuilds_after_truncation() {
+        let path = test_file_path("truncate.log");
+        fs::write(&path, b"one\ntwo\nthree\n").unwrap();
+        let mut session = LogSession::open(path.clone()).unwrap();
+
+        fs::write(&path, b"fresh\n").unwrap();
+        let metadata = session.refresh(3).unwrap();
+        let range = session.read_lines(3, 1, 10).unwrap();
+
+        assert!(metadata.was_truncated);
+        assert_eq!(metadata.appended_bytes, 0);
+        assert_eq!(metadata.line_count, 1);
+        assert_eq!(range.lines[0].text, "fresh");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn generates_fixture_at_requested_size_floor() {
         let fixture = generate_fixture(1).unwrap();
 
@@ -401,5 +567,10 @@ mod tests {
             .as_nanos();
         path.push(format!("log-scope-{suffix}-{name}"));
         path
+    }
+
+    fn append_bytes(path: &PathBuf, bytes: &[u8]) -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new().append(true).open(path)?;
+        file.write_all(bytes)
     }
 }

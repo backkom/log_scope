@@ -142,13 +142,15 @@ Rust core 负责：
 
 前端不应该持有完整 log 文本。前端应向 Rust 请求可见行范围和 marker 摘要。
 
-阶段 1 当前实现：
+阶段 1/2 当前实现：
 
 - Rust command `open_log_file(path)` 打开 UTF-8/UTF-8 lossy 文本文件，建立当前文件 session，并返回 `sessionId`、路径、文件大小和行数。
 - Rust command `get_log_lines(sessionId, startLine, lineCount)` 只读取指定行范围，返回 1-based 行号和文本。
+- Rust command `refresh_log_file(sessionId)` 检查当前文件大小；文件变大时只读取新增字节并增量更新行偏移索引，文件变小时按截断/轮转处理并重新建立当前文件索引。
 - Rust command `generate_log_fixture(sizeMb)` 可在系统临时目录生成指定大小的合成 log fixture；前端提供 50MB fixture 一键生成并打开入口，用于阶段 1 手工性能验证。
-- 当前行索引只保存 `line_number -> byte_offset`，原始文件内容仍保留在磁盘；读取可见行时通过 seek + byte range 读取。
+- 当前行索引只保存 `line_number -> byte_offset`，原始文件内容仍保留在磁盘；读取可见行时通过 seek + byte range 读取；追加刷新同样不把完整文件读入内存。
 - 当前文件索引在 Tauri async blocking 线程池中构建，并返回索引耗时；后续 100 MB 以上体验优化应继续补充进度状态和取消。
+- 阶段 2 第一版使用前端定时调用 `refresh_log_file` 的轮询模型，而不是直接引入平台文件 watcher；该方案优先保证 Windows/macOS 行为一致，后续如轮询成本或延迟不可接受再替换为 watcher。
 
 ## Socket 协议方向
 
@@ -175,10 +177,12 @@ viewer 应该：
 - 阶段 1 前端维护有界行缓存，快速滚动时先渲染目标行号和占位行，待 Rust 返回后逐行填充；不缓存完整文件内容。
 - 应用根布局固定在 100vh 内，左侧操作栏和右侧 viewer 分别滚动，避免滚动 log 时带动操作栏；右侧 viewer 外层只负责纵向滚动，滚动条位于 minimap 右侧；log 文本列内部独立负责横向滚动，minimap 不参与横向滚动上下文。
 - 快速滚动时，viewer 外层滚动空间、sticky viewport、可见行容器、行号 gutter 和占位行都必须铺固定深色背景，避免数据尚未刷新时露出默认白底；占位行不显示横向 skeleton 条，以免加载延迟被放大成闪屏。
+- viewer 滚动空间必须至少覆盖当前 viewport，并在文本总高度后保留一行底部余量，避免短文件或滚动到底时最后一行被 sticky/overflow 边界裁剪。
 - 大文件默认关闭自动换行，参考 CudaText 的降级思想。
 - 支持行号 gutter，并避免布局抖动。
 - 搜索高亮和语义行标记只作用在可见范围或摘要数据上。
 - 追加新数据时，不应打断用户当前阅读位置；只有用户处于 follow tail 模式时才自动跟随末尾。
+- 阶段 2 前端已加入 follow tail 开关。开启时追加行会滚动到末尾；关闭时只更新总行数并显示新增行提示，不强制改变当前阅读位置。
 
 可选前端实现：
 
