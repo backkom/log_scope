@@ -135,7 +135,8 @@ button:disabled {
 }
 
 .open-form,
-.jump-form {
+.jump-form,
+.search-form {
   display: grid;
   gap: 8px;
 }
@@ -162,6 +163,32 @@ button:disabled {
   margin: 0;
 }
 
+.segmented-control {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  overflow: hidden;
+  border: 1px solid #dce2e5;
+  border-radius: 7px;
+  background: #f1f4f5;
+}
+
+.segmented-control button {
+  min-height: 34px;
+  border: 0;
+  border-right: 1px solid #dce2e5;
+  background: transparent;
+  color: #69757c;
+}
+
+.segmented-control button:last-child {
+  border-right: 0;
+}
+
+.segmented-control button.is-active {
+  background: #18706a;
+  color: #ffffff;
+}
+
 .status-list {
   display: grid;
   gap: 6px;
@@ -184,8 +211,9 @@ button:disabled {
 }
 
 .viewer-area {
+  position: relative;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
   min-width: 0;
   min-height: 0;
   background: var(--log-viewer-bg);
@@ -324,8 +352,55 @@ button:disabled {
   background: #31372f;
 }
 
+.log-row.severity-success .line-number,
+.log-row.severity-success code {
+  background: #24352e;
+}
+
+.log-row.severity-warning .line-number,
+.log-row.severity-warning code {
+  background: #373221;
+}
+
+.log-row.severity-error .line-number,
+.log-row.severity-error code {
+  background: #3b2929;
+}
+
+.log-row.has-active-search .line-number,
+.log-row.has-active-search code {
+  background: #243142;
+}
+
 .log-row.has-marker .line-number {
   color: #c4d2c4;
+}
+
+.log-token {
+  color: inherit;
+}
+
+.token-bracket {
+  color: #8eb7ff;
+}
+
+.token-number {
+  color: #f0bd7a;
+}
+
+.token-identifier {
+  color: #79d39a;
+}
+
+.search-hit {
+  border-radius: 3px;
+  background: #d8b84e;
+  color: #141711;
+}
+
+.search-hit.is-active {
+  background: #ff6f61;
+  color: #ffffff;
 }
 
 .empty-state {
@@ -478,6 +553,141 @@ button:disabled {
   color: #6e5a12;
   padding: 10px 20px;
 }
+
+/* ---- Inline Find Bar (Ctrl+F) ---- */
+
+.find-bar-overlay {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  border-top: 1px solid #565a4f;
+  background: #3c3f37;
+  padding: 0 8px;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.35);
+  animation: find-bar-slide-in 0.12s ease-out;
+}
+
+@keyframes find-bar-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.find-bar-toggle {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-weight: 700;
+  min-width: 32px;
+  padding: 0 6px;
+}
+
+.find-bar-overlay input {
+  flex: 1;
+  min-width: 120px;
+  max-width: 560px;
+  min-height: 28px;
+  border: 1px solid #565a4f;
+  border-radius: 4px;
+  background: #2b2d27;
+  color: #e0e4e0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  padding: 0 8px;
+}
+
+.find-bar-overlay input:focus {
+  outline: none;
+  border-color: #18706a;
+  box-shadow: 0 0 0 1px #18706a;
+}
+
+.find-bar-overlay input::placeholder {
+  color: #8a8e85;
+}
+
+.find-bar-match-count {
+  color: #9a9e95;
+  font-size: 12px;
+  white-space: nowrap;
+  padding: 0 6px;
+  min-width: 60px;
+}
+
+.find-bar-separator {
+  width: 1px;
+  height: 20px;
+  background: #565a4f;
+  flex-shrink: 0;
+}
+
+.find-bar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  min-width: 26px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #c8ccc5;
+  font-size: 12px;
+  padding: 0 8px;
+  white-space: nowrap;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.find-bar-btn:hover:not(:disabled) {
+  background: #4e514a;
+  border-color: #636860;
+}
+
+.find-bar-btn:active:not(:disabled) {
+  background: #5a5d55;
+}
+
+.find-bar-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.find-bar-btn.is-toggled {
+  background: #18706a;
+  color: #ffffff;
+  border-color: #18706a;
+}
+
+.find-bar-btn.is-toggled:hover:not(:disabled) {
+  background: #1a7d76;
+  border-color: #1a7d76;
+}
+
+.find-bar-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  min-width: 26px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #9a9e95;
+  font-size: 16px;
+  padding: 0;
+  line-height: 1;
+  margin-left: auto;
+  transition: background 0.1s, color 0.1s;
+}
+
+.find-bar-close:hover {
+  background: #4e514a;
+  color: #e0e4e0;
+}
+
 
 @media (max-width: 760px) {
   .app-shell {

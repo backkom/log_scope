@@ -10,6 +10,8 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use regex::Regex;
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HealthCheck {
@@ -39,6 +41,11 @@ struct LogSession {
     marker_payloads: HashMap<String, MarkerPayload>,
     index_duration_ms: u128,
     ended_with_newline: bool,
+}
+
+struct SearchSnapshot {
+    path: PathBuf,
+    line_offsets: Vec<u64>,
 }
 
 #[derive(serde::Serialize)]
@@ -125,6 +132,44 @@ struct LogMarkerRange {
     session_id: u64,
     total_markers: usize,
     markers: Vec<LogMarker>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogSearchMatch {
+    line_number: usize,
+    start_column: usize,
+    end_column: usize,
+    line_preview: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogSearchResult {
+    session_id: u64,
+    query: String,
+    direction: String,
+    case_sensitive: bool,
+    use_regex: bool,
+    whole_word: bool,
+    start_line: usize,
+    scanned_lines: usize,
+    total_lines: usize,
+    total_matches: usize,
+    active_match_index: usize,
+    duration_ms: u128,
+    truncated: bool,
+    wrapped: bool,
+    matches: Vec<LogSearchMatch>,
+}
+
+#[derive(Clone)]
+struct SearchCandidate {
+    line_number: usize,
+    start_column: usize,
+    end_column: usize,
+    line_preview: String,
+    match_index: usize,
 }
 
 struct MessageHeader {
@@ -328,6 +373,63 @@ async fn refresh_log_file(
     .map_err(|err| format!("failed to join file refresh task: {err}"))?
 }
 
+#[tauri::command]
+async fn search_log_text(
+    session_id: u64,
+    query: String,
+    start_line: Option<usize>,
+    start_column: Option<usize>,
+    direction: String,
+    case_sensitive: bool,
+    use_regex: Option<bool>,
+    whole_word: Option<bool>,
+    wrap_around: Option<bool>,
+    find_all: Option<bool>,
+    state: tauri::State<'_, AppState>,
+) -> Result<LogSearchResult, String> {
+    let session = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "log session state is unavailable".to_string())?;
+        Arc::clone(
+            sessions
+                .get(&session_id)
+                .ok_or_else(|| format!("log session {session_id} was not found"))?,
+        )
+    };
+
+    let use_regex = use_regex.unwrap_or(false);
+    let whole_word = whole_word.unwrap_or(false);
+    let find_all = find_all.unwrap_or(true);
+
+    let snapshot = {
+        let session = session
+            .lock()
+            .map_err(|_| format!("log session {session_id} is unavailable"))?;
+        session.search_snapshot()
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        search_text_snapshot(
+            session_id,
+            snapshot,
+            query,
+            start_line.unwrap_or(1),
+            start_column.unwrap_or(0),
+            direction,
+            case_sensitive,
+            use_regex,
+            whole_word,
+            wrap_around.unwrap_or(true),
+            find_all,
+        )
+        .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| format!("failed to join log search task: {err}"))?
+}
+
 impl LogSession {
     fn open(path: PathBuf) -> std::io::Result<Self> {
         let started_at = Instant::now();
@@ -433,6 +535,13 @@ impl LogSession {
         Ok(())
     }
 
+    fn search_snapshot(&self) -> SearchSnapshot {
+        SearchSnapshot {
+            path: self.path.clone(),
+            line_offsets: self.line_offsets.clone(),
+        }
+    }
+
     fn read_lines(
         &self,
         session_id: u64,
@@ -487,6 +596,246 @@ impl LogSession {
     }
 }
 
+fn search_text_snapshot(
+    session_id: u64,
+    snapshot: SearchSnapshot,
+    query: String,
+    start_line: usize,
+    start_column: usize,
+    direction: String,
+    case_sensitive: bool,
+    use_regex: bool,
+    whole_word: bool,
+    wrap_around: bool,
+    find_all: bool,
+) -> std::io::Result<LogSearchResult> {
+    let started_at = Instant::now();
+    let total_lines = snapshot.line_offsets.len();
+    let safe_start_line = start_line.clamp(1, total_lines.max(1));
+
+    if query.is_empty() || total_lines == 0 {
+        return Ok(LogSearchResult {
+            session_id,
+            query,
+            direction,
+            case_sensitive,
+            use_regex,
+            whole_word,
+            start_line: safe_start_line,
+            scanned_lines: 0,
+            total_lines,
+            total_matches: 0,
+            active_match_index: 0,
+            duration_ms: started_at.elapsed().as_millis(),
+            truncated: false,
+            wrapped: false,
+            matches: Vec::new(),
+        });
+    }
+
+    let pattern = build_search_pattern(&query, case_sensitive, use_regex, whole_word)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+    let forward = direction != "previous";
+    let mut file = File::open(&snapshot.path)?;
+    let mut reader = BufReader::with_capacity(1024 * 1024, &mut file);
+    let mut raw_line = Vec::new();
+    let mut scanned_lines = 0_usize;
+    let mut total_matches = 0_usize;
+    let mut all_matches: Vec<SearchCandidate> = Vec::new();
+    let mut first_match: Option<SearchCandidate> = None;
+    let mut first_after_cursor: Option<SearchCandidate> = None;
+    let mut last_before_cursor: Option<SearchCandidate> = None;
+    let mut last_match: Option<SearchCandidate> = None;
+
+    for line_number in 1..=total_lines {
+        raw_line.clear();
+        reader.read_until(b'\n', &mut raw_line)?;
+        scanned_lines += 1;
+
+        let text = decode_log_line(&raw_line);
+        for mat in pattern.find_iter(&text) {
+            total_matches += 1;
+            let candidate = SearchCandidate {
+                line_number,
+                start_column: mat.start(),
+                end_column: mat.end(),
+                line_preview: preview_line(&text),
+                match_index: total_matches,
+            };
+
+            if first_match.is_none() {
+                first_match = Some(candidate.clone());
+            }
+            if is_after_cursor(line_number, mat.start(), safe_start_line, start_column)
+                && first_after_cursor.is_none()
+            {
+                first_after_cursor = Some(candidate.clone());
+            }
+            if is_before_cursor(line_number, mat.start(), safe_start_line, start_column) {
+                last_before_cursor = Some(candidate.clone());
+            }
+            if find_all {
+                all_matches.push(candidate.clone());
+            }
+            last_match = Some(candidate);
+
+            if !find_all && forward && first_after_cursor.is_some() {
+                break;
+            }
+        }
+
+        if !find_all && forward && first_after_cursor.is_some() {
+            break;
+        }
+        if !find_all && !forward && !wrap_around && line_number > safe_start_line {
+            break;
+        }
+    }
+
+    let (matched, wrapped) = if forward {
+        match first_after_cursor {
+            Some(candidate) => (Some(candidate), false),
+            None if wrap_around => {
+                let wrapped = first_match.is_some();
+                (first_match, wrapped)
+            }
+            None => (None, false),
+        }
+    } else {
+        match last_before_cursor {
+            Some(candidate) => (Some(candidate), false),
+            None if wrap_around => {
+                let wrapped = last_match.is_some();
+                (last_match, wrapped)
+            }
+            None => (None, false),
+        }
+    };
+
+    Ok(search_result(
+        session_id,
+        query,
+        direction,
+        case_sensitive,
+        use_regex,
+        whole_word,
+        safe_start_line,
+        scanned_lines,
+        total_lines,
+        total_matches,
+        started_at,
+        wrapped,
+        matched,
+        if find_all { all_matches } else { Vec::new() },
+    ))
+}
+
+fn build_search_pattern(
+    query: &str,
+    case_sensitive: bool,
+    use_regex: bool,
+    whole_word: bool,
+) -> Result<Regex, String> {
+    let body = if use_regex {
+        query.to_string()
+    } else {
+        regex::escape(query)
+    };
+    let pattern = if whole_word {
+        format!(r"\b(?:{})\b", body)
+    } else {
+        body
+    };
+    let pattern = if case_sensitive {
+        pattern
+    } else {
+        format!("(?i:{})", pattern)
+    };
+    let regex = Regex::new(&pattern).map_err(|err| format!("invalid search pattern: {err}"))?;
+    if regex.is_match("") {
+        return Err("search pattern must not match empty text".to_string());
+    }
+    Ok(regex)
+}
+
+fn is_after_cursor(
+    line_number: usize,
+    match_column: usize,
+    start_line: usize,
+    start_column: usize,
+) -> bool {
+    line_number > start_line || (line_number == start_line && match_column >= start_column)
+}
+
+fn is_before_cursor(
+    line_number: usize,
+    match_column: usize,
+    start_line: usize,
+    start_column: usize,
+) -> bool {
+    line_number < start_line || (line_number == start_line && match_column < start_column)
+}
+
+fn search_result(
+    session_id: u64,
+    query: String,
+    direction: String,
+    case_sensitive: bool,
+    use_regex: bool,
+    whole_word: bool,
+    start_line: usize,
+    scanned_lines: usize,
+    total_lines: usize,
+    total_matches: usize,
+    started_at: Instant,
+    wrapped: bool,
+    matched: Option<SearchCandidate>,
+    all_matches: Vec<SearchCandidate>,
+) -> LogSearchResult {
+    let active_match_index = matched
+        .as_ref()
+        .map_or(0, |candidate| candidate.match_index);
+    let matches = if all_matches.is_empty() {
+        matched.into_iter().collect::<Vec<_>>()
+    } else {
+        all_matches
+    };
+    LogSearchResult {
+        session_id,
+        query,
+        direction,
+        case_sensitive,
+        use_regex,
+        whole_word,
+        start_line,
+        scanned_lines,
+        total_lines,
+        total_matches,
+        active_match_index,
+        duration_ms: started_at.elapsed().as_millis(),
+        truncated: false,
+        wrapped,
+        matches: matches
+            .into_iter()
+            .map(|candidate| LogSearchMatch {
+                line_number: candidate.line_number,
+                start_column: candidate.start_column,
+                end_column: candidate.end_column,
+                line_preview: candidate.line_preview,
+            })
+            .collect(),
+    }
+}
+
+fn preview_line(line: &str) -> String {
+    const PREVIEW_CHARS: usize = 240;
+    let mut preview = line.chars().take(PREVIEW_CHARS).collect::<String>();
+    if line.chars().count() > PREVIEW_CHARS {
+        preview.push_str("...");
+    }
+    preview
+}
+
 fn scan_log_markers(
     path: &PathBuf,
     file_size: u64,
@@ -519,7 +868,13 @@ fn scan_log_markers(
 
         if let Some(current) = open_stack.take() {
             if timestamp_content.is_some() || parse_message_header(&line_text).is_some() {
-                close_text_marker(current, line_number.saturating_sub(1), line_start_byte, &mut markers, &mut payloads);
+                close_text_marker(
+                    current,
+                    line_number.saturating_sub(1),
+                    line_start_byte,
+                    &mut markers,
+                    &mut payloads,
+                );
             } else {
                 let mut current = current;
                 current.lines.push(line_text);
@@ -533,7 +888,13 @@ fn scan_log_markers(
             let mut current = current;
             current.lines.push(line_text);
             if done {
-                close_text_marker(current, line_number, line_end_byte, &mut markers, &mut payloads);
+                close_text_marker(
+                    current,
+                    line_number,
+                    line_end_byte,
+                    &mut markers,
+                    &mut payloads,
+                );
             } else {
                 open_change_state = Some(current);
             }
@@ -565,7 +926,13 @@ fn scan_log_markers(
 
         if is_message_separator(&line_text) {
             if let Some(current) = open_marker.take() {
-                close_message_marker(current, line_number, line_end_byte, &mut markers, &mut payloads);
+                close_message_marker(
+                    current,
+                    line_number,
+                    line_end_byte,
+                    &mut markers,
+                    &mut payloads,
+                );
                 continue;
             }
         }
@@ -1093,7 +1460,8 @@ pub fn run() {
             get_log_lines,
             get_log_markers,
             get_marker_payload,
-            refresh_log_file
+            refresh_log_file,
+            search_log_text
         ])
         .run(tauri::generate_context!())
         .expect("error while running log_scope");
@@ -1293,15 +1661,163 @@ mod tests {
         assert!(session
             .markers
             .iter()
-            .any(|marker| marker.kind == "state_change" && marker.start_line == 2 && marker.end_line == 4));
+            .any(|marker| marker.kind == "state_change"
+                && marker.start_line == 2
+                && marker.end_line == 4));
         assert!(session
             .markers
             .iter()
-            .any(|marker| marker.kind == "error_stack" && marker.start_line == 5 && marker.end_line == 6));
+            .any(|marker| marker.kind == "error_stack"
+                && marker.start_line == 5
+                && marker.end_line == 6));
         assert!(session
             .markers
             .iter()
             .any(|marker| marker.kind == "keyword" && marker.start_line == 7));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn searches_forward_and_previous_with_wraparound() {
+        let path = test_file_path("search.log");
+        fs::write(
+            &path,
+            concat!(
+                "alpha first\n",
+                "beta target one\n",
+                "gamma\n",
+                "target two\n",
+                "omega\n",
+            ),
+        )
+        .unwrap();
+        let session = LogSession::open(path.clone()).unwrap();
+
+        let next = search_text_snapshot(
+            4,
+            session.search_snapshot(),
+            "target".to_string(),
+            3,
+            0,
+            "next".to_string(),
+            false,
+            false,
+            false,
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(next.matches[next.active_match_index - 1].line_number, 4);
+        assert_eq!(next.total_matches, 2);
+        assert_eq!(next.active_match_index, 2);
+        assert!(!next.wrapped);
+
+        let previous = search_text_snapshot(
+            4,
+            session.search_snapshot(),
+            "target".to_string(),
+            3,
+            0,
+            "previous".to_string(),
+            false,
+            false,
+            false,
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            previous.matches[previous.active_match_index - 1].line_number,
+            2
+        );
+        assert_eq!(previous.total_matches, 2);
+        assert_eq!(previous.active_match_index, 1);
+
+        let wrapped_next = search_text_snapshot(
+            4,
+            session.search_snapshot(),
+            "target".to_string(),
+            4,
+            1,
+            "next".to_string(),
+            false,
+            false,
+            false,
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            wrapped_next.matches[wrapped_next.active_match_index - 1].line_number,
+            2
+        );
+        assert_eq!(wrapped_next.active_match_index, 1);
+        assert!(wrapped_next.wrapped);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn searches_regex_and_whole_word_with_total_count() {
+        let path = test_file_path("search-regex.log");
+        fs::write(
+            &path,
+            concat!("error err error42\n", "WARN warning\n", "fatal exception\n",),
+        )
+        .unwrap();
+        let session = LogSession::open(path.clone()).unwrap();
+
+        let regex = search_text_snapshot(
+            7,
+            session.search_snapshot(),
+            "WARN|fatal".to_string(),
+            1,
+            0,
+            "next".to_string(),
+            true,
+            true,
+            false,
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(regex.total_matches, 2);
+        assert_eq!(regex.matches[regex.active_match_index - 1].line_number, 2);
+        assert_eq!(regex.active_match_index, 1);
+
+        let whole_word = search_text_snapshot(
+            7,
+            session.search_snapshot(),
+            "error".to_string(),
+            1,
+            1,
+            "next".to_string(),
+            false,
+            false,
+            true,
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(whole_word.total_matches, 1);
+        assert_eq!(whole_word.matches[0].line_number, 1);
+        assert_eq!(whole_word.active_match_index, 1);
+
+        let single = search_text_snapshot(
+            7,
+            session.search_snapshot(),
+            "error".to_string(),
+            1,
+            0,
+            "next".to_string(),
+            false,
+            false,
+            false,
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(single.matches.len(), 1);
+        assert_eq!(single.matches[0].line_number, 1);
         fs::remove_file(path).unwrap();
     }
 
@@ -1353,11 +1869,9 @@ mod tests {
         let session = LogSession::open(path).unwrap();
 
         assert!(session.markers.len() >= 100);
-        assert!(session
-            .markers
-            .iter()
-            .any(|marker| marker.message_id == 342
-                && marker.message_name == "S_GET_CSVFILE_RESULT"));
+        assert!(session.markers.iter().any(
+            |marker| marker.message_id == 342 && marker.message_name == "S_GET_CSVFILE_RESULT"
+        ));
         assert!(session
             .markers
             .iter()

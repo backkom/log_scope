@@ -87,6 +87,49 @@ type MarkerPayload = {
   parseError: string | null;
 };
 
+type LogSearchMatch = {
+  lineNumber: number;
+  startColumn: number;
+  endColumn: number;
+  linePreview: string;
+};
+
+type LogSearchResult = {
+  sessionId: number;
+  query: string;
+  direction: "next" | "previous";
+  caseSensitive: boolean;
+  useRegex: boolean;
+  wholeWord: boolean;
+  startLine: number;
+  scannedLines: number;
+  totalLines: number;
+  totalMatches: number;
+  activeMatchIndex: number;
+  durationMs: number;
+  truncated: boolean;
+  wrapped: boolean;
+  matches: LogSearchMatch[];
+};
+
+type SearchCache = {
+  sessionId: number;
+  fileSize: number;
+  lineCount: number;
+  query: string;
+  caseSensitive: boolean;
+  useRegex: boolean;
+  wholeWord: boolean;
+  result: LogSearchResult;
+};
+
+type LogTokenKind = "plain" | "bracket" | "number" | "identifier";
+
+type LogToken = {
+  kind: LogTokenKind;
+  text: string;
+};
+
 const ROW_HEIGHT = 24;
 const BOTTOM_PADDING_ROWS = 1;
 const OVERSCAN_ROWS = 80;
@@ -95,6 +138,7 @@ const TAIL_REFRESH_INTERVAL_MS = 1_000;
 const MINIMAP_WIDTH = 72;
 const GLOBAL_MINIMAP_HEIGHT = 44;
 const RIGHT_MINIMAP_FRAME_RATIO = 1 / 8;
+const MAX_TOKENIZED_CHARS = 4_096;
 
 function App() {
   const [health, setHealth] = React.useState<HealthCheck | null>(null);
@@ -116,6 +160,19 @@ function App() {
   const [selectedMarker, setSelectedMarker] = React.useState<LogMarker | null>(null);
   const [selectedPayload, setSelectedPayload] = React.useState<MarkerPayload | null>(null);
   const [globalMinimapWidth, setGlobalMinimapWidth] = React.useState(1);
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [searchCaseSensitive, setSearchCaseSensitive] = React.useState(false);
+  const [searchRegex, setSearchRegex] = React.useState(false);
+  const [searchWholeWord, setSearchWholeWord] = React.useState(false);
+  const [searchWrapAround, setSearchWrapAround] = React.useState(true);
+  const [searchFindAll, setSearchFindAll] = React.useState(true);
+  const [searchResult, setSearchResult] = React.useState<LogSearchResult | null>(null);
+  const [activeSearchMatch, setActiveSearchMatch] = React.useState<LogSearchMatch | null>(null);
+  const [isSearching, setIsSearching] = React.useState(false);
+  const [findBarOpen, setFindBarOpen] = React.useState(false);
+  const searchCacheRef = React.useRef<SearchCache | null>(null);
+  const findInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [logColorMode, setLogColorMode] = React.useState<"full" | "severity" | "off">("full");
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const globalMinimapRef = React.useRef<HTMLCanvasElement | null>(null);
   const localMinimapRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -132,6 +189,10 @@ function App() {
     invoke<HealthCheck>("health_check")
       .then(setHealth)
       .catch((err: unknown) => setError(String(err)));
+  }, []);
+
+  const closeFindBar = React.useCallback(() => {
+    setFindBarOpen(false);
   }, []);
 
   const loadMarkers = React.useCallback(async (sessionId: number) => {
@@ -264,6 +325,7 @@ function App() {
             : current,
         );
         if (metadata.appendedBytes > 0 || metadata.wasTruncated) {
+          searchCacheRef.current = null;
           await loadMarkers(metadata.sessionId);
         }
         setError(null);
@@ -310,6 +372,9 @@ function App() {
       setMarkers([]);
       setSelectedMarker(null);
       setSelectedPayload(null);
+      setSearchResult(null);
+      setActiveSearchMatch(null);
+      searchCacheRef.current = null;
       setPendingTailLines(0);
       setTailNotice(null);
       setScrollTop(0);
@@ -397,6 +462,146 @@ function App() {
     }
   };
 
+  const runSearch = async (
+    direction: "next" | "previous",
+    override?: {
+      query?: string;
+      startLine?: number;
+      startColumn?: number;
+      forceRefresh?: boolean;
+    },
+  ) => {
+    if (!logFile) {
+      return;
+    }
+
+    const query = override?.query ?? searchQuery;
+    if (!query) {
+      setSearchResult(null);
+      setActiveSearchMatch(null);
+      return;
+    }
+
+    if (searchFindAll && !override?.forceRefresh) {
+      const cached = searchCacheRef.current;
+      if (cached && isSearchCacheValid(cached, logFile, query, searchCaseSensitive, searchRegex, searchWholeWord)) {
+        const nextResult = navigateCachedSearch(
+          cached.result,
+          direction,
+          activeSearchMatch,
+          firstVisibleLine,
+          searchWrapAround,
+        );
+        setSearchResult(nextResult);
+        const match = getActiveSearchMatch(nextResult);
+        setActiveSearchMatch(match);
+        if (match) {
+          scrollToLineCentered(match.lineNumber);
+        }
+        return;
+      }
+    }
+
+    setIsSearching(true);
+    setError(null);
+    try {
+      let startLine: number;
+      let startColumn: number;
+      if (override?.startLine !== undefined || override?.startColumn !== undefined) {
+        startLine = override.startLine ?? firstVisibleLine;
+        startColumn = override.startColumn ?? 0;
+      } else if (activeSearchMatch && activeSearchMatch.lineNumber >= 1) {
+        startLine = activeSearchMatch.lineNumber;
+        if (direction === "next") {
+          startColumn = activeSearchMatch.startColumn + 1;
+        } else {
+          startColumn = activeSearchMatch.startColumn;
+        }
+      } else {
+        startLine = firstVisibleLine;
+        startColumn = 0;
+      }
+
+      const result = await invoke<LogSearchResult>("search_log_text", {
+        sessionId: logFile.sessionId,
+        query,
+        startLine: Math.min(Math.max(1, startLine), Math.max(logFile.lineCount, 1)),
+        startColumn,
+        direction,
+        caseSensitive: searchCaseSensitive,
+        useRegex: searchRegex,
+        wholeWord: searchWholeWord,
+        wrapAround: searchWrapAround,
+        findAll: searchFindAll,
+      });
+      if (searchFindAll) {
+        searchCacheRef.current = {
+          sessionId: logFile.sessionId,
+          fileSize: logFile.fileSize,
+          lineCount: logFile.lineCount,
+          query,
+          caseSensitive: searchCaseSensitive,
+          useRegex: searchRegex,
+          wholeWord: searchWholeWord,
+          result,
+        };
+      } else {
+        searchCacheRef.current = null;
+      }
+      setSearchResult(result);
+      const match = getActiveSearchMatch(result);
+      setActiveSearchMatch(match);
+      if (match) {
+        scrollToLineCentered(match.lineNumber);
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  React.useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "f") {
+        event.preventDefault();
+        const sel = window.getSelection();
+        const selectedText = sel ? sel.toString().trim() : "";
+        const queryToUse = selectedText || searchQuery;
+        if (selectedText) {
+          setSearchQuery(selectedText);
+        }
+        setSearchResult(null);
+        setActiveSearchMatch(null);
+        setFindBarOpen(true);
+        requestAnimationFrame(() => {
+          if (findInputRef.current) {
+            findInputRef.current.focus();
+            findInputRef.current.select();
+          }
+        });
+        if (queryToUse) {
+          void runSearch("next", {
+            query: queryToUse,
+            startLine: firstVisibleLine,
+            startColumn: 0,
+            forceRefresh: selectedText ? true : false,
+          });
+        }
+      }
+      if (event.key === "Escape" && findBarOpen) {
+        event.preventDefault();
+        setFindBarOpen(false);
+      }
+      if (event.key === "F3" && (findBarOpen || searchQuery)) {
+        event.preventDefault();
+        void runSearch(event.shiftKey ? "previous" : "next");
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [findBarOpen, searchQuery, logFile, activeSearchMatch, searchCaseSensitive, searchRegex, searchWholeWord, searchWrapAround, firstVisibleLine]);
+
   const totalHeight = logFile ? logFile.lineCount * ROW_HEIGHT : 0;
   const scrollSpaceHeight = logFile
     ? Math.max(totalHeight + BOTTOM_PADDING_ROWS * ROW_HEIGHT, viewportHeight)
@@ -427,6 +632,16 @@ function App() {
     () => new Set(markers.map((marker) => marker.startLine)),
     [markers],
   );
+  const activeSearchLine = activeSearchMatch?.lineNumber ?? 0;
+  const searchStatus = searchResult
+    ? searchResult.matches.length > 0
+      ? searchFindAll
+        ? `${searchResult.activeMatchIndex}/${searchResult.totalMatches} · L${getActiveSearchMatch(searchResult)?.lineNumber}:${getActiveSearchMatch(searchResult)?.startColumn} · ${searchResult.scannedLines.toLocaleString()} 行 · ${searchResult.durationMs} ms${searchResult.wrapped ? " · 已绕回" : ""}`
+        : `L${searchResult.matches[0].lineNumber}:${searchResult.matches[0].startColumn} · ${searchResult.scannedLines.toLocaleString()} 行 · ${searchResult.durationMs} ms${searchResult.wrapped ? " · 已绕回" : ""}`
+      : searchFindAll
+        ? `0/${searchResult.totalMatches} · 扫描 ${searchResult.scannedLines.toLocaleString()} 行 · ${searchResult.durationMs} ms`
+        : `无匹配 · 扫描 ${searchResult.scannedLines.toLocaleString()} 行 · ${searchResult.durationMs} ms`
+    : "⌘F 打开查找";
   const viewportLineCount = Math.max(1, Math.ceil(Math.max(viewportHeight, ROW_HEIGHT) / ROW_HEIGHT));
   const rightMinimapRange = React.useMemo(
     () => getRightMinimapRange(firstVisibleLine, viewportLineCount, Math.max(1, logFile?.lineCount ?? 1)),
@@ -726,6 +941,41 @@ function App() {
           ) : null}
         </section>
 
+        <section className="panel-section">
+          <h2>查找</h2>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => {
+              setFindBarOpen(true);
+              requestAnimationFrame(() => {
+                if (findInputRef.current) {
+                  findInputRef.current.focus();
+                  findInputRef.current.select();
+                }
+              });
+            }}
+          >
+            打开查找 (⌘F)
+          </button>
+          <p className="panel-hint">{searchStatus}</p>
+        </section>
+
+        <section className="panel-section">
+          <h2>显示</h2>
+          <div className="segmented-control" role="group" aria-label="日志着色模式">
+            <button type="button" className={logColorMode === "full" ? "is-active" : ""} onClick={() => setLogColorMode("full")}>
+              着色
+            </button>
+            <button type="button" className={logColorMode === "severity" ? "is-active" : ""} onClick={() => setLogColorMode("severity")}>
+              等级
+            </button>
+            <button type="button" className={logColorMode === "off" ? "is-active" : ""} onClick={() => setLogColorMode("off")}>
+              关闭
+            </button>
+          </div>
+        </section>
+
         <section className="panel-section marker-panel">
           <h2>Marker</h2>
           {selectedMarker ? (
@@ -803,11 +1053,23 @@ function App() {
                     <div
                       className={`log-row${line.text === undefined ? " is-loading" : ""}${
                         visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
-                      }`}
+                      }${activeSearchLine === line.lineNumber ? " has-active-search" : ""} ${getSeverityClass(line.text, logColorMode)}`}
                       key={line.lineNumber}
                     >
                       <span className="line-number">{line.lineNumber}</span>
-                      <code title={line.text ?? ""}>{line.text ?? " "}</code>
+                      <code title={line.text ?? ""}>
+                        {line.text === undefined
+                          ? " "
+                          : renderLogLine(
+                              line.text,
+                              searchQuery,
+                              searchCaseSensitive,
+                              searchRegex,
+                              searchWholeWord,
+                              logColorMode,
+                              activeSearchLine === line.lineNumber,
+                            )}
+                      </code>
                     </div>
                   ))}
                 </div>
@@ -838,6 +1100,131 @@ function App() {
             </div>
           )}
         </div>
+
+        {findBarOpen && (
+          <div className="find-bar-overlay">
+            <button
+              type="button"
+              className={`find-bar-btn find-bar-toggle${searchRegex ? " is-toggled" : ""}`}
+              onClick={() => {
+                searchCacheRef.current = null;
+                setSearchResult(null);
+                setActiveSearchMatch(null);
+                setSearchRegex((prev) => !prev);
+              }}
+              title="正则表达式"
+            >
+              .*
+            </button>
+            <button
+              type="button"
+              className={`find-bar-btn find-bar-toggle${searchCaseSensitive ? " is-toggled" : ""}`}
+              onClick={() => {
+                searchCacheRef.current = null;
+                setSearchResult(null);
+                setActiveSearchMatch(null);
+                setSearchCaseSensitive((prev) => !prev);
+              }}
+              title="区分大小写"
+            >
+              Aa
+            </button>
+            <button
+              type="button"
+              className={`find-bar-btn find-bar-toggle${searchWholeWord ? " is-toggled" : ""}`}
+              onClick={() => {
+                searchCacheRef.current = null;
+                setSearchResult(null);
+                setActiveSearchMatch(null);
+                setSearchWholeWord((prev) => !prev);
+              }}
+              title="全字匹配"
+            >
+              W
+            </button>
+            <button
+              type="button"
+              className={`find-bar-btn find-bar-toggle${searchWrapAround ? " is-toggled" : ""}`}
+              onClick={() => setSearchWrapAround((prev) => !prev)}
+              title="循环查找"
+            >
+              ⟳
+            </button>
+            <button
+              type="button"
+              className={`find-bar-btn find-bar-toggle${searchFindAll ? " is-toggled" : ""}`}
+              onClick={() => {
+                searchCacheRef.current = null;
+                setSearchResult(null);
+                setActiveSearchMatch(null);
+                setSearchFindAll((prev) => !prev);
+              }}
+              title="查找所有"
+            >
+              All
+            </button>
+            <span className="find-bar-separator" />
+            <input
+              ref={findInputRef}
+              value={searchQuery}
+              onChange={(event) => {
+                searchCacheRef.current = null;
+                setSearchResult(null);
+                setActiveSearchMatch(null);
+                setSearchQuery(event.target.value);
+              }}
+              placeholder="查找"
+              aria-label="查找文本"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  closeFindBar();
+                } else if (event.key === "Enter") {
+                  event.preventDefault();
+                  void runSearch(event.shiftKey ? "previous" : "next");
+                }
+              }}
+            />
+            <span className="find-bar-match-count">
+              {searchResult
+                ? searchResult.matches.length > 0
+                  ? searchFindAll
+                    ? `${searchResult.activeMatchIndex}/${searchResult.totalMatches}${searchResult.wrapped ? " ↻" : ""}`
+                    : `L${searchResult.matches[0].lineNumber}${searchResult.wrapped ? " ↻" : ""}`
+                  : searchFindAll
+                    ? `0/${searchResult.totalMatches}`
+                    : "无匹配"
+                : ""}
+            </span>
+            <span className="find-bar-separator" />
+            <button
+              type="button"
+              className="find-bar-btn"
+              onClick={() => void runSearch("next")}
+              disabled={!logFile || isSearching || !searchQuery}
+              title="查找下一个 (F3 / Enter)"
+            >
+              Find
+            </button>
+            <button
+              type="button"
+              className="find-bar-btn"
+              onClick={() => void runSearch("previous")}
+              disabled={!logFile || isSearching || !searchQuery}
+              title="查找上一个 (Shift+F3 / Shift+Enter)"
+            >
+              Find Prev
+            </button>
+            <button
+              type="button"
+              className="find-bar-close"
+              onClick={closeFindBar}
+              title="关闭 (Esc)"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {error ? <p className="error-message">{error}</p> : null}
         {tailNotice ? <p className="tail-notice">{tailNotice}</p> : null}
@@ -990,6 +1377,344 @@ function drawMessageTriangle(
   }
   context.closePath();
   context.fill();
+}
+
+function isSearchCacheValid(
+  cache: SearchCache,
+  logFile: LogFileMetadata,
+  query: string,
+  caseSensitive: boolean,
+  useRegex: boolean,
+  wholeWord: boolean,
+) {
+  return (
+    cache.sessionId === logFile.sessionId &&
+    cache.fileSize === logFile.fileSize &&
+    cache.lineCount === logFile.lineCount &&
+    cache.query === query &&
+    cache.caseSensitive === caseSensitive &&
+    cache.useRegex === useRegex &&
+    cache.wholeWord === wholeWord
+  );
+}
+
+function getActiveSearchMatch(result: LogSearchResult | null) {
+  if (!result || result.matches.length === 0) {
+    return null;
+  }
+  return result.matches[Math.max(0, result.activeMatchIndex - 1)] ?? result.matches[0] ?? null;
+}
+
+function navigateCachedSearch(
+  result: LogSearchResult,
+  direction: "next" | "previous",
+  activeMatch: LogSearchMatch | null,
+  firstVisibleLine: number,
+  wrapAround: boolean,
+) {
+  if (result.matches.length === 0) {
+    return result;
+  }
+
+  const currentIndex = activeMatch
+    ? result.matches.findIndex(
+        (match) =>
+          match.lineNumber === activeMatch.lineNumber &&
+          match.startColumn === activeMatch.startColumn &&
+          match.endColumn === activeMatch.endColumn,
+      )
+    : -1;
+  let nextIndex = currentIndex;
+  let wrapped = false;
+
+  if (currentIndex === -1) {
+    nextIndex =
+      direction === "next"
+        ? result.matches.findIndex((match) => match.lineNumber >= firstVisibleLine)
+        : findLastIndex(result.matches, (match) => match.lineNumber <= firstVisibleLine);
+    if (nextIndex === -1) {
+      nextIndex = direction === "next" ? 0 : result.matches.length - 1;
+      wrapped = true;
+    }
+  } else if (direction === "next") {
+    nextIndex = currentIndex + 1;
+    if (nextIndex >= result.matches.length) {
+      if (!wrapAround) {
+        return result;
+      }
+      nextIndex = 0;
+      wrapped = true;
+    }
+  } else {
+    nextIndex = currentIndex - 1;
+    if (nextIndex < 0) {
+      if (!wrapAround) {
+        return result;
+      }
+      nextIndex = result.matches.length - 1;
+      wrapped = true;
+    }
+  }
+
+  return {
+    ...result,
+    direction,
+    activeMatchIndex: nextIndex + 1,
+    wrapped,
+  };
+}
+
+function findLastIndex<T>(values: T[], predicate: (value: T) => boolean) {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    if (predicate(values[index])) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function renderLogLine(
+  text: string,
+  searchQuery: string,
+  caseSensitive: boolean,
+  useRegex: boolean,
+  wholeWord: boolean,
+  colorMode: "full" | "severity" | "off",
+  activeLine: boolean,
+) {
+  const tokens =
+    colorMode === "full"
+      ? tokenizeLogLine(text)
+      : [
+          {
+            kind: "plain" as const,
+            text,
+          },
+        ];
+  const searchRanges = searchQuery ? findSearchRanges(text, searchQuery, caseSensitive, useRegex, wholeWord) : [];
+  let absoluteOffset = 0;
+
+  return tokens.map((token, tokenIndex) => {
+    const tokenStart = absoluteOffset;
+    const tokenEnd = tokenStart + token.text.length;
+    absoluteOffset += token.text.length;
+
+    if (searchRanges.length === 0) {
+      return (
+        <span className={`log-token token-${token.kind}`} key={tokenIndex}>
+          {token.text}
+        </span>
+      );
+    }
+
+    const pieces = splitTokenByRanges(token.text, tokenStart, tokenEnd, searchRanges);
+    return pieces.map((piece, pieceIndex) => {
+      return (
+        <span
+          className={`log-token token-${token.kind}${piece.matched ? " search-hit" : ""}${
+            piece.matched && activeLine ? " is-active" : ""
+          }`}
+          key={`${tokenIndex}-${pieceIndex}-${piece.start}`}
+        >
+          {piece.text}
+        </span>
+      );
+    });
+  });
+}
+
+function tokenizeLogLine(text: string): LogToken[] {
+  if (!text) {
+    return [{ kind: "plain", text: " " }];
+  }
+
+  const tokenizedText = text.slice(0, MAX_TOKENIZED_CHARS);
+  const overflowText = text.slice(MAX_TOKENIZED_CHARS);
+  const pattern = /\([^)]*?\)|\[[^\]]*?\]|\{[^}]*?\}|\b(?:\d+[-/.:T])*\d+\b|\b[a-z_][a-z0-9_]*\b/gi;
+  const tokens: LogToken[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(tokenizedText))) {
+    if (match.index > lastIndex) {
+      tokens.push({ kind: "plain", text: tokenizedText.slice(lastIndex, match.index) });
+    }
+
+    const value = match[0];
+    tokens.push({
+      kind: classifyToken(value),
+      text: value,
+    });
+    lastIndex = match.index + value.length;
+  }
+
+  if (lastIndex < tokenizedText.length) {
+    tokens.push({ kind: "plain", text: tokenizedText.slice(lastIndex) });
+  }
+  if (overflowText) {
+    tokens.push({ kind: "plain", text: overflowText });
+  }
+
+  return tokens.length > 0 ? tokens : [{ kind: "plain", text }];
+}
+
+function classifyToken(value: string): LogTokenKind {
+  const first = value[0];
+  if (first === "(" || first === "[" || first === "{") {
+    return "bracket";
+  }
+  if (/\d/.test(first)) {
+    return "number";
+  }
+  return "identifier";
+}
+
+function findSearchRanges(
+  text: string,
+  query: string,
+  caseSensitive: boolean,
+  useRegex: boolean,
+  wholeWord: boolean,
+) {
+  if (!query) {
+    return [];
+  }
+
+  const ranges: Array<{ start: number; end: number }> = [];
+  if (useRegex || wholeWord) {
+    const pattern = buildSearchPattern(query, caseSensitive, useRegex, wholeWord);
+    if (!pattern) {
+      return ranges;
+    }
+    for (const match of text.matchAll(pattern)) {
+      const value = match[0];
+      if (!value) {
+        continue;
+      }
+      const start = match.index ?? 0;
+      ranges.push({ start, end: start + value.length });
+    }
+    return ranges;
+  }
+
+  const haystack = caseSensitive ? text : toAsciiLowerCase(text);
+  const normalizedQuery = caseSensitive ? query : toAsciiLowerCase(query);
+  let offset = 0;
+
+  while (offset <= text.length) {
+    const foundAt = haystack.indexOf(normalizedQuery, offset);
+    if (foundAt === -1) {
+      break;
+    }
+    const end = foundAt + normalizedQuery.length;
+    ranges.push({ start: foundAt, end });
+    offset = end > foundAt ? end : foundAt + 1;
+  }
+
+  return ranges;
+}
+
+function buildSearchPattern(query: string, caseSensitive: boolean, useRegex: boolean, wholeWord: boolean) {
+  try {
+    const body = useRegex ? query : escapeRegExp(query);
+    const pattern = wholeWord ? `\\b(?:${body})\\b` : body;
+    const flags = caseSensitive ? "g" : "gi";
+    const regex = new RegExp(pattern, flags);
+    if (regex.test("")) {
+      return null;
+    }
+    regex.lastIndex = 0;
+    return regex;
+  } catch {
+    return null;
+  }
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
+function toAsciiLowerCase(value: string) {
+  return value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
+
+function splitTokenByRanges(
+  tokenText: string,
+  tokenStart: number,
+  tokenEnd: number,
+  ranges: Array<{ start: number; end: number }>,
+) {
+  const pieces: Array<{ text: string; matched: boolean; start: number }> = [];
+  let cursor = tokenStart;
+
+  for (const range of ranges) {
+    const start = Math.max(tokenStart, range.start);
+    const end = Math.min(tokenEnd, range.end);
+    if (end <= tokenStart || start >= tokenEnd || start >= end) {
+      continue;
+    }
+    if (start > cursor) {
+      pieces.push({
+        text: tokenText.slice(cursor - tokenStart, start - tokenStart),
+        matched: false,
+        start: cursor,
+      });
+    }
+    pieces.push({
+      text: tokenText.slice(start - tokenStart, end - tokenStart),
+      matched: true,
+      start,
+    });
+    cursor = end;
+  }
+
+  if (cursor < tokenEnd) {
+    pieces.push({
+      text: tokenText.slice(cursor - tokenStart),
+      matched: false,
+      start: cursor,
+    });
+  }
+
+  return pieces.length > 0 ? pieces : [{ text: tokenText, matched: false, start: tokenStart }];
+}
+
+function getSeverityClass(text: string | undefined, colorMode: "full" | "severity" | "off") {
+  if (!text || colorMode === "off") {
+    return "";
+  }
+
+  const lower = text.toLocaleLowerCase();
+  if (
+    lower.includes("success") ||
+    lower.includes("succeed") ||
+    lower.includes("without error") ||
+    lower.includes("no error")
+  ) {
+    return "severity-success";
+  }
+  if (
+    lower.includes("error") ||
+    lower.includes("exception") ||
+    lower.includes("fail") ||
+    lower.includes("fatal") ||
+    lower.includes("crash") ||
+    lower.includes("violat")
+  ) {
+    return "severity-error";
+  }
+  if (
+    lower.includes("warn") ||
+    lower.includes("critical") ||
+    lower.includes("conflict") ||
+    lower.includes("invalid") ||
+    lower.includes("not ready") ||
+    lower.includes("not found") ||
+    lower.includes("out of date")
+  ) {
+    return "severity-warning";
+  }
+  return "";
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

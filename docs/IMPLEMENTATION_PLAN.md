@@ -93,22 +93,39 @@
 - 点击 marker 能定位到行并查看 JSON。
 - 高密度 marker 场景下 minimap 不依赖大量 DOM 节点。
 
-## 阶段 4：搜索与定位
+## 阶段 4：搜索、定位与轻量日志着色
 
-目标：提供接近编辑器的基础查找体验。
+目标：提供接近编辑器的基础查找体验，并让可见文本具备轻量日志着色能力。
+
+状态：已完成第一版编码。当前支持 Rust command `search_log_text` 执行 find next / previous，支持 Regex、大小写开关、全字匹配、绕回扫描、查找所有、全文件匹配总数、当前匹配序号、耗时和扫描行数反馈；搜索扫描基于 session 快照执行，不长时间占用 session 锁。前端提供查找面板、上下跳转、当前匹配项居中、`当前/总数` 显示和可见范围匹配高亮；查找所有默认开启并缓存当前匹配集，文件追加、截断、重新打开或查找条件变化后缓存失效。前端已加入轻量日志着色，支持完整着色、仅 severity、关闭三种模式；完整着色只处理当前渲染窗口内每行前 4 KB 文本，并识别 severity 行背景、括号片段、数字/时间戳和简单 identifier。仍需补真正的搜索任务取消、分批/渐进式结果返回、跨 append 的增量更新，以及 50-100 MB 真实文件搜索耗时记录。
+
+新增要求：
+
+- 文本显示需要着色，但只能采用轻量逐行规则，不引入完整 lexer、AST 或全文件 token 存储。
+- 着色参考 CudaText `Log files ^` lite lexer：只处理可见行和少量 overscan，规则大小写不敏感，每行只处理有限长度，建议默认最多前 4 KB。
+- 第一版规则覆盖 success、error/exception/fail/fatal/crash、warning/critical/conflict/invalid/not found/out of date、括号/方括号/花括号片段、数字/时间戳、简单 identifier。
+- 搜索匹配高亮和 marker 行背景的视觉优先级高于基础日志着色。
+- 如果大文件或高频 tail 暴露渲染成本，必须可降级为仅 severity 行级着色或关闭着色。
 
 任务：
 
 - Rust 实现普通文本搜索，支持取消和渐进式结果。
 - 前端实现 find next、find previous、当前匹配项、可见范围高亮。
+- 前端实现可见行轻量 tokenizer，将原始文本拆成稳定 span，避免全量 DOM decoration。
+- 定义日志着色样式 token：severity 行级状态、bracket、number/time、identifier、plain。
+- 对超长行设置 tokenization 上限；超过上限的尾部按 plain 文本渲染。
+- 确保搜索高亮可以切分并覆盖已有 token span，不破坏行号、横向滚动和虚拟列表布局。
 - 新增行追加后，搜索状态保持稳定，并可继续扫描新增内容。
 - 增加跳转到 byte offset 的内部能力，作为行号跳转补充。
-- 暂缓 regex，等普通搜索性能和交互稳定后再加入。
+- Regex 第一版已接入查找栏；后续需继续补复杂正则性能约束、取消和错误提示细化。
 
 验收：
 
 - 50-100 MB 文件上可以搜索普通文本，期间应用可继续操作。
 - 可见匹配项高亮不要求全量 DOM decoration。
+- 可见行具备日志着色，滚动时只为当前渲染窗口计算 token。
+- 超长行和高频追加场景下着色不会造成明显卡顿，并可手动关闭或降级。
+- 搜索匹配项、当前匹配项、marker 行背景与日志基础着色可以同时显示且层级清晰。
 - 搜索结果未完成时有明确状态。
 
 ## 阶段 5：socket 数据源
