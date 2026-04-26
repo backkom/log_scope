@@ -1424,355 +1424,348 @@ function App() {
 
       <div className="app-body" style={{ gridTemplateColumns: showSourcePanel ? `${sourcePanelWidth}px 4px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
         <aside className="source-panel" style={{ display: showSourcePanel ? 'flex' : 'none' }}>
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true" />
-          <div>
-            <h1>log_scope</h1>
-            <p>只读 log viewer</p>
-          </div>
-        </div>
 
-        <section className="panel-section">
-          <h2>状态</h2>
-          <dl className="status-list">
-            <div>
-              <dt>Core</dt>
-              <dd>{health ? health.status : "连接中"}</dd>
-            </div>
-            <div>
-              <dt>版本</dt>
-              <dd>{health ? health.version : "-"}</dd>
-            </div>
-            <div>
-              <dt>Marker</dt>
-              <dd>{logFile ? markers.length.toLocaleString() : "-"}</dd>
-            </div>
-            <div>
-              <dt>Fixture</dt>
-              <dd>
-                {lastFixture
-                  ? `${lastFixture.profile} / ${formatBytes(lastFixture.fileSize)} / ${lastFixture.generationDurationMs} ms`
-                  : "-"}
-              </dd>
-            </div>
-            <div>
-              <dt>Bench</dt>
-              <dd>
-                {lastBenchmark
-                  ? `idx ${lastBenchmark.indexDurationMs} / search ${lastBenchmark.searchDurationMs} / read ${lastBenchmark.readVisibleDurationMs} ms`
-                  : "-"}
-              </dd>
-            </div>
-          </dl>
-        </section>
+          <section className="panel-section">
+            <h2>状态</h2>
+            <dl className="status-list">
+              <div>
+                <dt>Core</dt>
+                <dd>{health ? health.status : "连接中"}</dd>
+              </div>
+              <div>
+                <dt>版本</dt>
+                <dd>{health ? health.version : "-"}</dd>
+              </div>
+              <div>
+                <dt>Marker</dt>
+                <dd>{logFile ? markers.length.toLocaleString() : "-"}</dd>
+              </div>
+              <div>
+                <dt>Fixture</dt>
+                <dd>
+                  {lastFixture
+                    ? `${lastFixture.profile} / ${formatBytes(lastFixture.fileSize)} / ${lastFixture.generationDurationMs} ms`
+                    : "-"}
+                </dd>
+              </div>
+              <div>
+                <dt>Bench</dt>
+                <dd>
+                  {lastBenchmark
+                    ? `idx ${lastBenchmark.indexDurationMs} / search ${lastBenchmark.searchDurationMs} / read ${lastBenchmark.readVisibleDurationMs} ms`
+                    : "-"}
+                </dd>
+              </div>
+            </dl>
+          </section>
 
-        <section className="panel-section marker-panel">
-          <h2>Marker</h2>
-          {selectedMarker ? (
-            <>
-              <button type="button" className="marker-summary" onClick={() => scrollToLine(selectedMarker.startLine)}>
-                <span className="marker-dot" style={{ background: selectedMarker.color }} />
-                <strong>{selectedMarker.title}</strong>
-                <small>
-                  {selectedMarker.kind} {selectedMarker.direction ? `· ${selectedMarker.direction}` : ""} · L
-                  {selectedMarker.startLine} · {selectedMarker.parseStatus}
-                </small>
-              </button>
-              {!selectedPayload ? <pre className="payload-preview">载入中...</pre> : null}
-              {selectedPayload?.parsedJson ? (
-                <div className="json-tree-viewer">
-                  <JsonView
-                    src={selectedPayload.parsedJson}
-                    collapsed={2}
-                    collapseStringsAfterLength={240}
-                    collapseObjectsAfterLength={80}
-                    enableClipboard
-                  />
-                </div>
-              ) : selectedPayload ? (
-                <pre className="payload-preview">{selectedPayload.rawText || "(empty payload)"}</pre>
-              ) : null}
-              {selectedPayload?.parseError ? <p className="payload-note">{selectedPayload.parseError}</p> : null}
-            </>
-          ) : (
-            <p className="panel-hint">{markers.length > 0 ? "点击右侧 marker 查看消息内容" : "当前文件未识别到消息 marker"}</p>
-          )}
-        </section>
-      </aside>
-
-      <div
-        className="panel-resizer"
-        style={{ display: showSourcePanel ? 'block' : 'none' }}
-        onPointerDown={(e) => {
-          e.currentTarget.setPointerCapture(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-            setSourcePanelWidth(Math.max(150, Math.min(e.clientX, window.innerWidth - 200)));
-          }
-        }}
-        onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
-      />
-
-      <section
-        className={`viewer-area${showGlobalMinimap ? "" : " is-global-minimap-hidden"}${showLocalMinimap ? "" : " is-local-minimap-hidden"
-          }`}
-      >
-        {showGlobalMinimap ? (
-          <div className="global-minimap-bar">
-            <canvas
-              className="global-minimap"
-              ref={globalMinimapRef}
-              width="1024"
-              height={GLOBAL_MINIMAP_HEIGHT}
-              aria-label="global marker minimap"
-              onClick={handleGlobalMinimapClick}
-            />
-          </div>
-        ) : (
-          <div className="global-minimap-bar is-hidden" aria-hidden="true" />
-        )}
+          <section className="panel-section marker-panel">
+            <h2>Marker</h2>
+            {selectedMarker ? (
+              <>
+                <button type="button" className="marker-summary" onClick={() => scrollToLine(selectedMarker.startLine)}>
+                  <span className="marker-dot" style={{ background: selectedMarker.color }} />
+                  <strong>{selectedMarker.title}</strong>
+                  <small>
+                    {selectedMarker.kind} {selectedMarker.direction ? `· ${selectedMarker.direction}` : ""} · L
+                    {selectedMarker.startLine} · {selectedMarker.parseStatus}
+                  </small>
+                </button>
+                {!selectedPayload ? <pre className="payload-preview">载入中...</pre> : null}
+                {selectedPayload?.parsedJson ? (
+                  <div className="json-tree-viewer">
+                    <JsonView
+                      src={selectedPayload.parsedJson}
+                      collapsed={2}
+                      collapseStringsAfterLength={240}
+                      collapseObjectsAfterLength={80}
+                      enableClipboard
+                    />
+                  </div>
+                ) : selectedPayload ? (
+                  <pre className="payload-preview">{selectedPayload.rawText || "(empty payload)"}</pre>
+                ) : null}
+                {selectedPayload?.parseError ? <p className="payload-note">{selectedPayload.parseError}</p> : null}
+              </>
+            ) : (
+              <p className="panel-hint">{markers.length > 0 ? "点击右侧 marker 查看消息内容" : "当前文件未识别到消息 marker"}</p>
+            )}
+          </section>
+        </aside>
 
         <div
-          className="viewer-layout"
-          ref={viewportRef}
-          aria-label="log viewer"
-          tabIndex={-1}
-          onScroll={(event) => {
-            const nextScrollTop = event.currentTarget.scrollTop;
-            setScrollTop(nextScrollTop);
-            if (
-              logFile &&
-              nextScrollTop + event.currentTarget.clientHeight >=
-              Math.max(0, logFile.lineCount * ROW_HEIGHT - ROW_HEIGHT * 2)
-            ) {
-              setPendingTailLines(0);
+          className="panel-resizer"
+          style={{ display: showSourcePanel ? 'block' : 'none' }}
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+              setSourcePanelWidth(Math.max(150, Math.min(e.clientX, window.innerWidth - 200)));
             }
           }}
-        >
-          {logFile ? (
-            <div className="viewer-scroll-space" style={{ height: scrollSpaceHeight }}>
-              <div className="log-viewport" style={{ height: viewportHeight || undefined }}>
-                <div className="visible-lines" style={{ transform: `translateY(${visibleOffset}px)` }}>
-                  {renderedLines.map((line) => (
-                    <div
-                      className={`log-row${line.text === undefined ? " is-loading" : ""}${visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
-                        }${activeSearchLine === line.lineNumber ? " has-active-search" : ""}${selectedLine === line.lineNumber ? " has-selected-line" : ""
-                        } ${getSeverityClass(line.text, logColorMode)}`}
-                      key={line.lineNumber}
-                      data-line-number={line.lineNumber}
-                    >
-                      <span className="line-number">{line.lineNumber}</span>
-                      <code title={line.text ?? ""}>
-                        {line.text === undefined
-                          ? " "
-                          : renderLogLine(
-                            line.text,
-                            searchQuery,
-                            searchCaseSensitive,
-                            searchRegex,
-                            searchWholeWord,
-                            logColorMode,
-                            line.lineNumber,
-                            activeSearchLine === line.lineNumber,
-                            selectedWord,
-                            selectedWordRange,
-                          )}
-                      </code>
-                    </div>
-                  ))}
-                </div>
-              </div>
+          onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
+        />
 
-              {showLocalMinimap ? (
-                <canvas
-                  className="minimap-placeholder local-minimap"
-                  ref={localMinimapRef}
-                  width={MINIMAP_WIDTH}
-                  height="640"
-                  aria-label="local marker minimap"
-                  onPointerDown={handleLocalMinimapPointerDown}
-                  onPointerMove={handleLocalMinimapPointerMove}
-                  onPointerUp={stopLocalMinimapDrag}
-                  onPointerCancel={stopLocalMinimapDrag}
-                />
-              ) : null}
+        <section
+          className={`viewer-area${showGlobalMinimap ? "" : " is-global-minimap-hidden"}${showLocalMinimap ? "" : " is-local-minimap-hidden"
+            }`}
+        >
+          {showGlobalMinimap ? (
+            <div className="global-minimap-bar">
+              <canvas
+                className="global-minimap"
+                ref={globalMinimapRef}
+                width="1024"
+                height={GLOBAL_MINIMAP_HEIGHT}
+                aria-label="global marker minimap"
+                onClick={handleGlobalMinimapClick}
+              />
             </div>
           ) : (
-            <div className="viewer-scroll-space empty-scroll-space">
-              <div className="log-viewport">
-                <div className="empty-state">
-                  <strong>等待文件</strong>
-                  <span>将文件拖拽入后打开；viewer 只渲染当前可见行。</span>
-                </div>
-              </div>
+            <div className="global-minimap-bar is-hidden" aria-hidden="true" />
+          )}
 
-              {showLocalMinimap ? (
-                <canvas className="minimap-placeholder" width={MINIMAP_WIDTH} height="640" aria-label="minimap placeholder" />
-              ) : null}
+          <div
+            className="viewer-layout"
+            ref={viewportRef}
+            aria-label="log viewer"
+            tabIndex={-1}
+            onScroll={(event) => {
+              const nextScrollTop = event.currentTarget.scrollTop;
+              setScrollTop(nextScrollTop);
+              if (
+                logFile &&
+                nextScrollTop + event.currentTarget.clientHeight >=
+                Math.max(0, logFile.lineCount * ROW_HEIGHT - ROW_HEIGHT * 2)
+              ) {
+                setPendingTailLines(0);
+              }
+            }}
+          >
+            {logFile ? (
+              <div className="viewer-scroll-space" style={{ height: scrollSpaceHeight }}>
+                <div className="log-viewport" style={{ height: viewportHeight || undefined }}>
+                  <div className="visible-lines" style={{ transform: `translateY(${visibleOffset}px)` }}>
+                    {renderedLines.map((line) => (
+                      <div
+                        className={`log-row${line.text === undefined ? " is-loading" : ""}${visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
+                          }${activeSearchLine === line.lineNumber ? " has-active-search" : ""}${selectedLine === line.lineNumber ? " has-selected-line" : ""
+                          } ${getSeverityClass(line.text, logColorMode)}`}
+                        key={line.lineNumber}
+                        data-line-number={line.lineNumber}
+                      >
+                        <span className="line-number">{line.lineNumber}</span>
+                        <code title={line.text ?? ""}>
+                          {line.text === undefined
+                            ? " "
+                            : renderLogLine(
+                              line.text,
+                              searchQuery,
+                              searchCaseSensitive,
+                              searchRegex,
+                              searchWholeWord,
+                              logColorMode,
+                              line.lineNumber,
+                              activeSearchLine === line.lineNumber,
+                              selectedWord,
+                              selectedWordRange,
+                            )}
+                        </code>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {showLocalMinimap ? (
+                  <canvas
+                    className="minimap-placeholder local-minimap"
+                    ref={localMinimapRef}
+                    width={MINIMAP_WIDTH}
+                    height="640"
+                    aria-label="local marker minimap"
+                    onPointerDown={handleLocalMinimapPointerDown}
+                    onPointerMove={handleLocalMinimapPointerMove}
+                    onPointerUp={stopLocalMinimapDrag}
+                    onPointerCancel={stopLocalMinimapDrag}
+                  />
+                ) : null}
+              </div>
+            ) : (
+              <div className="viewer-scroll-space empty-scroll-space">
+                <div className="log-viewport">
+                  <div className="empty-state">
+                    <strong>等待文件</strong>
+                    <span>将文件拖拽入后打开；viewer 只渲染当前可见行。</span>
+                  </div>
+                </div>
+
+                {showLocalMinimap ? (
+                  <canvas className="minimap-placeholder" width={MINIMAP_WIDTH} height="640" aria-label="minimap placeholder" />
+                ) : null}
+              </div>
+            )}
+          </div>
+
+          {gotoBarOpen ? (
+            <form className="goto-line-bar" onSubmit={jumpToInputLine}>
+              <input
+                ref={gotoInputRef}
+                value={jumpLine}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  setJumpLine(nextValue);
+                  jumpToLineFromText(nextValue);
+                }}
+                inputMode="numeric"
+                placeholder="输入行数"
+                aria-label="输入行数"
+                onKeyDown={(event) => {
+                  event.stopPropagation();
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeGotoLineBar();
+                  }
+                }}
+              />
+              <button type="submit" className="find-bar-btn" disabled={!logFile}>
+                Go
+              </button>
+            </form>
+          ) : null}
+
+          {findBarOpen && (
+            <div className="find-bar-overlay">
+              <button
+                type="button"
+                className={`find-bar-btn find-bar-toggle${searchRegex ? " is-toggled" : ""}`}
+                onClick={() => {
+                  searchCacheRef.current = null;
+                  setSearchResult(null);
+                  setActiveSearchMatch(null);
+                  setSearchRegex((prev) => !prev);
+                }}
+                title="正则表达式"
+              >
+                .*
+              </button>
+              <button
+                type="button"
+                className={`find-bar-btn find-bar-toggle${searchCaseSensitive ? " is-toggled" : ""}`}
+                onClick={() => {
+                  searchCacheRef.current = null;
+                  setSearchResult(null);
+                  setActiveSearchMatch(null);
+                  setSearchCaseSensitive((prev) => !prev);
+                }}
+                title="区分大小写"
+              >
+                Aa
+              </button>
+              <button
+                type="button"
+                className={`find-bar-btn find-bar-toggle${searchWholeWord ? " is-toggled" : ""}`}
+                onClick={() => {
+                  searchCacheRef.current = null;
+                  setSearchResult(null);
+                  setActiveSearchMatch(null);
+                  setSearchWholeWord((prev) => !prev);
+                }}
+                title="全字匹配"
+              >
+                W
+              </button>
+              <button
+                type="button"
+                className={`find-bar-btn find-bar-toggle${searchWrapAround ? " is-toggled" : ""}`}
+                onClick={() => setSearchWrapAround((prev) => !prev)}
+                title="循环查找"
+              >
+                ⟳
+              </button>
+              <button
+                type="button"
+                className={`find-bar-btn find-bar-toggle${searchFindAll ? " is-toggled" : ""}`}
+                onClick={() => {
+                  searchCacheRef.current = null;
+                  setSearchResult(null);
+                  setActiveSearchMatch(null);
+                  setSearchFindAll((prev) => !prev);
+                }}
+                title="查找所有"
+              >
+                All
+              </button>
+              <span className="find-bar-separator" />
+              <input
+                ref={findInputRef}
+                value={searchQuery}
+                onChange={(event) => {
+                  searchCacheRef.current = null;
+                  setSearchResult(null);
+                  setActiveSearchMatch(null);
+                  setSearchQuery(event.target.value);
+                }}
+                placeholder="查找"
+                aria-label="查找文本"
+                onKeyDown={(event) => {
+                  event.stopPropagation();
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeFindBar();
+                  } else if (event.key === "Enter") {
+                    event.preventDefault();
+                    void (async () => {
+                      await runSearch(event.shiftKey ? "previous" : "next");
+                      focusViewer();
+                    })();
+                  }
+                }}
+              />
+              <span className="find-bar-match-count">
+                {searchResult
+                  ? searchResult.matches.length > 0
+                    ? searchFindAll
+                      ? `${searchResult.activeMatchIndex}/${searchResult.totalMatches}${searchResult.wrapped ? " ↻" : ""}`
+                      : `L${searchResult.matches[0].lineNumber}${searchResult.wrapped ? " ↻" : ""}`
+                    : searchFindAll
+                      ? `0/${searchResult.totalMatches}`
+                      : "无匹配"
+                  : ""}
+              </span>
+              <span className="find-bar-separator" />
+              <button
+                type="button"
+                className="find-bar-btn"
+                onClick={() => void runSearch("next")}
+                disabled={!logFile || isSearching || !searchQuery}
+                title="查找下一个 (F3 / Enter)"
+              >
+                Find
+              </button>
+              <button
+                type="button"
+                className="find-bar-btn"
+                onClick={() => void runSearch("previous")}
+                disabled={!logFile || isSearching || !searchQuery}
+                title="查找上一个 (Shift+F3 / Shift+Enter)"
+              >
+                Find Prev
+              </button>
+              <button
+                type="button"
+                className="find-bar-close"
+                onClick={closeFindBar}
+                title="关闭 (Esc)"
+              >
+                ✕
+              </button>
             </div>
           )}
-        </div>
 
-        {gotoBarOpen ? (
-          <form className="goto-line-bar" onSubmit={jumpToInputLine}>
-            <input
-              ref={gotoInputRef}
-              value={jumpLine}
-              onChange={(event) => {
-                const nextValue = event.target.value;
-                setJumpLine(nextValue);
-                jumpToLineFromText(nextValue);
-              }}
-              inputMode="numeric"
-              placeholder="输入行数"
-              aria-label="输入行数"
-              onKeyDown={(event) => {
-                event.stopPropagation();
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  closeGotoLineBar();
-                }
-              }}
-            />
-            <button type="submit" className="find-bar-btn" disabled={!logFile}>
-              Go
-            </button>
-          </form>
-        ) : null}
-
-        {findBarOpen && (
-          <div className="find-bar-overlay">
-            <button
-              type="button"
-              className={`find-bar-btn find-bar-toggle${searchRegex ? " is-toggled" : ""}`}
-              onClick={() => {
-                searchCacheRef.current = null;
-                setSearchResult(null);
-                setActiveSearchMatch(null);
-                setSearchRegex((prev) => !prev);
-              }}
-              title="正则表达式"
-            >
-              .*
-            </button>
-            <button
-              type="button"
-              className={`find-bar-btn find-bar-toggle${searchCaseSensitive ? " is-toggled" : ""}`}
-              onClick={() => {
-                searchCacheRef.current = null;
-                setSearchResult(null);
-                setActiveSearchMatch(null);
-                setSearchCaseSensitive((prev) => !prev);
-              }}
-              title="区分大小写"
-            >
-              Aa
-            </button>
-            <button
-              type="button"
-              className={`find-bar-btn find-bar-toggle${searchWholeWord ? " is-toggled" : ""}`}
-              onClick={() => {
-                searchCacheRef.current = null;
-                setSearchResult(null);
-                setActiveSearchMatch(null);
-                setSearchWholeWord((prev) => !prev);
-              }}
-              title="全字匹配"
-            >
-              W
-            </button>
-            <button
-              type="button"
-              className={`find-bar-btn find-bar-toggle${searchWrapAround ? " is-toggled" : ""}`}
-              onClick={() => setSearchWrapAround((prev) => !prev)}
-              title="循环查找"
-            >
-              ⟳
-            </button>
-            <button
-              type="button"
-              className={`find-bar-btn find-bar-toggle${searchFindAll ? " is-toggled" : ""}`}
-              onClick={() => {
-                searchCacheRef.current = null;
-                setSearchResult(null);
-                setActiveSearchMatch(null);
-                setSearchFindAll((prev) => !prev);
-              }}
-              title="查找所有"
-            >
-              All
-            </button>
-            <span className="find-bar-separator" />
-            <input
-              ref={findInputRef}
-              value={searchQuery}
-              onChange={(event) => {
-                searchCacheRef.current = null;
-                setSearchResult(null);
-                setActiveSearchMatch(null);
-                setSearchQuery(event.target.value);
-              }}
-              placeholder="查找"
-              aria-label="查找文本"
-              onKeyDown={(event) => {
-                event.stopPropagation();
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  closeFindBar();
-                } else if (event.key === "Enter") {
-                  event.preventDefault();
-                  void (async () => {
-                    await runSearch(event.shiftKey ? "previous" : "next");
-                    focusViewer();
-                  })();
-                }
-              }}
-            />
-            <span className="find-bar-match-count">
-              {searchResult
-                ? searchResult.matches.length > 0
-                  ? searchFindAll
-                    ? `${searchResult.activeMatchIndex}/${searchResult.totalMatches}${searchResult.wrapped ? " ↻" : ""}`
-                    : `L${searchResult.matches[0].lineNumber}${searchResult.wrapped ? " ↻" : ""}`
-                  : searchFindAll
-                    ? `0/${searchResult.totalMatches}`
-                    : "无匹配"
-                : ""}
-            </span>
-            <span className="find-bar-separator" />
-            <button
-              type="button"
-              className="find-bar-btn"
-              onClick={() => void runSearch("next")}
-              disabled={!logFile || isSearching || !searchQuery}
-              title="查找下一个 (F3 / Enter)"
-            >
-              Find
-            </button>
-            <button
-              type="button"
-              className="find-bar-btn"
-              onClick={() => void runSearch("previous")}
-              disabled={!logFile || isSearching || !searchQuery}
-              title="查找上一个 (Shift+F3 / Shift+Enter)"
-            >
-              Find Prev
-            </button>
-            <button
-              type="button"
-              className="find-bar-close"
-              onClick={closeFindBar}
-              title="关闭 (Esc)"
-            >
-              ✕
-            </button>
-          </div>
-        )}
-
-        {error ? <p className="error-message">{error}</p> : null}
-        {tailNotice ? <p className="tail-notice">{tailNotice}</p> : null}
-      </section>
+          {error ? <p className="error-message">{error}</p> : null}
+          {tailNotice ? <p className="tail-notice">{tailNotice}</p> : null}
+        </section>
       </div>
 
       <footer className="viewer-status-bar" aria-label="log 状态栏">
