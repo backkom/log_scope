@@ -219,6 +219,8 @@ const RIGHT_MINIMAP_FRAME_RATIO = 1 / 8;
 const MAX_TOKENIZED_CHARS = 4_096;
 const LARGE_FILE_DEGRADE_BYTES = 100 * 1024 * 1024;
 const HUGE_FILE_DEGRADE_BYTES = 300 * 1024 * 1024;
+const MARKER_LIST_ROW_HEIGHT = 38;
+const MARKER_LIST_OVERSCAN = 4;
 
 // Render a single JSON value as a styled inline span
 function JsonValueSpan({ value }: { value: unknown }) {
@@ -366,6 +368,11 @@ function App() {
   const [markers, setMarkers] = React.useState<LogMarker[]>([]);
   const [selectedMarker, setSelectedMarker] = React.useState<LogMarker | null>(null);
   const [selectedPayload, setSelectedPayload] = React.useState<MarkerPayload | null>(null);
+  const [markerFilterText, setMarkerFilterText] = React.useState("");
+  const [markerFilterKinds, setMarkerFilterKinds] = React.useState<Set<string>>(() => new Set());
+  const [markerListScrollTop, setMarkerListScrollTop] = React.useState(0);
+  const [markerListHeight, setMarkerListHeight] = React.useState(200);
+  const [markerSplitRatio, setMarkerSplitRatio] = React.useState(0.5);
   const [showGlobalMinimap, setShowGlobalMinimap] = React.useState(true);
   const [showLocalMinimap, setShowLocalMinimap] = React.useState(true);
   const [globalMinimapWidth, setGlobalMinimapWidth] = React.useState(1);
@@ -405,6 +412,7 @@ function App() {
   } | null>(null);
   const persistedStateLoadedRef = React.useRef(false);
   const saveUiStateTimerRef = React.useRef<number | null>(null);
+  const markerListRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     invoke<HealthCheck>("health_check")
@@ -940,6 +948,83 @@ function App() {
     [isLineInViewport, scrollToLineCentered],
   );
 
+  // Derived: unique marker kinds for filter buttons
+  const markerKinds = React.useMemo(() => {
+    const kinds = new Set<string>();
+    for (const m of markers) {
+      kinds.add(m.kind);
+    }
+    return Array.from(kinds).sort();
+  }, [markers]);
+
+  // Auto-add new marker kinds to the filter set (default all ON)
+  React.useEffect(() => {
+    setMarkerFilterKinds((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const kind of markerKinds) {
+        if (!next.has(kind)) {
+          next.add(kind);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [markerKinds]);
+
+  // Derived: filtered markers for the left-panel list
+  const filteredMarkers = React.useMemo(() => {
+    let result = markers;
+    // Always apply kind filter when marker kinds exist.
+    // Before the auto-add effect runs, markerFilterKinds may be empty;
+    // in that case fall through (show all) only if no kinds are known yet.
+    if (markerKinds.length > 0) {
+      result = result.filter((m) => markerFilterKinds.has(m.kind));
+    }
+    if (markerFilterText) {
+      const lower = markerFilterText.toLowerCase();
+      result = result.filter(
+        (m) =>
+          m.title.toLowerCase().includes(lower) ||
+          m.messageName.toLowerCase().includes(lower) ||
+          m.kind.toLowerCase().includes(lower),
+      );
+    }
+    // Already sorted by startLine ascending (newer = higher line = lower in list)
+    return result;
+  }, [markers, markerFilterKinds, markerFilterText, markerKinds.length]);
+
+  // Scroll marker list to show the selected marker (virtualized)
+  const scrollMarkerListToSelected = React.useCallback(
+    (markerId: string) => {
+      const idx = filteredMarkers.findIndex((m) => m.id === markerId);
+      if (idx === -1) return;
+      const container = markerListRef.current;
+      if (!container) return;
+      const itemTop = idx * MARKER_LIST_ROW_HEIGHT;
+      const itemBottom = itemTop + MARKER_LIST_ROW_HEIGHT;
+      const viewTop = container.scrollTop;
+      const viewBottom = viewTop + container.clientHeight;
+      if (itemTop < viewTop) {
+        container.scrollTop = itemTop;
+      } else if (itemBottom > viewBottom) {
+        container.scrollTop = itemBottom - container.clientHeight;
+      }
+    },
+    [filteredMarkers],
+  );
+
+  // ResizeObserver for marker list container height
+  React.useEffect(() => {
+    const container = markerListRef.current;
+    if (!container) return;
+    const update = () => setMarkerListHeight(container.clientHeight);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [showSourcePanel, markerSplitRatio]);
+
   const selectMarker = React.useCallback(
     async (marker: LogMarker) => {
       if (!logFile) {
@@ -949,6 +1034,8 @@ function App() {
       setShowSourcePanel(true);
       setSelectedPayload(null);
       scrollToLineCentered(marker.startLine);
+      // Scroll the marker list to show the selected item (if it exists in filtered list)
+      requestAnimationFrame(() => scrollMarkerListToSelected(marker.id));
       try {
         const payload = await invoke<MarkerPayload>("get_marker_payload", {
           sessionId: logFile.sessionId,
@@ -960,7 +1047,7 @@ function App() {
         setError(String(err));
       }
     },
-    [logFile, scrollToLineCentered],
+    [logFile, scrollToLineCentered, scrollMarkerListToSelected],
   );
 
   const focusViewer = React.useCallback(() => {
@@ -1192,6 +1279,25 @@ function App() {
           setShowSourcePanel(false);
         }
       }
+      // Arrow key navigation inside the marker list
+      if (showSourcePanel && (event.key === "ArrowDown" || event.key === "ArrowUp") && !findBarOpen && !gotoBarOpen) {
+        // Only handle if the marker list or source panel area is focused
+        const activeEl = document.activeElement;
+        const isInSourcePanel = activeEl?.closest?.(".source-panel") || activeEl === document.body;
+        if (isInSourcePanel && filteredMarkers.length > 0) {
+          event.preventDefault();
+          const currentIdx = selectedMarker
+            ? filteredMarkers.findIndex((m) => m.id === selectedMarker.id)
+            : -1;
+          let nextIdx: number;
+          if (event.key === "ArrowDown") {
+            nextIdx = currentIdx < filteredMarkers.length - 1 ? currentIdx + 1 : 0;
+          } else {
+            nextIdx = currentIdx > 0 ? currentIdx - 1 : filteredMarkers.length - 1;
+          }
+          void selectMarker(filteredMarkers[nextIdx]);
+        }
+      }
       if (event.key === "F3" && (findBarOpen || searchQuery)) {
         event.preventDefault();
         void runSearch(event.shiftKey ? "previous" : "next");
@@ -1215,6 +1321,9 @@ function App() {
     openGotoLineBar,
     closeGotoLineBar,
     revealSearchMatchIfNeeded,
+    filteredMarkers,
+    selectedMarker,
+    selectMarker,
   ]);
 
   const totalHeight = logFile ? logFile.lineCount * ROW_HEIGHT : 0;
@@ -1496,72 +1605,155 @@ function App() {
       <div className="app-body" style={{ gridTemplateColumns: showSourcePanel ? `${sourcePanelWidth}px 4px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
         <aside className="source-panel" style={{ display: showSourcePanel ? 'flex' : 'none' }}>
 
-          <section className="panel-section">
-            <h2>状态</h2>
-            <dl className="status-list">
-              <div>
-                <dt>Core</dt>
-                <dd>{health ? health.status : "连接中"}</dd>
-              </div>
-              <div>
-                <dt>版本</dt>
-                <dd>{health ? health.version : "-"}</dd>
-              </div>
-              <div>
-                <dt>Marker</dt>
-                <dd>{logFile ? markers.length.toLocaleString() : "-"}</dd>
-              </div>
-              <div>
-                <dt>Fixture</dt>
-                <dd>
-                  {lastFixture
-                    ? `${lastFixture.profile} / ${formatBytes(lastFixture.fileSize)} / ${lastFixture.generationDurationMs} ms`
-                    : "-"}
-                </dd>
-              </div>
-              <div>
-                <dt>Bench</dt>
-                <dd>
-                  {lastBenchmark
-                    ? `idx ${lastBenchmark.indexDurationMs} / search ${lastBenchmark.searchDurationMs} / read ${lastBenchmark.readVisibleDurationMs} ms`
-                    : "-"}
-                </dd>
-              </div>
-            </dl>
-          </section>
+          <section className="panel-section marker-panel" style={{ flex: 1, minHeight: 0 }}>
+            <input
+              className="marker-filter-input"
+              value={markerFilterText}
+              onChange={(e) => setMarkerFilterText(e.target.value)}
+              placeholder={`搜索 Marker (${markers.length})`}
+              aria-label="过滤 Marker"
+              onKeyDown={(e) => e.stopPropagation()}
+            />
 
-          <section className="panel-section marker-panel">
-            <h2>Marker</h2>
-            {selectedMarker ? (
-              <>
-                <button type="button" className="marker-summary" onClick={() => scrollToLine(selectedMarker.startLine)}>
-                  <span className="marker-dot" style={{ background: selectedMarker.color }} />
-                  <strong>{selectedMarker.title}</strong>
-                  <small>
-                    {selectedMarker.kind} {selectedMarker.direction ? `· ${selectedMarker.direction}` : ""} · L
-                    {selectedMarker.startLine} · {selectedMarker.parseStatus}
-                  </small>
-                </button>
-                {!selectedPayload ? <pre className="payload-preview">载入中...</pre> : null}
-                {(() => {
-                  const jsonData = selectedPayload?.parsedJson ?? null;
-                  if (jsonData) {
-                    return (
-                      <div className="json-tree-viewer">
-                        <JsonTreeNode value={jsonData} defaultOpen={true} />
-                      </div>
-                    );
-                  }
-                  if (selectedPayload) {
-                    return <pre className="payload-preview">{selectedPayload.rawText || "(empty payload)"}</pre>;
-                  }
-                  return null;
-                })()}
-                {selectedPayload?.parseError ? <p className="payload-note">{selectedPayload.parseError}</p> : null}
-              </>
-            ) : (
-              <p className="panel-hint">{markers.length > 0 ? "点击右侧 marker 查看消息内容" : "当前文件未识别到消息 marker"}</p>
+            {markerKinds.length > 1 && (
+              <div className="marker-kind-filters">
+                {markerKinds.map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    className={`marker-kind-btn${markerFilterKinds.has(kind) ? " is-active" : ""}`}
+                    onClick={() => {
+                      setMarkerFilterKinds((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(kind)) {
+                          next.delete(kind);
+                        } else {
+                          next.add(kind);
+                        }
+                        return next;
+                      });
+                    }}
+                  >
+                    {kind}
+                  </button>
+                ))}
+              </div>
             )}
+
+            {/* Virtualized marker list */}
+            <div
+              className="marker-virtual-list"
+              ref={markerListRef}
+              tabIndex={-1}
+              style={{ flex: markerSplitRatio }}
+              onScroll={(e) => setMarkerListScrollTop(e.currentTarget.scrollTop)}
+            >
+              {filteredMarkers.length > 0 ? (
+                <div style={{ height: filteredMarkers.length * MARKER_LIST_ROW_HEIGHT, position: "relative" }}>
+                  {(() => {
+                    const firstIdx = Math.max(0, Math.floor(markerListScrollTop / MARKER_LIST_ROW_HEIGHT) - MARKER_LIST_OVERSCAN);
+                    const visibleCount = Math.ceil(markerListHeight / MARKER_LIST_ROW_HEIGHT) + MARKER_LIST_OVERSCAN * 2;
+                    const lastIdx = Math.min(filteredMarkers.length - 1, firstIdx + visibleCount);
+                    const items: React.ReactNode[] = [];
+                    for (let i = firstIdx; i <= lastIdx; i++) {
+                      const marker = filteredMarkers[i];
+                      items.push(
+                        <button
+                          key={marker.id}
+                          type="button"
+                          className={`marker-list-item${selectedMarker?.id === marker.id ? " is-selected" : ""}`}
+                          data-marker-id={marker.id}
+                          style={{
+                            position: "absolute",
+                            top: i * MARKER_LIST_ROW_HEIGHT,
+                            left: 0,
+                            right: 0,
+                            height: MARKER_LIST_ROW_HEIGHT,
+                          }}
+                          onClick={() => void selectMarker(marker)}
+                          title={`${marker.title}\n${marker.kind}${marker.direction ? ` · ${marker.direction}` : ""}${marker.messageName ? ` · ${marker.messageName}` : ""}\nL${marker.startLine}–L${marker.endLine} · ${marker.parseStatus}${marker.lineTime ? `\n${marker.lineTime}` : ""}`}
+                        >
+                          <span className="marker-list-item-dot" style={{ background: marker.color }} />
+                          <span className="marker-list-item-title">{marker.title}</span>
+                          <span className="marker-list-item-time">{marker.lineTime || ""}</span>
+                          <span className="marker-list-item-line">L{marker.startLine}</span>
+                        </button>,
+                      );
+                    }
+                    return items;
+                  })()}
+                </div>
+              ) : (
+                <div className="marker-list-empty">
+                  {markers.length > 0
+                    ? "无匹配的 Marker"
+                    : "当前文件未识别到 Marker"}
+                </div>
+              )}
+            </div>
+
+            {/* Horizontal splitter between list and detail */}
+            <div
+              className="marker-panel-splitter"
+              onPointerDown={(e) => {
+                e.currentTarget.setPointerCapture(e.pointerId);
+                e.currentTarget.dataset.dragStartY = String(e.clientY);
+                e.currentTarget.dataset.dragStartRatio = String(markerSplitRatio);
+                const panel = e.currentTarget.closest<HTMLElement>(".marker-panel");
+                if (panel) {
+                  e.currentTarget.dataset.dragFlexHeight = String(panel.clientHeight);
+                }
+              }}
+              onPointerMove={(e) => {
+                if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+                const startY = Number(e.currentTarget.dataset.dragStartY);
+                const startRatio = Number(e.currentTarget.dataset.dragStartRatio);
+                const flexHeight = Number(e.currentTarget.dataset.dragFlexHeight);
+                if (!flexHeight) return;
+                const deltaY = e.clientY - startY;
+                const deltaRatio = deltaY / flexHeight;
+                setMarkerSplitRatio(Math.max(0.1, Math.min(0.9, startRatio + deltaRatio)));
+              }}
+              onPointerUp={(e) => {
+                if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                  e.currentTarget.releasePointerCapture(e.pointerId);
+                }
+              }}
+            />
+
+            {/* Marker detail area */}
+            <div className="marker-detail-area" style={{ flex: Math.max(0.01, 1 - markerSplitRatio) }}>
+              {selectedMarker ? (
+                <>
+                  <button type="button" className="marker-summary" onClick={() => scrollToLine(selectedMarker.startLine)}>
+                    <span className="marker-dot" style={{ background: selectedMarker.color }} />
+                    <strong>{selectedMarker.title}</strong>
+                    <small>
+                      {selectedMarker.kind} {selectedMarker.direction ? `· ${selectedMarker.direction}` : ""} · L
+                      {selectedMarker.startLine} · {selectedMarker.parseStatus}
+                    </small>
+                  </button>
+                  {!selectedPayload ? <pre className="payload-preview">载入中...</pre> : null}
+                  {(() => {
+                    const jsonData = selectedPayload?.parsedJson ?? null;
+                    if (jsonData) {
+                      return (
+                        <div className="json-tree-viewer">
+                          <JsonTreeNode value={jsonData} defaultOpen={true} />
+                        </div>
+                      );
+                    }
+                    if (selectedPayload) {
+                      return <pre className="payload-preview">{selectedPayload.rawText || "(empty payload)"}</pre>;
+                    }
+                    return null;
+                  })()}
+                  {selectedPayload?.parseError ? <p className="payload-note">{selectedPayload.parseError}</p> : null}
+                </>
+              ) : (
+                <p className="panel-hint">{markers.length > 0 ? "点击列表或右侧 marker 查看详情" : "当前文件未识别到消息 marker"}</p>
+              )}
+            </div>
           </section>
         </aside>
 

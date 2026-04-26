@@ -53,10 +53,12 @@
 
 左侧（侧边栏信息面板）：
 - 默认不显示，且显示风格已统一为与主 Viewer 相同的暗色系，可通过顶部工具栏的图标切换显示/隐藏。
-- 内部主要分为三大块内容：
-  1. 品牌与基础信息区（展示项目名称与标识）。
-  2. 状态区（展示 Core 连通性、当前版本号、当前 Marker 数、Fixture 数据状态与 Bench 性能基准指标）。
-  3. Marker 详情区：当用户在 Minimap 中选中某个 Marker 时，这里会加载并详细展示该 Marker 的类型、方向、行号、解析状态；如 payload 为合法的 JSON，则通过专门的 JSON Tree View 进行高亮与折叠展示，否则直接显示原始载荷与可能的解析错误信息。
+- 内部专注于 Marker 浏览与导航，从上到下依次为：
+  1. 搜索输入框：对 marker 的 title、messageName、kind 做大小写不敏感子串过滤。
+  2. 类型过滤器：按 marker kind 多选过滤（按钮组，kind 仅一种时不显示）。
+  3. Marker 列表：按 startLine 升序排列（越新越靠下），可滚动；点击条目触发右侧 viewer 跳转并加载 payload 详情。过滤只影响列表本身，不影响 minimap。
+  4. Marker 详情区：选中 marker 后展示其类型、方向、行号、解析状态；如 payload 为合法 JSON，则通过 JSON Tree View 折叠展示，否则显示原始载荷。
+- 键盘上下方向键可在过滤后的列表中导航 marker；右侧 minimap 选中 marker 时，如列表中存在该 marker 也会同步滚动到对应条目。
 - 不放任何全局的查找、定位操作入口；查找、行号跳转等全局 viewer 操作均通过快捷键、覆盖浮层和 viewer 内部交互触发。
 中部（Viewer 核心区）：
 - 以只读文本编辑器风格展示 log。

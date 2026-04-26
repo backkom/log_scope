@@ -744,8 +744,9 @@ button:disabled {
 }
 
 .marker-panel {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   min-height: 0;
   flex: 1;
 }
@@ -884,6 +885,197 @@ button:disabled {
 .jt-null {
   color: #ff8eb3;
   font-style: italic;
+}
+
+/* ---- Marker List (left panel) ---- */
+
+.marker-filter-input {
+  min-height: 30px;
+  border: 1px solid #4e5649;
+  border-radius: 5px;
+  background: #2b2d27;
+  color: #e0e4e0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  padding: 0 8px;
+  flex-shrink: 0;
+}
+
+.marker-filter-input::placeholder {
+  color: #7a7e75;
+}
+
+.marker-filter-input:focus {
+  outline: none;
+  border-color: #18706a;
+  box-shadow: 0 0 0 1px #18706a;
+}
+
+.marker-kind-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.marker-kind-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  border: 1px solid #4e5649;
+  border-radius: 4px;
+  background: #30342b;
+  color: #9aa39e;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 7px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.marker-kind-btn:hover {
+  background: #3e423a;
+  border-color: #636860;
+  color: #c8ccc5;
+}
+
+.marker-kind-btn.is-active {
+  background: #173d39;
+  border-color: #2f8f83;
+  color: #b4f0e4;
+}
+
+.marker-virtual-list {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-color: var(--log-viewer-scrollbar) var(--log-viewer-bg);
+}
+
+.marker-virtual-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.marker-virtual-list::-webkit-scrollbar-track {
+  background: var(--log-viewer-bg);
+}
+
+.marker-virtual-list::-webkit-scrollbar-thumb {
+  border: 2px solid var(--log-viewer-bg);
+  border-radius: 999px;
+  background: var(--log-viewer-scrollbar);
+}
+
+.marker-list-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  gap: 4px;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 0;
+  background: transparent;
+  color: #d0d5cf;
+  padding: 0 6px;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  transition: background 0.1s;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.marker-list-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.marker-list-item.is-selected {
+  background: #173d39;
+  color: #e4f5ef;
+}
+
+.marker-list-item-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.marker-list-item-title {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marker-list-item-time {
+  font-size: 11px;
+  color: #8a9388;
+  white-space: nowrap;
+  padding: 0 2px;
+}
+
+.marker-list-item.is-selected .marker-list-item-time {
+  color: #a0c4b8;
+}
+
+.marker-list-item-line {
+  font-size: 11px;
+  color: #6a7368;
+  white-space: nowrap;
+  min-width: 36px;
+  text-align: right;
+}
+
+.marker-list-item.is-selected .marker-list-item-line {
+  color: #8fbcb0;
+}
+
+.marker-list-empty {
+  padding: 12px 6px;
+  color: #6a7368;
+  font-size: 12px;
+  text-align: center;
+}
+
+.marker-panel-splitter {
+  flex-shrink: 0;
+  height: 5px;
+  cursor: row-resize;
+  background: #343731;
+  border-top: 1px solid #4e5649;
+  border-bottom: 1px solid #4e5649;
+  transition: background-color 0.15s;
+}
+
+.marker-panel-splitter:hover,
+.marker-panel-splitter:active {
+  background: #4e5649;
+}
+
+.marker-detail-area {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-color: var(--log-viewer-scrollbar) var(--log-viewer-bg);
+}
+
+.marker-detail-area::-webkit-scrollbar {
+  width: 8px;
+}
+
+.marker-detail-area::-webkit-scrollbar-track {
+  background: var(--log-viewer-bg);
+}
+
+.marker-detail-area::-webkit-scrollbar-thumb {
+  border: 2px solid var(--log-viewer-bg);
+  border-radius: 999px;
+  background: var(--log-viewer-scrollbar);
 }
 
 .payload-note,
