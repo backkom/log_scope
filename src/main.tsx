@@ -3,6 +3,8 @@ import ReactDOM from "react-dom/client";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import JsonView from "react18-json-view";
 import "react18-json-view/src/style.css";
 import "react18-json-view/src/dark.css";
@@ -219,13 +221,7 @@ const RIGHT_MINIMAP_FRAME_RATIO = 1 / 8;
 const MAX_TOKENIZED_CHARS = 4_096;
 const LARGE_FILE_DEGRADE_BYTES = 100 * 1024 * 1024;
 const HUGE_FILE_DEGRADE_BYTES = 300 * 1024 * 1024;
-const FIXTURE_PROFILES: Array<{ value: FixtureProfile; label: string }> = [
-  { value: "mixed", label: "Mixed" },
-  { value: "short-lines", label: "短行" },
-  { value: "long-lines", label: "超长行" },
-  { value: "dense-markers", label: "高密度 Marker" },
-  { value: "append-stream", label: "Append" },
-];
+
 
 function App() {
   const [health, setHealth] = React.useState<HealthCheck | null>(null);
@@ -242,9 +238,8 @@ function App() {
   const [selectedLine, setSelectedLine] = React.useState<number | null>(null);
   const [isOpening, setIsOpening] = React.useState(false);
   const [isConnectingSocket, setIsConnectingSocket] = React.useState(false);
-  const [isGeneratingFixture, setIsGeneratingFixture] = React.useState(false);
-  const [isBenchmarking, setIsBenchmarking] = React.useState(false);
-  const [fixtureProfile, setFixtureProfile] = React.useState<FixtureProfile>("mixed");
+  const [showSocketModal, setShowSocketModal] = React.useState(false);
+
   const [lastFixture, setLastFixture] = React.useState<FixtureMetadata | null>(null);
   const [lastBenchmark, setLastBenchmark] = React.useState<CoreBenchmarkReport | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -444,6 +439,85 @@ function App() {
   }, []);
 
   React.useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    
+    listen<any>("menu-event", (event) => {
+      const payload = event.payload;
+      if (payload.action === "open_file") {
+        open({
+          multiple: false,
+          directory: false,
+        }).then((selected) => {
+          if (typeof selected === "string") {
+            setFilePath(selected);
+            openPath(selected);
+          }
+        }).catch(console.error);
+      } else if (payload.action === "connect_socket") {
+        setShowSocketModal(true);
+      } else if (payload.action === "health_check") {
+        runPlaceholder();
+      } else if (payload.action === "open_recent_file") {
+        setFilePath(payload.path);
+        openPath(payload.path);
+      } else if (payload.action === "open_recent_socket") {
+        setSocketHost(payload.host);
+        setSocketPort(String(payload.port));
+        connectSocketSource(payload.host, payload.port);
+      } else if (payload.action === "gen_fixture") {
+        invoke<FixtureMetadata>("generate_log_fixture", { sizeMb: 50, profile: payload.profile })
+          .then((fixture) => {
+            setLastFixture(fixture);
+            setFilePath(fixture.path);
+            openPath(fixture.path);
+          })
+          .catch((err) => setError(String(err)));
+      } else if (payload.action === "benchmark") {
+        invoke<CoreBenchmarkReport>("run_core_benchmark", { sizeMb: 50, profile: payload.profile })
+          .then((report) => {
+            setLastBenchmark(report);
+            setLastFixture(report.fixture);
+            setFilePath(report.fixture.path);
+          })
+          .catch((err) => setError(String(err)));
+      }
+    }).then((unlistenFn) => {
+      unlisten = unlistenFn;
+    });
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const preventDefault = (e: DragEvent) => e.preventDefault();
+    window.addEventListener("dragover", preventDefault);
+    window.addEventListener("drop", preventDefault);
+
+    let unlisten: (() => void) | undefined;
+    getCurrentWindow().onDragDropEvent((event: any) => {
+      if (event.payload.type === "drop" && event.payload.paths.length > 0) {
+        const path = event.payload.paths[0];
+        setFilePath(path);
+        openPath(path);
+      }
+    }).then((unlistenFn: any) => {
+      unlisten = unlistenFn;
+    });
+    
+    return () => {
+      window.removeEventListener("dragover", preventDefault);
+      window.removeEventListener("drop", preventDefault);
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) {
       return;
@@ -635,11 +709,6 @@ function App() {
     }
   };
 
-  const openLogFile = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    await openPath(filePath.trim());
-  };
-
   const connectSocket = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const normalizedHost = socketHost.trim();
@@ -700,39 +769,6 @@ function App() {
     if (metadata.fileSize >= LARGE_FILE_DEGRADE_BYTES) {
       setLogColorMode("severity");
       setTailNotice("已启用 100MB+ 降级：仅 severity 着色，避免可见行 tokenization 成本过高。");
-    }
-  };
-
-  const generateAndOpenFixture = async () => {
-    setIsGeneratingFixture(true);
-    setError(null);
-    try {
-      const fixture = await invoke<FixtureMetadata>("generate_log_fixture", { sizeMb: 50, profile: fixtureProfile });
-      setLastFixture(fixture);
-      setFilePath(fixture.path);
-      await openPath(fixture.path);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setIsGeneratingFixture(false);
-    }
-  };
-
-  const runCoreBenchmark = async () => {
-    setIsBenchmarking(true);
-    setError(null);
-    try {
-      const report = await invoke<CoreBenchmarkReport>("run_core_benchmark", {
-        sizeMb: 50,
-        profile: fixtureProfile,
-      });
-      setLastBenchmark(report);
-      setLastFixture(report.fixture);
-      setFilePath(report.fixture.path);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setIsBenchmarking(false);
     }
   };
 
@@ -1086,7 +1122,7 @@ function App() {
     }));
   }, [lineCache.size, renderedLineCount]);
   const activePath = logFile?.path ?? placeholder?.path ?? "尚未打开文件";
-  const activeStatus = placeholder?.message ?? "阶段 2：输入路径打开文件，支持追加刷新和 follow tail";
+  const activeStatus = placeholder?.message ?? "Ready";
   const statusItems = logFile
     ? [
         `大小 ${formatBytes(logFile.fileSize)}`,
@@ -1297,87 +1333,6 @@ function App() {
             <p>只读 log viewer</p>
           </div>
         </div>
-
-        <section className="panel-section">
-          <h2>数据源</h2>
-          <form className="open-form" onSubmit={openLogFile}>
-            <input
-              value={filePath}
-              onChange={(event) => setFilePath(event.target.value)}
-              placeholder="/path/to/app.log"
-              aria-label="log 文件路径"
-            />
-            <button type="submit" className="primary-button" disabled={isOpening}>
-              {isOpening ? "索引中" : "打开文件"}
-            </button>
-          </form>
-          <form className="socket-form" onSubmit={connectSocket}>
-            <div className="socket-fields">
-              <input
-                value={socketHost}
-                onChange={(event) => setSocketHost(event.target.value)}
-                placeholder="127.0.0.1"
-                aria-label="socket host"
-              />
-              <input
-                value={socketPort}
-                onChange={(event) => setSocketPort(event.target.value)}
-                inputMode="numeric"
-                aria-label="socket port"
-              />
-            </div>
-            <button type="submit" className="secondary-button" disabled={isOpening || isConnectingSocket}>
-              {isConnectingSocket ? "连接中" : "Socket 连接"}
-            </button>
-          </form>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={generateAndOpenFixture}
-            disabled={isOpening || isGeneratingFixture}
-          >
-            {isGeneratingFixture ? "生成中" : "生成 50MB Fixture"}
-          </button>
-          <div className="fixture-tools">
-            <select
-              value={fixtureProfile}
-              onChange={(event) => setFixtureProfile(event.target.value as FixtureProfile)}
-              aria-label="fixture profile"
-            >
-              {FIXTURE_PROFILES.map((profile) => (
-                <option value={profile.value} key={profile.value}>
-                  {profile.label}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={runCoreBenchmark}
-              disabled={isOpening || isGeneratingFixture || isBenchmarking}
-            >
-              {isBenchmarking ? "Benchmark 中" : "Core Benchmark"}
-            </button>
-          </div>
-          <button type="button" className="secondary-button" onClick={runPlaceholder}>
-            Command 自检
-          </button>
-          <RecentSources
-            recentFiles={persistedStore?.recentFiles ?? []}
-            recentSockets={persistedStore?.recentSockets ?? []}
-            onOpenFile={(path) => {
-              setFilePath(path);
-              void openPath(path);
-            }}
-            onConnectSocket={(source) => {
-              setSocketHost(source.host);
-              setSocketPort(String(source.port));
-              void connectSocketSource(source.host, source.port);
-            }}
-            onStoreChange={setPersistedStore}
-            onError={(message) => setError(message)}
-          />
-        </section>
 
         <section className="panel-section">
           <h2>状态</h2>
@@ -1793,173 +1748,43 @@ function App() {
           </div>
         </footer>
       </section>
-    </main>
-  );
-}
 
-function RecentSources({
-  recentFiles,
-  recentSockets,
-  onOpenFile,
-  onConnectSocket,
-  onStoreChange,
-  onError,
-}: {
-  recentFiles: PersistedFileSource[];
-  recentSockets: PersistedSocketSource[];
-  onOpenFile: (path: string) => void;
-  onConnectSocket: (source: PersistedSocketSource) => void;
-  onStoreChange: (store: PersistedStore) => void;
-  onError: (message: string) => void;
-}) {
-  const [isOpen, setIsOpen] = React.useState(false);
-  const [popoverPosition, setPopoverPosition] = React.useState({ top: 0, left: 0 });
-  const triggerRef = React.useRef<HTMLButtonElement | null>(null);
-  const recentSourceCount = recentFiles.length + recentSockets.length;
-
-  React.useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setIsOpen(false);
-      }
-    };
-
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [isOpen]);
-
-  const togglePopover = () => {
-    if (isOpen) {
-      setIsOpen(false);
-      return;
-    }
-
-    const rect = triggerRef.current?.getBoundingClientRect();
-    const popoverWidth = Math.min(360, window.innerWidth - 24);
-    const popoverHeight = 320;
-    const desiredTop = (rect?.bottom ?? 0) + 8;
-    const top =
-      desiredTop + popoverHeight > window.innerHeight - 12
-        ? Math.max(12, (rect?.top ?? window.innerHeight) - popoverHeight - 8)
-        : desiredTop;
-    setPopoverPosition({
-      top,
-      left: Math.max(12, Math.min(rect?.left ?? 12, window.innerWidth - popoverWidth - 12)),
-    });
-    setIsOpen(true);
-  };
-
-  const removeRecentFile = async (path: string) => {
-    try {
-      const store = await invoke<PersistedStore>("remove_recent_file", { path });
-      onStoreChange(store);
-    } catch (err) {
-      onError(String(err));
-    }
-  };
-
-  const removeRecentSocket = async (source: PersistedSocketSource) => {
-    try {
-      const store = await invoke<PersistedStore>("remove_recent_socket", {
-        host: source.host,
-        port: source.port,
-      });
-      onStoreChange(store);
-    } catch (err) {
-      onError(String(err));
-    }
-  };
-
-  return (
-    <div className="recent-sources">
-      <button
-        ref={triggerRef}
-        type="button"
-        className={`recent-source-icon-button${isOpen ? " is-active" : ""}`}
-        onClick={togglePopover}
-        disabled={recentSourceCount === 0}
-        title="历史记录"
-        aria-label="历史记录"
-        aria-expanded={isOpen}
-      >
-        <span className="recent-icon recent-icon-history" aria-hidden="true" />
-        <span className="recent-count">{recentSourceCount}</span>
-      </button>
-
-      {isOpen
-        ? createPortal(
-            <div className="recent-source-layer" onClick={() => setIsOpen(false)}>
-              <div
-                className="recent-source-popover"
-                style={{ top: popoverPosition.top, left: popoverPosition.left }}
-                onClick={(event) => event.stopPropagation()}
-              >
-                <div className="recent-source-popover-title">历史记录</div>
-                <div className="recent-source-group-title">最近文件</div>
-                {recentFiles.length === 0 ? <p className="panel-hint">暂无记录</p> : null}
-                {recentFiles.map((source) => (
-                  <div className="recent-source-row" key={source.path}>
-                    <button
-                      type="button"
-                      className="recent-source-button"
-                      onClick={() => {
-                        setIsOpen(false);
-                        onOpenFile(source.path);
-                      }}
-                      title={source.path}
-                    >
-                      <strong>{source.displayName}</strong>
-                      <small>{source.path}</small>
-                    </button>
-                    <button
-                      type="button"
-                      className="recent-source-delete"
-                      onClick={() => void removeRecentFile(source.path)}
-                      title="删除记录"
-                      aria-label={`删除 ${source.displayName}`}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-
-                <div className="recent-source-group-title">最近 Socket</div>
-                {recentSockets.length === 0 ? <p className="panel-hint">暂无记录</p> : null}
-                {recentSockets.map((source) => (
-                  <div className="recent-source-row" key={`${source.host}:${source.port}`}>
-                    <button
-                      type="button"
-                      className="recent-source-button"
-                      onClick={() => {
-                        setIsOpen(false);
-                        onConnectSocket(source);
-                      }}
-                      title={`${source.host}:${source.port}`}
-                    >
-                      <strong>{source.displayName}</strong>
-                      <small>logscope-frame-v1</small>
-                    </button>
-                    <button
-                      type="button"
-                      className="recent-source-delete"
-                      onClick={() => void removeRecentSocket(source)}
-                      title="删除记录"
-                      aria-label={`删除 ${source.displayName}`}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
+      {showSocketModal && createPortal(
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <h2>连接 Socket</h2>
+            <form onSubmit={(e) => {
+              connectSocket(e);
+              setShowSocketModal(false);
+            }}>
+              <div className="modal-field">
+                <label>Host</label>
+                <input
+                  value={socketHost}
+                  onChange={(event) => setSocketHost(event.target.value)}
+                  placeholder="127.0.0.1"
+                  autoFocus
+                />
               </div>
-            </div>,
-            document.body,
-          )
-        : null}
-    </div>
+              <div className="modal-field">
+                <label>Port</label>
+                <input
+                  value={socketPort}
+                  onChange={(event) => setSocketPort(event.target.value)}
+                  inputMode="numeric"
+                  placeholder="8765"
+                />
+              </div>
+              <div className="modal-actions">
+                <button type="button" className="secondary-button" onClick={() => setShowSocketModal(false)}>取消</button>
+                <button type="submit" className="primary-button" disabled={isConnectingSocket}>连接</button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+    </main>
   );
 }
 

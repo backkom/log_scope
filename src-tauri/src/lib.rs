@@ -12,8 +12,8 @@ use std::{
 };
 
 use regex::Regex;
-use tauri::Manager;
-
+use tauri::{Emitter, Manager};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HealthCheck {
@@ -1933,7 +1933,9 @@ fn remember_recent_file(app: &tauri::AppHandle, path: String) -> Result<(), Stri
         host: None,
         port: None,
     });
-    save_persisted_store(app, &store).map_err(|err| err.to_string())
+    let result = save_persisted_store(app, &store).map_err(|err| err.to_string());
+    deferred_update_app_menu(app);
+    result
 }
 
 fn remember_recent_socket(app: &tauri::AppHandle, host: String, port: u16) -> Result<(), String> {
@@ -1958,7 +1960,9 @@ fn remember_recent_socket(app: &tauri::AppHandle, host: String, port: u16) -> Re
         host: Some(host),
         port: Some(port),
     });
-    save_persisted_store(app, &store).map_err(|err| err.to_string())
+    let result = save_persisted_store(app, &store).map_err(|err| err.to_string());
+    deferred_update_app_menu(app);
+    result
 }
 
 fn sanitize_store(mut store: PersistedStore) -> PersistedStore {
@@ -2002,10 +2006,232 @@ fn unix_timestamp_seconds() -> u64 {
         .as_secs()
 }
 
+pub fn deferred_update_app_menu(app_handle: &tauri::AppHandle) {
+    let app_clone = app_handle.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let app_clone2 = app_clone.clone();
+        let _ = app_clone.run_on_main_thread(move || {
+            let _ = update_app_menu(&app_clone2);
+        });
+    });
+}
+
+pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
+    let mut file_items = Vec::new();
+    let mut socket_items = Vec::new();
+    let mut separator1 = None;
+    let mut separator2 = None;
+    let mut clear_item = None;
+
+    if let Ok(store) = load_persisted_store(app_handle) {
+        let has_files = !store.recent_files.is_empty();
+        let has_sockets = !store.recent_sockets.is_empty();
+        
+        for file in store.recent_files {
+            let item = MenuItem::with_id(app_handle, format!("open_recent_file_{}", file.path), file.display_name, true, None::<&str>)?;
+            file_items.push(item);
+        }
+        
+        if has_files && has_sockets {
+            separator1 = Some(PredefinedMenuItem::separator(app_handle)?);
+        }
+        
+        for socket in store.recent_sockets {
+            let id_host_port = format!("{}:{}", socket.host, socket.port);
+            let item = MenuItem::with_id(app_handle, format!("open_recent_socket_{id_host_port}"), socket.display_name, true, None::<&str>)?;
+            socket_items.push(item);
+        }
+        
+        if has_files || has_sockets {
+            separator2 = Some(PredefinedMenuItem::separator(app_handle)?);
+        }
+    }
+
+    clear_item = Some(MenuItem::with_id(app_handle, "clear_all_recent", "Clear All", true, None::<&str>)?);
+
+    let mut recent_items_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
+    for item in &file_items {
+        recent_items_refs.push(item);
+    }
+    if let Some(sep) = &separator1 {
+        recent_items_refs.push(sep);
+    }
+    for item in &socket_items {
+        recent_items_refs.push(item);
+    }
+    if let Some(sep) = &separator2 {
+        recent_items_refs.push(sep);
+    }
+    if let Some(clear) = &clear_item {
+        recent_items_refs.push(clear);
+    }
+
+    let open_recent_submenu = Submenu::with_items(
+        app_handle,
+        "Open Recent",
+        true,
+        &recent_items_refs,
+    )?;
+
+    let open_file_item = MenuItem::with_id(app_handle, "open_file", "Open...", true, Some("CmdOrCtrl+O"))?;
+    let connect_socket_item = MenuItem::with_id(app_handle, "connect_socket", "Connect Socket", true, Some("CmdOrCtrl+Shift+O"))?;
+
+    let file_submenu = Submenu::with_items(
+        app_handle,
+        "File",
+        true,
+        &[
+            &open_file_item,
+            &connect_socket_item,
+            &open_recent_submenu,
+            &PredefinedMenuItem::separator(app_handle)?,
+            &PredefinedMenuItem::quit(app_handle, None)?,
+        ],
+    )?;
+
+    let fixture_mixed = MenuItem::with_id(app_handle, "gen_fixture_mixed", "Mixed", true, None::<&str>)?;
+    let fixture_short = MenuItem::with_id(app_handle, "gen_fixture_short-lines", "短行 (Short Lines)", true, None::<&str>)?;
+    let fixture_long = MenuItem::with_id(app_handle, "gen_fixture_long-lines", "超长行 (Long Lines)", true, None::<&str>)?;
+    let fixture_dense = MenuItem::with_id(app_handle, "gen_fixture_dense-markers", "高密度 Marker (Dense Markers)", true, None::<&str>)?;
+    let fixture_append = MenuItem::with_id(app_handle, "gen_fixture_append-stream", "Append", true, None::<&str>)?;
+    let fixture_submenu = Submenu::with_items(app_handle, "Generate 50MB Fixture", true, &[&fixture_mixed, &fixture_short, &fixture_long, &fixture_dense, &fixture_append])?;
+
+    let bench_mixed = MenuItem::with_id(app_handle, "benchmark_mixed", "Mixed", true, None::<&str>)?;
+    let bench_short = MenuItem::with_id(app_handle, "benchmark_short-lines", "短行 (Short Lines)", true, None::<&str>)?;
+    let bench_long = MenuItem::with_id(app_handle, "benchmark_long-lines", "超长行 (Long Lines)", true, None::<&str>)?;
+    let bench_dense = MenuItem::with_id(app_handle, "benchmark_dense-markers", "高密度 Marker (Dense Markers)", true, None::<&str>)?;
+    let bench_append = MenuItem::with_id(app_handle, "benchmark_append-stream", "Append", true, None::<&str>)?;
+    let bench_submenu = Submenu::with_items(app_handle, "Core Benchmark", true, &[&bench_mixed, &bench_short, &bench_long, &bench_dense, &bench_append])?;
+
+    let health_check_item = MenuItem::with_id(app_handle, "health_check", "Command 自检", true, None::<&str>)?;
+
+    let debug_submenu = Submenu::with_items(app_handle, "Debug", true, &[&fixture_submenu, &bench_submenu, &health_check_item])?;
+
+    let edit_submenu = Submenu::with_items(
+        app_handle,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app_handle, None)?,
+            &PredefinedMenuItem::redo(app_handle, None)?,
+            &PredefinedMenuItem::separator(app_handle)?,
+            &PredefinedMenuItem::cut(app_handle, None)?,
+            &PredefinedMenuItem::copy(app_handle, None)?,
+            &PredefinedMenuItem::paste(app_handle, None)?,
+            &PredefinedMenuItem::select_all(app_handle, None)?,
+        ],
+    )?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let app_menu = Submenu::with_items(
+            app_handle,
+            "log_scope",
+            true,
+            &[
+                &PredefinedMenuItem::about(app_handle, None, None)?,
+                &PredefinedMenuItem::separator(app_handle)?,
+                &PredefinedMenuItem::services(app_handle, None)?,
+                &PredefinedMenuItem::separator(app_handle)?,
+                &PredefinedMenuItem::hide(app_handle, None)?,
+                &PredefinedMenuItem::hide_others(app_handle, None)?,
+                &PredefinedMenuItem::show_all(app_handle, None)?,
+                &PredefinedMenuItem::separator(app_handle)?,
+                &PredefinedMenuItem::quit(app_handle, None)?,
+            ],
+        )?;
+        let menu = Menu::with_items(app_handle, &[&app_menu, &file_submenu, &edit_submenu, &debug_submenu])?;
+        app_handle.set_menu(menu)?;
+    }
+    
+    #[cfg(not(target_os = "macos"))]
+    {
+        let menu = Menu::with_items(app_handle, &[&file_submenu, &edit_submenu, &debug_submenu])?;
+        app_handle.set_menu(menu)?;
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .setup(|app| {
+            let app_handle = app.handle();
+            let _ = update_app_menu(app_handle);
+            
+
+            app.on_menu_event(move |app_handle, event| {
+                let id = event.id().0.as_str();
+                if id == "open_file" || id == "connect_socket" || id == "health_check" {
+                    let _ = app_handle.emit(
+                        "menu-event",
+                        serde_json::json!({ "action": id }),
+                    );
+                } else if let Some(path) = id.strip_prefix("open_recent_file_") {
+                    let _ = app_handle.emit(
+                        "menu-event",
+                        serde_json::json!({ "action": "open_recent_file", "path": path }),
+                    );
+                } else if id == "clear_all_recent" {
+                    let mut store = load_persisted_store(app_handle).unwrap_or_else(|_| PersistedStore {
+                        schema_version: 1,
+                        recent_files: Vec::new(),
+                        recent_sockets: Vec::new(),
+                        last_source: None,
+                        ui_state: sanitize_ui_state(PersistedUiState {
+                            follow_tail: true,
+                            show_global_minimap: true,
+                            show_local_minimap: true,
+                            log_color_mode: "full".to_string(),
+                            search_query: "".to_string(),
+                            search_case_sensitive: false,
+                            search_regex: false,
+                            search_whole_word: false,
+                            search_wrap_around: true,
+                            search_find_all: true,
+                        }),
+                    });
+                    store.recent_files.clear();
+                    store.recent_sockets.clear();
+                    let _ = save_persisted_store(app_handle, &store);
+                    deferred_update_app_menu(app_handle);
+                } else if let Some(path) = id.strip_prefix("clear_recent_file_") {
+                    let _ = remove_recent_file(path.to_string(), app_handle.clone());
+                    deferred_update_app_menu(app_handle);
+                } else if let Some(host_port) = id.strip_prefix("open_recent_socket_") {
+                    if let Some((host, port)) = host_port.rsplit_once(':') {
+                        if let Ok(port) = port.parse::<u16>() {
+                            let _ = app_handle.emit(
+                                "menu-event",
+                                serde_json::json!({ "action": "open_recent_socket", "host": host, "port": port }),
+                            );
+                        }
+                    }
+                } else if let Some(host_port) = id.strip_prefix("clear_recent_socket_") {
+                    if let Some((host, port)) = host_port.rsplit_once(':') {
+                        if let Ok(port) = port.parse::<u16>() {
+                            let _ = remove_recent_socket(host.to_string(), port, app_handle.clone());
+                            deferred_update_app_menu(app_handle);
+                        }
+                    }
+                } else if let Some(profile) = id.strip_prefix("gen_fixture_") {
+                    let _ = app_handle.emit(
+                        "menu-event",
+                        serde_json::json!({ "action": "gen_fixture", "profile": profile }),
+                    );
+                } else if let Some(profile) = id.strip_prefix("benchmark_") {
+                    let _ = app_handle.emit(
+                        "menu-event",
+                        serde_json::json!({ "action": "benchmark", "profile": profile }),
+                    );
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             health_check,
             open_file_placeholder,
