@@ -1280,12 +1280,7 @@ fn close_message_marker(
     payloads: &mut HashMap<String, MarkerPayload>,
 ) {
     let raw_text = trim_body_lines(&marker.body_lines);
-    let parsed_json = serde_json::from_str::<serde_json::Value>(&raw_text);
-    let (parse_status, parsed_json, parse_error) = match parsed_json {
-        Ok(value) => ("ok".to_string(), Some(value), None),
-        Err(err) if raw_text.trim().is_empty() => ("raw".to_string(), None, None),
-        Err(err) => ("raw".to_string(), None, Some(err.to_string())),
-    };
+    let (parse_status, parsed_json, parse_error) = try_parse_json_lenient(&raw_text);
     let color = color_for_message_id(marker.header.message_id);
 
     payloads.insert(
@@ -1328,12 +1323,7 @@ fn close_text_marker(
     payloads: &mut HashMap<String, MarkerPayload>,
 ) {
     let raw_text = trim_body_lines(&marker.lines);
-    let parsed_json = serde_json::from_str::<serde_json::Value>(&raw_text);
-    let (parse_status, parsed_json, parse_error) = match parsed_json {
-        Ok(value) => ("ok".to_string(), Some(value), None),
-        Err(err) if raw_text.trim().is_empty() => ("raw".to_string(), None, None),
-        Err(err) => ("raw".to_string(), None, Some(err.to_string())),
-    };
+    let (parse_status, parsed_json, parse_error) = try_parse_json_lenient(&raw_text);
 
     payloads.insert(
         marker.id.clone(),
@@ -1496,7 +1486,143 @@ fn parse_timestamped_json(content: &str) -> Option<serde_json::Value> {
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;
     }
-    serde_json::from_str(trimmed).ok()
+    serde_json::from_str(trimmed)
+        .ok()
+        .or_else(|| try_lenient_json_parse(trimmed))
+}
+
+/// Try strict JSON parse first, then fall back to lenient approaches that
+/// mirror the Python LogReceiver.py logic:
+/// 1. Strip illegal control characters (U+0000..U+001F except \t, \n, \r)
+/// 2. Remove outer quotes from nested JSON fields ("key": "{...}" → "key": {...})
+/// 3. Fallback: wrap in [...] and parse as array
+fn try_parse_json_lenient(raw: &str) -> (String, Option<serde_json::Value>, Option<String>) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return ("raw".to_string(), None, None);
+    }
+
+    // Step 1: strict parse
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return ("ok".to_string(), Some(value), None);
+    }
+
+    // Step 2: lenient pipeline (control chars → outer-quote removal → array wrap)
+    if let Some(value) = try_lenient_json_parse(trimmed) {
+        return ("ok".to_string(), Some(value), None);
+    }
+
+    let err = serde_json::from_str::<serde_json::Value>(trimmed)
+        .err()
+        .map(|e| e.to_string());
+    ("raw".to_string(), None, err)
+}
+
+/// Multi-stage lenient JSON parse following LogReceiver.py strategy:
+/// 1. Strip illegal control characters and retry
+/// 2. Remove outer quotes for nested JSON fields and retry
+/// 3. Wrap in [...] and retry (handles malformed concatenated JSON)
+fn try_lenient_json_parse(raw: &str) -> Option<serde_json::Value> {
+    // Stage 1: strip control characters
+    let cleaned = strip_json_control_chars(raw);
+    let s1 = cleaned.as_deref().unwrap_or(raw);
+    if cleaned.is_some() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(s1) {
+            return Some(value);
+        }
+    }
+
+    // Stage 2: remove outer quotes from nested JSON fields
+    // e.g. "fieldName": "{\"a\":1}" → "fieldName": {"a":1}
+    let unquoted = remove_outer_quotes_for_json_fields(s1);
+    if let Some(ref uq) = unquoted {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(uq) {
+            return Some(value);
+        }
+    }
+
+    // Stage 3: wrap in [] and try parsing as array
+    let s2 = unquoted.as_deref().unwrap_or(s1);
+    let wrapped = format!("[{}]", s2);
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&wrapped) {
+        return Some(value);
+    }
+
+    None
+}
+
+/// Escape control characters (U+0000..U+001F) that appear **inside JSON
+/// string values** as `\uXXXX`.  Structural whitespace outside strings
+/// (newlines, tabs between keys) is left untouched so the JSON structure
+/// stays valid.  Uses a lightweight state machine to track in-string state.
+/// Returns None if nothing was changed.
+fn strip_json_control_chars(raw: &str) -> Option<String> {
+    use std::fmt::Write;
+    let mut cleaned = String::with_capacity(raw.len());
+    let mut changed = false;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for ch in raw.chars() {
+        if escape_next {
+            // Previous char was `\` inside a string — emit as-is
+            cleaned.push(ch);
+            escape_next = false;
+            continue;
+        }
+
+        if in_string {
+            if ch == '\\' {
+                escape_next = true;
+                cleaned.push(ch);
+            } else if ch == '"' {
+                in_string = false;
+                cleaned.push(ch);
+            } else if ch.is_control() {
+                // Control char inside a string value — escape it
+                let _ = write!(cleaned, "\\u{:04x}", ch as u32);
+                changed = true;
+            } else {
+                cleaned.push(ch);
+            }
+        } else {
+            // Outside a string — only toggle on unescaped `"`
+            if ch == '"' {
+                in_string = true;
+            }
+            cleaned.push(ch);
+        }
+    }
+
+    if changed { Some(cleaned) } else { None }
+}
+
+
+/// Port of Python remove_outer_quotes_for_json_fields():
+/// Match `"key": "{...}"` patterns and strip the outer quotes wrapping the
+/// nested JSON object, turning it into `"key": {...}`.
+/// Returns None if nothing was changed.
+fn remove_outer_quotes_for_json_fields(raw: &str) -> Option<String> {
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        // Match:  "someKey" : "{ ... }"
+        // Group 1: the prefix  "someKey" :
+        // Group 2: the inner JSON object text including braces
+        Regex::new(r#"("[\w]+")\s*:\s*"(\{.*?\})""#).unwrap()
+    });
+
+    let result = re.replace_all(raw, |caps: &regex::Captures| {
+        format!("{}: {}", &caps[1], &caps[2])
+    });
+
+    if result.as_ref() == raw {
+        None
+    } else {
+        Some(result.into_owned())
+    }
 }
 
 fn keyword_marker(content: &str) -> Option<(&'static str, String, &'static str)> {

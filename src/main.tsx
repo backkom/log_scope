@@ -5,9 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import JsonView from "react18-json-view";
-import "react18-json-view/src/style.css";
-import "react18-json-view/src/dark.css";
+
 import "./styles.css";
 
 type HealthCheck = {
@@ -221,6 +219,79 @@ const RIGHT_MINIMAP_FRAME_RATIO = 1 / 8;
 const MAX_TOKENIZED_CHARS = 4_096;
 const LARGE_FILE_DEGRADE_BYTES = 100 * 1024 * 1024;
 const HUGE_FILE_DEGRADE_BYTES = 300 * 1024 * 1024;
+
+// Render a single JSON value as a styled inline span
+function JsonValueSpan({ value }: { value: unknown }) {
+  if (value === null) return <span className="jt-null">null</span>;
+  if (value === undefined) return <span className="jt-null">undefined</span>;
+  if (typeof value === "boolean") return <span className="jt-bool">{String(value)}</span>;
+  if (typeof value === "number") return <span className="jt-number">{String(value)}</span>;
+  if (typeof value === "string") return <span className="jt-string">"{value}"</span>;
+  return <span className="jt-null">{String(value)}</span>;
+}
+
+// Recursive tree node for rendering JSON as a collapsible file-tree
+function JsonTreeNode({
+  label,
+  value,
+  defaultOpen = true,
+  depth = 0,
+}: {
+  label?: string;
+  value: unknown;
+  defaultOpen?: boolean;
+  depth?: number;
+}) {
+  const [open, setOpen] = React.useState(defaultOpen);
+
+  // Primitive values
+  if (value === null || value === undefined || typeof value !== "object") {
+    return (
+      <div className="jt-leaf">
+        {label != null && <span className="jt-key">{label}: </span>}
+        <JsonValueSpan value={value} />
+      </div>
+    );
+  }
+
+  const isArray = Array.isArray(value);
+  const entries = isArray
+    ? (value as unknown[]).map((v, i) => [String(i), v] as const)
+    : Object.entries(value as Record<string, unknown>);
+  const bracketLabel = isArray ? `[${entries.length}]` : `{${entries.length}}`;
+
+  return (
+    <div className="jt-branch">
+      <button
+        type="button"
+        className={`jt-toggle${open ? " is-open" : ""}`}
+        onClick={() => setOpen((p) => !p)}
+      >
+        <span className="jt-arrow">{open ? "▾" : "▸"}</span>
+        {label != null && <span className="jt-key">{label}</span>}
+        <span className="jt-bracket">{bracketLabel}</span>
+      </button>
+      {open && (
+        <div className="jt-children">
+          {entries.map(([k, v]) => (
+            <JsonTreeNode
+              key={k}
+              label={k}
+              value={v}
+              defaultOpen={depth < 1}
+              depth={depth + 1}
+            />
+          ))}
+          {entries.length === 0 && (
+            <div className="jt-leaf">
+              <span className="jt-null">(empty)</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function PlayIcon() {
   return (
@@ -1472,19 +1543,20 @@ function App() {
                   </small>
                 </button>
                 {!selectedPayload ? <pre className="payload-preview">载入中...</pre> : null}
-                {selectedPayload?.parsedJson ? (
-                  <div className="json-tree-viewer">
-                    <JsonView
-                      src={selectedPayload.parsedJson}
-                      collapsed={2}
-                      collapseStringsAfterLength={240}
-                      collapseObjectsAfterLength={80}
-                      enableClipboard
-                    />
-                  </div>
-                ) : selectedPayload ? (
-                  <pre className="payload-preview">{selectedPayload.rawText || "(empty payload)"}</pre>
-                ) : null}
+                {(() => {
+                  const jsonData = selectedPayload?.parsedJson ?? null;
+                  if (jsonData) {
+                    return (
+                      <div className="json-tree-viewer">
+                        <JsonTreeNode value={jsonData} defaultOpen={true} />
+                      </div>
+                    );
+                  }
+                  if (selectedPayload) {
+                    return <pre className="payload-preview">{selectedPayload.rawText || "(empty payload)"}</pre>;
+                  }
+                  return null;
+                })()}
                 {selectedPayload?.parseError ? <p className="payload-note">{selectedPayload.parseError}</p> : null}
               </>
             ) : (

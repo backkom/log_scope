@@ -785,7 +785,8 @@ button:disabled {
 .payload-preview {
   min-height: 220px;
   max-height: none;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   margin: 0;
   border: 1px solid #dce2e5;
   border-radius: 7px;
@@ -795,30 +796,94 @@ button:disabled {
   font-size: 12px;
   line-height: 1.45;
   padding: 10px;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .json-tree-viewer {
   min-height: 220px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   border: 1px solid #dce2e5;
   border-radius: 7px;
   background: #182125;
   padding: 10px;
-}
-
-.json-tree-viewer .json-view {
-  background: transparent;
-  color: #dfe8e6;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
-  line-height: 1.45;
-  --json-property: #79d39a;
-  --json-index: #8db7ff;
-  --json-number: #8db7ff;
-  --json-string: #f0bd7a;
-  --json-boolean: #ff8eb3;
-  --json-null: #ff8eb3;
+  line-height: 1.55;
+  color: #dfe8e6;
+  word-break: break-all;
+  overflow-wrap: break-word;
+}
+
+/* file-tree toggle button (object / array header) */
+.jt-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  width: 100%;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 1px 4px;
+  text-align: left;
+  cursor: pointer;
+  word-break: break-all;
+  overflow-wrap: break-word;
+}
+
+.jt-toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.jt-arrow {
+  flex-shrink: 0;
+  width: 10px;
+  color: #8996a0;
+  font-size: 11px;
+}
+
+.jt-key {
+  color: #79d39a;
+}
+
+.jt-bracket {
+  color: #8996a0;
+  margin-left: 2px;
+  font-size: 11px;
+}
+
+.jt-leaf {
+  padding: 1px 4px;
+  word-break: break-all;
+  overflow-wrap: break-word;
+}
+
+.jt-children {
+  margin-left: 7px;
+  padding-left: 9px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.jt-string {
+  color: #f0bd7a;
+  word-break: break-all;
+  overflow-wrap: break-word;
+}
+
+.jt-number {
+  color: #8db7ff;
+}
+
+.jt-bool {
+  color: #ff8eb3;
+}
+
+.jt-null {
+  color: #ff8eb3;
+  font-style: italic;
 }
 
 .payload-note,
