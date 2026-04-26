@@ -107,7 +107,7 @@ struct SocketConnectMetadata {
 }
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 struct PersistedStore {
     schema_version: u32,
     recent_files: Vec<PersistedFileSource>,
@@ -143,9 +143,10 @@ struct PersistedDataSource {
 }
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 struct PersistedUiState {
     follow_tail: bool,
+    show_source_panel: bool,
     show_global_minimap: bool,
     show_local_minimap: bool,
     log_color_mode: String,
@@ -1992,6 +1993,7 @@ impl Default for PersistedUiState {
     fn default() -> Self {
         Self {
             follow_tail: true,
+            show_source_panel: false,
             show_global_minimap: true,
             show_local_minimap: true,
             log_color_mode: "full".to_string(),
@@ -2207,7 +2209,7 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
             &connect_socket_item,
             &open_recent_submenu,
             &PredefinedMenuItem::separator(app_handle)?,
-            &PredefinedMenuItem::quit(app_handle, None)?,
+            &PredefinedMenuItem::quit(app_handle, Some("Quit LogScope"))?,
         ],
     )?;
 
@@ -2248,7 +2250,7 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
     {
         let app_menu = Submenu::with_items(
             app_handle,
-            "log_scope",
+            "LogScope",
             true,
             &[
                 &PredefinedMenuItem::about(app_handle, None, None)?,
@@ -2305,6 +2307,7 @@ pub fn run() {
                         last_source: None,
                         ui_state: sanitize_ui_state(PersistedUiState {
                             follow_tail: true,
+                            show_source_panel: false,
                             show_global_minimap: true,
                             show_local_minimap: true,
                             log_color_mode: "full".to_string(),

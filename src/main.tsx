@@ -180,6 +180,7 @@ type PersistedDataSource = {
 
 type PersistedUiState = {
   followTail: boolean;
+  showSourcePanel: boolean;
   showGlobalMinimap: boolean;
   showLocalMinimap: boolean;
   logColorMode: "full" | "severity" | "off" | string;
@@ -437,6 +438,7 @@ function App() {
 
         const uiState = store.uiState;
         setFollowTail(uiState.followTail);
+        setShowSourcePanel(uiState.showSourcePanel ?? false);
         setShowGlobalMinimap(uiState.showGlobalMinimap);
         setShowLocalMinimap(uiState.showLocalMinimap);
         setLogColorMode(isLogColorMode(uiState.logColorMode) ? uiState.logColorMode : "full");
@@ -480,6 +482,7 @@ function App() {
     saveUiStateTimerRef.current = window.setTimeout(() => {
       const uiState: PersistedUiState = {
         followTail,
+        showSourcePanel,
         showGlobalMinimap,
         showLocalMinimap,
         logColorMode,
@@ -502,6 +505,7 @@ function App() {
     };
   }, [
     followTail,
+    showSourcePanel,
     showGlobalMinimap,
     showLocalMinimap,
     logColorMode,
@@ -514,7 +518,7 @@ function App() {
   ]);
 
   React.useEffect(() => {
-    const title = logFile?.path ? `${logFile.path} - log_scope` : "log_scope";
+    const title = logFile?.path ? `${logFile.path} - Log Scope` : "Log Scope";
     document.title = title;
     void getCurrentWindow().setTitle(title).catch((err: unknown) => {
       console.warn("Unable to set Tauri window title", err);
@@ -2714,6 +2718,13 @@ function getSeverityClass(text: string | undefined, colorMode: "full" | "severit
   }
   return "";
 }
+
+document.addEventListener("contextmenu", (e) => {
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+    return;
+  }
+  e.preventDefault();
+});
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
