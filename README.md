@@ -30,6 +30,28 @@ yarn run checktsc
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
+## 打包
+
+macOS 本机打包：
+
+```bash
+yarn run package:macos
+```
+
+默认生成未签名的 `.app` 和 `.dmg`，产物位于 `src-tauri/target/release/bundle/`。需要 Apple 签名/公证时，先配置 Tauri 所需证书环境，再执行：
+
+```bash
+LOGSCOPE_SIGN=1 yarn run package:macos
+```
+
+Windows 打包需在 Windows 主机执行：
+
+```powershell
+yarn run package:windows
+```
+
+默认请求 Tauri 生成 `nsis,msi` 安装包；macOS 当前无法实际验证 Windows 安装包。
+
 VS Code 调试：
 
 - 打开 Run and Debug，选择 `Tauri Dev: log_scope`。

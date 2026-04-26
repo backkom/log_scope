@@ -251,6 +251,17 @@ Rust command：
 - 暂未记录跨平台 app data、真实 100 MB/300 MB 样本和 socket burst 的长期数据表。
 - Rust 索引仍是一次性构建；阶段 7 只实现了显示侧降级，渐进式索引和搜索取消仍留待后续切片。
 
+## 打包与发布
+
+阶段 8 第一版采用 Tauri 原生打包能力，产品名为 `LogScope`，bundle identifier 为 `com.logscope.viewer`。
+
+当前打包入口：
+
+- macOS：`yarn run package:macos`，内部执行 `scripts/package-macos.sh`，默认生成未签名 `.app` 和 `.dmg`。本机 macOS 已验证可产出 `src-tauri/target/release/bundle/macos/LogScope.app` 和 `src-tauri/target/release/bundle/dmg/LogScope_0.1.0_aarch64.dmg`。如需签名/公证，配置 Tauri 所需证书环境后使用 `LOGSCOPE_SIGN=1` 或脚本 `--sign`。
+- Windows：`yarn run package:windows`，内部执行 `scripts/package-windows.ps1`，默认请求 Tauri 生成 `nsis,msi` 安装包；该脚本必须在 Windows 主机执行，macOS 当前只维护脚本内容，实际安装包待 Windows 验证。
+
+图标资源由 `src-tauri/icons/icon.png` 生成，并已补齐 Tauri 打包需要的 `.icns`、`.ico` 和 PNG 尺寸资源。后续更换图标时需重新执行 `yarn tauri icon src-tauri/icons/icon.png --output src-tauri/icons` 并重新跑至少 macOS 打包 smoke test。
+
 ## 虚拟化 Viewer 要求
 
 不要把 50-100 MB log 加载进普通 DOM 节点或通用编辑器文档。

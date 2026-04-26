@@ -188,6 +188,8 @@
 
 目标：提供 Windows 和 macOS 可试用构建。
 
+状态：已完成第一版编码。当前 Tauri 配置已使用 `LogScope` 作为产品名和窗口标题，bundle identifier 为 `com.logscope.viewer`，并补齐 macOS `.icns`、Windows `.ico` 与 PNG 图标资源。仓库新增 `scripts/package-macos.sh` 和 `scripts/package-windows.ps1`，并在 `package.json` 提供 `yarn run package:macos`、`yarn run package:windows` 入口。macOS 脚本默认生成未签名 `.app` 和 `.dmg`，可通过 `LOGSCOPE_SIGN=1` 或 `--sign` 交给 Tauri 签名/公证配置处理；本机已验证 `.app` 和 `.dmg` 可成功生成。Windows 脚本默认请求 `nsis,msi`，但需在 Windows 主机上实际验证。
+
 任务：
 
 - 配置 Tauri 打包、应用图标、应用名和权限。
