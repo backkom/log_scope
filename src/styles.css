@@ -1462,3 +1462,139 @@ button:disabled {
   gap: 12px;
   margin-top: 24px;
 }
+
+/* ---- Discovered Servers (Connect Socket modal) ---- */
+
+.discovered-servers {
+  margin-bottom: 16px;
+}
+
+.discovered-servers-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.discovered-servers-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #9aa39e;
+}
+
+.refresh-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid #4e5649;
+  border-radius: 5px;
+  background: #30342b;
+  color: #c7d0c3;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, transform 0.2s;
+}
+
+.refresh-button:hover {
+  background: #3e423a;
+  border-color: #636860;
+  transform: rotate(90deg);
+}
+
+.refresh-button:active {
+  background: #4e514a;
+  transform: rotate(180deg);
+}
+
+.discovered-servers-list {
+  border: 1px solid #4e5649;
+  border-radius: 6px;
+  background: #2b2d27;
+  max-height: 160px;
+  min-height: 48px;
+  overflow-y: auto;
+  scrollbar-color: var(--log-viewer-scrollbar) #2b2d27;
+}
+
+.discovered-servers-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.discovered-servers-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.discovered-servers-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--log-viewer-scrollbar);
+}
+
+.discovered-servers-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 12px;
+  color: #7a7e75;
+  font-size: 13px;
+}
+
+.discovery-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-top-color: #2f8f83;
+  border-radius: 50%;
+  animation: discovery-spin 0.8s linear infinite;
+}
+
+@keyframes discovery-spin {
+  to { transform: rotate(360deg); }
+}
+
+.discovered-server-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  background: transparent;
+  color: #e0e4e0;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.discovered-server-item:last-child {
+  border-bottom: 0;
+}
+
+.discovered-server-item:hover {
+  background: #173d39;
+}
+
+.discovered-server-item:active {
+  background: #1a4944;
+}
+
+.server-hostname {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-address {
+  flex-shrink: 0;
+  color: #8996a0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}

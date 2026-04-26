@@ -2,13 +2,13 @@ use std::{
     collections::HashMap,
     fs::{self, File},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
-    net::TcpStream,
+    net::{TcpStream, UdpSocket},
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use regex::Regex;
@@ -29,10 +29,20 @@ struct FileOpenPlaceholder {
     message: &'static str,
 }
 
-#[derive(Default)]
 struct AppState {
     next_session_id: AtomicU64,
     sessions: Mutex<HashMap<u64, Arc<Mutex<LogSession>>>>,
+    udp_discovery_active: Arc<AtomicBool>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            next_session_id: AtomicU64::new(0),
+            sessions: Mutex::new(HashMap::new()),
+            udp_discovery_active: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 struct LogSession {
@@ -105,6 +115,17 @@ struct SocketConnectMetadata {
     line_count: usize,
     protocol: &'static str,
 }
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveredServer {
+    host: String,
+    port: u16,
+    hostname: String,
+}
+
+/// UDP broadcast discovery port (same as Python server).
+const DISCOVERY_PORT: u16 = 9876;
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -420,6 +441,83 @@ async fn connect_log_socket(
         line_count: 0,
         protocol: "logscope-frame-v1",
     })
+}
+
+#[tauri::command]
+async fn start_udp_discovery(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    // If already active, stop the previous listener first
+    state.udp_discovery_active.store(false, Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(100));
+    state.udp_discovery_active.store(true, Ordering::SeqCst);
+
+    let active_flag = Arc::clone(&state.udp_discovery_active);
+    let app_handle = app.clone();
+
+    std::thread::spawn(move || {
+        let socket = match UdpSocket::bind(format!("0.0.0.0:{DISCOVERY_PORT}")) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("failed to bind UDP discovery port {DISCOVERY_PORT}: {e}");
+                return;
+            }
+        };
+        let _ = socket.set_read_timeout(Some(Duration::from_secs(1)));
+
+        let mut buf = [0u8; 1024];
+        while active_flag.load(Ordering::SeqCst) {
+            match socket.recv_from(&mut buf) {
+                Ok((len, _addr)) => {
+                    if let Ok(text) = std::str::from_utf8(&buf[..len]) {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+                            if value.get("protocol").and_then(|v| v.as_str())
+                                == Some("logscope-discovery-v1")
+                            {
+                                let server = DiscoveredServer {
+                                    host: value
+                                        .get("host")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    port: value
+                                        .get("port")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0) as u16,
+                                    hostname: value
+                                        .get("hostname")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                };
+                                if !server.host.is_empty() && server.port > 0 {
+                                    let _ = app_handle.emit(
+                                        "udp-server-discovered",
+                                        &server,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    // Timeout — check stop flag and loop
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_udp_discovery(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.udp_discovery_active.store(false, Ordering::SeqCst);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2370,6 +2468,8 @@ pub fn run() {
             generate_log_fixture,
             run_core_benchmark,
             connect_log_socket,
+            start_udp_discovery,
+            stop_udp_discovery,
             get_persisted_state,
             save_ui_state,
             remove_recent_file,

@@ -54,6 +54,12 @@ type SocketConnectMetadata = {
   protocol: string;
 };
 
+type DiscoveredServer = {
+  host: string;
+  port: number;
+  hostname: string;
+};
+
 type LogLine = {
   lineNumber: number;
   text: string;
@@ -356,6 +362,7 @@ function App() {
   const [isOpening, setIsOpening] = React.useState(false);
   const [isConnectingSocket, setIsConnectingSocket] = React.useState(false);
   const [showSocketModal, setShowSocketModal] = React.useState(false);
+  const [discoveredServers, setDiscoveredServers] = React.useState<DiscoveredServer[]>([]);
   const [isDisconnected, setIsDisconnected] = React.useState(false);
   const [showSourcePanel, setShowSourcePanel] = React.useState(false);
   const [sourcePanelWidth, setSourcePanelWidth] = React.useState(280);
@@ -421,6 +428,33 @@ function App() {
       .then(setHealth)
       .catch((err: unknown) => setError(String(err)));
   }, []);
+
+  // UDP discovery lifecycle: start/stop when socket modal opens/closes
+  React.useEffect(() => {
+    if (!showSocketModal) {
+      invoke("stop_udp_discovery").catch(() => {});
+      return;
+    }
+    // Start listening and clear previous results
+    setDiscoveredServers([]);
+    invoke("start_udp_discovery").catch(() => {});
+
+    const unlisten = listen<DiscoveredServer>("udp-server-discovered", (event) => {
+      const server = event.payload;
+      setDiscoveredServers((prev) => {
+        const key = `${server.host}:${server.port}`;
+        if (prev.some((s) => `${s.host}:${s.port}` === key)) {
+          return prev; // deduplicate
+        }
+        return [...prev, server];
+      });
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+      invoke("stop_udp_discovery").catch(() => {});
+    };
+  }, [showSocketModal]);
 
   const refreshPersistedState = React.useCallback(async () => {
     const store = await invoke<PersistedStore>("get_persisted_state");
@@ -2111,6 +2145,47 @@ function App() {
         <div className="modal-overlay">
           <div className="modal-content">
             <h2>连接 Socket</h2>
+
+            {/* Discovered servers section */}
+            <div className="discovered-servers">
+              <div className="discovered-servers-header">
+                <span className="discovered-servers-title">发现的服务器</span>
+                <button
+                  type="button"
+                  className="refresh-button"
+                  onClick={() => setDiscoveredServers([])}
+                  title="刷新列表"
+                >
+                  ⟳
+                </button>
+              </div>
+              <div className="discovered-servers-list">
+                {discoveredServers.length === 0 ? (
+                  <div className="discovered-servers-empty">
+                    <span className="discovery-spinner" />
+                    正在搜索局域网服务器…
+                  </div>
+                ) : (
+                  discoveredServers.map((server) => (
+                    <button
+                      type="button"
+                      key={`${server.host}:${server.port}`}
+                      className="discovered-server-item"
+                      onClick={() => {
+                        setSocketHost(server.host);
+                        setSocketPort(String(server.port));
+                        void connectSocketSource(server.host, server.port);
+                        setShowSocketModal(false);
+                      }}
+                    >
+                      <span className="server-hostname">{server.hostname}</span>
+                      <span className="server-address">{server.host}:{server.port}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+
             <form onSubmit={(e) => {
               connectSocket(e);
               setShowSocketModal(false);

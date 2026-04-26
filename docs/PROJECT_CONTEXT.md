@@ -221,6 +221,38 @@ Frame 格式：
 - socket session 第一版没有显式取消、重连和连接状态事件；连接断开时后台 reader 停止，前端仍可查看已接收内容。
 - marker 仍通过刷新时重建索引获得，后续高频流压测如暴露成本，应改为增量 marker 扫描。
 
+## UDP 广播发现协议
+
+服务器端支持通过 `logscope-discovery-v1` UDP 广播协议向局域网通告自身存在，LogScope 客户端在 Connect Socket 界面自动发现并列出可用服务器。
+
+### 协议格式
+
+- 传输方式：UDP 广播（默认 `255.255.255.255`，可通过服务器 `--broadcast-addr` 参数配置为子网定向广播地址）。
+- 端口：`9876`。服务器不绑定该端口（避免与客户端冲突），仅向该端口发送广播包；客户端绑定该端口接收。
+- 发送间隔：每 3 秒一次。
+- Payload：UTF-8 编码 JSON，字段如下：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `protocol` | string | 固定 `"logscope-discovery-v1"` |
+| `host` | string | 服务器 IP（用于后续 TCP 连接） |
+| `port` | number | 服务器 TCP 监听端口 |
+| `hostname` | string | 服务器主机名，用于 UI 展示 |
+
+### 服务器端行为
+
+- `scripts/logscope_socket_server.py` 启动后默认开启 UDP 广播（`--no-broadcast` 可禁用）。
+- 广播地址通过 `--broadcast-addr` 配置，默认 `255.255.255.255`。
+- 服务器 IP 自动检测：绑定特定地址则使用该地址，否则通过 dummy UDP connect 获取本机局域网 IP。
+
+### 客户端行为
+
+- Rust command `start_udp_discovery()` 在端口 9876-9879 各启动一个监听线程，解析收到的 JSON 并通过 `udp-server-discovered` 事件推送到前端。
+- Rust command `stop_udp_discovery()` 设置停止标志，监听线程在超时后退出。
+- 前端打开 Connect Socket 弹窗时自动调用 `start_udp_discovery()`，关闭时调用 `stop_udp_discovery()`。
+- 弹窗内"发现的服务器"列表按 `host:port` 去重；用户可点击刷新按钮清空列表（服务器仍在广播则重新填充）。
+- 点击服务器条目后，自动填入 host/port 并发起 TCP 连接。
+
 ## 持久化与历史记录
 
 阶段 6 第一版使用轻量 JSON 结构化存储，不引入 SQLite。存储文件位于 Tauri app data 目录的 `state-v1.json`，包含 `schemaVersion = 1`。

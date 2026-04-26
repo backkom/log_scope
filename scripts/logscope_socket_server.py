@@ -15,12 +15,17 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import socket
 import socketserver
 import struct
 import threading
 import time
 from datetime import datetime
 from typing import Iterable
+
+# UDP broadcast discovery port
+DISCOVERY_PORT = 9876
+DISCOVERY_INTERVAL = 3  # seconds between broadcasts
 
 
 LEVELS = ("INFO", "INFO", "INFO", "WARN", "ERROR")
@@ -142,6 +147,71 @@ class LogScopeServer(socketserver.ThreadingTCPServer):
         self.stop_event = threading.Event()
 
 
+def get_local_ip(bind_host: str) -> str:
+    """Get the best local IP address for broadcasting.
+
+    If the server is bound to a specific non-loopback address, use that.
+    Otherwise try to determine the LAN IP via a dummy UDP connect.
+    Falls back to 127.0.0.1.
+    """
+    if bind_host and bind_host not in ("0.0.0.0", "127.0.0.1", "localhost"):
+        return bind_host
+    if bind_host in ("127.0.0.1", "localhost"):
+        return "127.0.0.1"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def broadcast_discovery(
+    stop_event: threading.Event,
+    bind_host: str,
+    tcp_port: int,
+    broadcast_addr: str,
+) -> None:
+    """Broadcast logscope-discovery-v1 UDP packets to port 9876.
+
+    The server does NOT bind the discovery port (that would block clients on the
+    same machine). Instead it uses an ephemeral port for sending.
+    """
+    local_ip = get_local_ip(bind_host)
+    hostname = socket.gethostname()
+    payload = json.dumps(
+        {
+            "protocol": "logscope-discovery-v1",
+            "host": local_ip,
+            "port": tcp_port,
+            "hostname": hostname,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+
+    print(
+        f"broadcasting logscope-discovery-v1 to {broadcast_addr}:{DISCOVERY_PORT} "
+        f"every {DISCOVERY_INTERVAL}s  (host={local_ip} tcp_port={tcp_port} hostname={hostname})",
+        flush=True,
+    )
+
+    while not stop_event.is_set():
+        try:
+            sock.sendto(payload, (broadcast_addr, DISCOVERY_PORT))
+        except OSError as exc:
+            print(f"broadcast send error: {exc}", flush=True)
+        stop_event.wait(DISCOVERY_INTERVAL)
+
+    sock.close()
+    print("broadcast stopped", flush=True)
+
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a logscope-frame-v1 random log server.")
     parser.add_argument("--host", default="127.0.0.1")
@@ -151,6 +221,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260425)
     parser.add_argument("--json-marker-every", type=int, default=37)
     parser.add_argument("--message-marker-every", type=int, default=91)
+    parser.add_argument(
+        "--broadcast-addr",
+        default="255.255.255.255",
+        help="UDP broadcast destination address (default: 255.255.255.255)",
+    )
+    parser.add_argument(
+        "--no-broadcast",
+        action="store_true",
+        help="disable UDP discovery broadcast",
+    )
     return parser.parse_args()
 
 
@@ -162,6 +242,16 @@ def main() -> None:
             f"batch={args.batch_size} interval={args.interval}s",
             flush=True,
         )
+
+        # Start UDP broadcast discovery thread
+        if not args.no_broadcast:
+            broadcast_thread = threading.Thread(
+                target=broadcast_discovery,
+                args=(server.stop_event, args.host, args.port, args.broadcast_addr),
+                daemon=True,
+            )
+            broadcast_thread.start()
+
         try:
             server.serve_forever()
         except KeyboardInterrupt:
