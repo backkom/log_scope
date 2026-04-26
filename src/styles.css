@@ -63,7 +63,6 @@ button:disabled {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
   height: 100vh;
   min-height: 0;
   overflow: hidden;
@@ -75,7 +74,6 @@ button:disabled {
   gap: 16px;
   min-height: 0;
   overflow-y: auto;
-  border-right: 1px solid #d9dee2;
   background: #ffffff;
   padding: 18px;
 }
@@ -334,9 +332,9 @@ button:disabled {
 }
 
 .toolbar-buttons {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 8px;
+  align-items: center;
 }
 
 .status-list {
@@ -383,11 +381,45 @@ button:disabled {
   padding: 0 20px;
 }
 
-.viewer-toolbar div {
-  display: grid;
+.viewer-toolbar .toolbar-buttons {
+  display: flex;
   min-width: 0;
-  width: 100%;
-  text-align: left;
+  width: auto;
+}
+
+.toolbar-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #69757c;
+  padding: 0;
+}
+
+.toolbar-icon-button:hover:not(:disabled) {
+  background: #f1f4f5;
+  color: #273137;
+}
+
+.toolbar-icon-button.is-active {
+  background: #e9f2ef;
+  color: #18706a;
+}
+
+.toolbar-icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.toolbar-separator {
+  width: 1px;
+  height: 16px;
+  background: #d9dee2;
+  margin: 0 4px;
 }
 
 .viewer-toolbar strong,
@@ -683,6 +715,19 @@ button:disabled {
 
 .local-minimap:active {
   cursor: grabbing;
+}
+
+.panel-resizer {
+  cursor: col-resize;
+  background: #e3e8eb;
+  transition: background-color 0.2s;
+  border-left: 1px solid #d9dee2;
+  border-right: 1px solid #d9dee2;
+}
+
+.panel-resizer:hover,
+.panel-resizer:active {
+  background: #b8c6c7;
 }
 
 .marker-panel {

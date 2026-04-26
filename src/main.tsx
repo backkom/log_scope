@@ -222,6 +222,49 @@ const MAX_TOKENIZED_CHARS = 4_096;
 const LARGE_FILE_DEGRADE_BYTES = 100 * 1024 * 1024;
 const HUGE_FILE_DEGRADE_BYTES = 300 * 1024 * 1024;
 
+function PlayIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="5 3 19 12 5 21 5 3" />
+    </svg>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="6" y="4" width="4" height="16" />
+      <rect x="14" y="4" width="4" height="16" />
+    </svg>
+  );
+}
+
+function SidebarIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <line x1="9" y1="3" x2="9" y2="21" />
+    </svg>
+  );
+}
+
+function TopPanelIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <line x1="3" y1="9" x2="21" y2="9" />
+    </svg>
+  );
+}
+
+function RightPanelIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <line x1="15" y1="3" x2="15" y2="21" />
+    </svg>
+  );
+}
 
 function App() {
   const [health, setHealth] = React.useState<HealthCheck | null>(null);
@@ -239,6 +282,9 @@ function App() {
   const [isOpening, setIsOpening] = React.useState(false);
   const [isConnectingSocket, setIsConnectingSocket] = React.useState(false);
   const [showSocketModal, setShowSocketModal] = React.useState(false);
+  const [isDisconnected, setIsDisconnected] = React.useState(false);
+  const [showSourcePanel, setShowSourcePanel] = React.useState(true);
+  const [sourcePanelWidth, setSourcePanelWidth] = React.useState(280);
 
   const [lastFixture, setLastFixture] = React.useState<FixtureMetadata | null>(null);
   const [lastBenchmark, setLastBenchmark] = React.useState<CoreBenchmarkReport | null>(null);
@@ -597,7 +643,7 @@ function App() {
   }, [firstVisibleLine, logFile, requestedStartLine, requestedLineCount]);
 
   React.useEffect(() => {
-    if (!logFile) {
+    if (!logFile || isDisconnected) {
       return;
     }
 
@@ -658,7 +704,7 @@ function App() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [followTail, loadMarkers, logFile?.sessionId]);
+  }, [followTail, loadMarkers, logFile?.sessionId, isDisconnected]);
 
   const runPlaceholder = async () => {
     setError(null);
@@ -696,6 +742,7 @@ function App() {
       setTailNotice(null);
       setScrollTop(0);
       setJumpLine("1");
+      setIsDisconnected(false);
       await loadMarkers(metadata.sessionId);
       await refreshPersistedState();
       applyLargeFileDegradation(metadata);
@@ -748,6 +795,7 @@ function App() {
       setTailNotice("Socket 已连接，正在等待 frame 数据");
       setScrollTop(0);
       setJumpLine("1");
+      setIsDisconnected(false);
       await refreshPersistedState();
       if (viewportRef.current) {
         viewportRef.current.scrollTop = 0;
@@ -827,6 +875,7 @@ function App() {
         return;
       }
       setSelectedMarker(marker);
+      setShowSourcePanel(true);
       setSelectedPayload(null);
       scrollToLineCentered(marker.startLine);
       try {
@@ -1324,8 +1373,8 @@ function App() {
   };
 
   return (
-    <main className="app-shell">
-      <aside className="source-panel">
+    <main className="app-shell" style={{ gridTemplateColumns: showSourcePanel ? `${sourcePanelWidth}px 4px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+      <aside className="source-panel" style={{ display: showSourcePanel ? 'flex' : 'none' }}>
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
           <div>
@@ -1402,15 +1451,61 @@ function App() {
         </section>
       </aside>
 
+      <div
+        className="panel-resizer"
+        style={{ display: showSourcePanel ? 'block' : 'none' }}
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+            setSourcePanelWidth(Math.max(150, Math.min(e.clientX, window.innerWidth - 200)));
+          }
+        }}
+        onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
+      />
+
       <section
         className={`viewer-area${showGlobalMinimap ? "" : " is-global-minimap-hidden"}${
           showLocalMinimap ? "" : " is-local-minimap-hidden"
         }`}
       >
         <header className="viewer-toolbar">
-          <div>
-            <strong>Log viewer</strong>
-            <span>{logFile ? "^+G 跳转行号" : activePath}</span>
+          <div className="toolbar-buttons">
+            <button
+              type="button"
+              className={`toolbar-icon-button${isDisconnected ? " is-active" : ""}`}
+              disabled={!logFile && !isConnectingSocket}
+              onClick={() => setIsDisconnected((current) => !current)}
+              title={isDisconnected ? "恢复更新" : "暂停更新"}
+            >
+              {isDisconnected ? <PlayIcon /> : <PauseIcon />}
+            </button>
+            <span className="toolbar-separator" />
+            <button
+              type="button"
+              className={`toolbar-icon-button${showSourcePanel ? " is-active" : ""}`}
+              onClick={() => setShowSourcePanel((current) => !current)}
+              title="显示/隐藏左侧栏"
+            >
+              <SidebarIcon />
+            </button>
+            <button
+              type="button"
+              className={`toolbar-icon-button${showGlobalMinimap ? " is-active" : ""}`}
+              onClick={() => setShowGlobalMinimap((current) => !current)}
+              title="显示/隐藏顶部 Minimap"
+            >
+              <TopPanelIcon />
+            </button>
+            <button
+              type="button"
+              className={`toolbar-icon-button${showLocalMinimap ? " is-active" : ""}`}
+              onClick={() => setShowLocalMinimap((current) => !current)}
+              title="显示/隐藏右侧 Minimap"
+            >
+              <RightPanelIcon />
+            </button>
           </div>
         </header>
 
@@ -1707,26 +1802,6 @@ function App() {
                 <span className="status-icon status-icon-color-off" aria-hidden="true" />
               </button>
             </div>
-            <button
-              type="button"
-              className={`status-icon-button${showGlobalMinimap ? " is-active" : ""}`}
-              onClick={() => setShowGlobalMinimap((current) => !current)}
-              title={showGlobalMinimap ? "关闭顶部 minimap" : "显示顶部 minimap"}
-              aria-label={showGlobalMinimap ? "关闭顶部 minimap" : "显示顶部 minimap"}
-              aria-pressed={showGlobalMinimap}
-            >
-              <span className="status-icon status-icon-top" aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className={`status-icon-button${showLocalMinimap ? " is-active" : ""}`}
-              onClick={() => setShowLocalMinimap((current) => !current)}
-              title={showLocalMinimap ? "关闭右侧 minimap" : "显示右侧 minimap"}
-              aria-label={showLocalMinimap ? "关闭右侧 minimap" : "显示右侧 minimap"}
-              aria-pressed={showLocalMinimap}
-            >
-              <span className="status-icon status-icon-right" aria-hidden="true" />
-            </button>
             <button
               type="button"
               className={`status-tail-button${followTail ? " is-active" : ""}`}
