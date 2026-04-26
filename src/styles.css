@@ -62,10 +62,17 @@ button:disabled {
 }
 
 .app-shell {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   min-height: 0;
   overflow: hidden;
+}
+
+.app-body {
+  display: grid;
+  flex: 1;
+  min-height: 0;
 }
 
 .source-panel {
@@ -74,7 +81,8 @@ button:disabled {
   gap: 16px;
   min-height: 0;
   overflow-y: auto;
-  background: #ffffff;
+  background: var(--log-viewer-bg);
+  color: #d8dee3;
   padding: 18px;
 }
 
@@ -98,7 +106,12 @@ button:disabled {
   line-height: 1.1;
 }
 
-.brand p,
+.brand p {
+  margin: 4px 0 0;
+  color: #8996a0;
+  font-size: 13px;
+}
+
 .viewer-toolbar span {
   margin: 4px 0 0;
   color: #69757c;
@@ -112,7 +125,7 @@ button:disabled {
 
 .panel-section h2 {
   margin: 0;
-  color: #556168;
+  color: #aeb8bf;
   font-size: 13px;
   font-weight: 700;
 }
@@ -350,7 +363,7 @@ button:disabled {
 }
 
 .status-list dt {
-  color: #69757c;
+  color: #8996a0;
 }
 
 .status-list dd {
@@ -361,14 +374,14 @@ button:disabled {
 .viewer-area {
   position: relative;
   display: grid;
-  grid-template-rows: var(--viewer-toolbar-height) var(--global-minimap-row-height) minmax(0, 1fr) auto auto;
+  grid-template-rows: var(--global-minimap-row-height) minmax(0, 1fr) auto auto;
   min-width: 0;
   min-height: 0;
   background: var(--log-viewer-bg);
 }
 
 .viewer-area.is-global-minimap-hidden {
-  grid-template-rows: var(--viewer-toolbar-height) 0 minmax(0, 1fr) auto auto;
+  grid-template-rows: 0 minmax(0, 1fr) auto auto;
 }
 
 .viewer-toolbar {
@@ -719,15 +732,15 @@ button:disabled {
 
 .panel-resizer {
   cursor: col-resize;
-  background: #e3e8eb;
+  background: #343731;
   transition: background-color 0.2s;
-  border-left: 1px solid #d9dee2;
-  border-right: 1px solid #d9dee2;
+  border-left: 1px solid #565a4f;
+  border-right: 1px solid #565a4f;
 }
 
 .panel-resizer:hover,
 .panel-resizer:active {
-  background: #b8c6c7;
+  background: #4e5649;
 }
 
 .marker-panel {
@@ -743,10 +756,10 @@ button:disabled {
   gap: 4px 8px;
   align-items: center;
   min-height: 44px;
-  border: 1px solid #dce2e5;
+  border: 1px solid #4e5649;
   border-radius: 7px;
-  background: #f7faf9;
-  color: #273137;
+  background: #343731;
+  color: #e0e4e0;
   padding: 8px 10px;
   text-align: left;
 }
@@ -760,7 +773,7 @@ button:disabled {
 
 .marker-summary small {
   grid-column: 2;
-  color: #69757c;
+  color: #aeb8bf;
 }
 
 .marker-dot {
@@ -811,13 +824,13 @@ button:disabled {
 .payload-note,
 .panel-hint {
   margin: 0;
-  color: #69757c;
+  color: #8996a0;
   font-size: 13px;
   line-height: 1.4;
 }
 
 .payload-note {
-  color: #9d5d25;
+  color: #e0ac84;
 }
 
 .error-message {
@@ -837,11 +850,6 @@ button:disabled {
 }
 
 .viewer-status-bar {
-  position: absolute;
-  z-index: 6;
-  left: 0;
-  right: 0;
-  bottom: 0;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -853,6 +861,7 @@ button:disabled {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
   padding: 0 12px;
+  flex-shrink: 0;
 }
 
 .viewer-status-bar strong {
@@ -982,7 +991,7 @@ button:disabled {
   z-index: 7;
   left: 0;
   right: 0;
-  bottom: var(--status-bar-height);
+  bottom: 0;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1116,7 +1125,7 @@ button:disabled {
 
 
 @media (max-width: 760px) {
-  .app-shell {
+  .app-body {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
   }

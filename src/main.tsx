@@ -283,7 +283,7 @@ function App() {
   const [isConnectingSocket, setIsConnectingSocket] = React.useState(false);
   const [showSocketModal, setShowSocketModal] = React.useState(false);
   const [isDisconnected, setIsDisconnected] = React.useState(false);
-  const [showSourcePanel, setShowSourcePanel] = React.useState(true);
+  const [showSourcePanel, setShowSourcePanel] = React.useState(false);
   const [sourcePanelWidth, setSourcePanelWidth] = React.useState(280);
 
   const [lastFixture, setLastFixture] = React.useState<FixtureMetadata | null>(null);
@@ -1373,8 +1373,48 @@ function App() {
   };
 
   return (
-    <main className="app-shell" style={{ gridTemplateColumns: showSourcePanel ? `${sourcePanelWidth}px 4px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
-      <aside className="source-panel" style={{ display: showSourcePanel ? 'flex' : 'none' }}>
+    <main className="app-shell">
+      <header className="viewer-toolbar">
+        <div className="toolbar-buttons">
+          <button
+            type="button"
+            className={`toolbar-icon-button${isDisconnected ? " is-active" : ""}`}
+            disabled={!logFile && !isConnectingSocket}
+            onClick={() => setIsDisconnected((current) => !current)}
+            title={isDisconnected ? "恢复更新" : "暂停更新"}
+          >
+            {isDisconnected ? <PlayIcon /> : <PauseIcon />}
+          </button>
+          <span className="toolbar-separator" />
+          <button
+            type="button"
+            className={`toolbar-icon-button${showSourcePanel ? " is-active" : ""}`}
+            onClick={() => setShowSourcePanel((current) => !current)}
+            title="显示/隐藏左侧栏"
+          >
+            <SidebarIcon />
+          </button>
+          <button
+            type="button"
+            className={`toolbar-icon-button${showGlobalMinimap ? " is-active" : ""}`}
+            onClick={() => setShowGlobalMinimap((current) => !current)}
+            title="显示/隐藏顶部 Minimap"
+          >
+            <TopPanelIcon />
+          </button>
+          <button
+            type="button"
+            className={`toolbar-icon-button${showLocalMinimap ? " is-active" : ""}`}
+            onClick={() => setShowLocalMinimap((current) => !current)}
+            title="显示/隐藏右侧 Minimap"
+          >
+            <RightPanelIcon />
+          </button>
+        </div>
+      </header>
+
+      <div className="app-body" style={{ gridTemplateColumns: showSourcePanel ? `${sourcePanelWidth}px 4px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+        <aside className="source-panel" style={{ display: showSourcePanel ? 'flex' : 'none' }}>
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
           <div>
@@ -1469,45 +1509,6 @@ function App() {
         className={`viewer-area${showGlobalMinimap ? "" : " is-global-minimap-hidden"}${showLocalMinimap ? "" : " is-local-minimap-hidden"
           }`}
       >
-        <header className="viewer-toolbar">
-          <div className="toolbar-buttons">
-            <button
-              type="button"
-              className={`toolbar-icon-button${isDisconnected ? " is-active" : ""}`}
-              disabled={!logFile && !isConnectingSocket}
-              onClick={() => setIsDisconnected((current) => !current)}
-              title={isDisconnected ? "恢复更新" : "暂停更新"}
-            >
-              {isDisconnected ? <PlayIcon /> : <PauseIcon />}
-            </button>
-            <span className="toolbar-separator" />
-            <button
-              type="button"
-              className={`toolbar-icon-button${showSourcePanel ? " is-active" : ""}`}
-              onClick={() => setShowSourcePanel((current) => !current)}
-              title="显示/隐藏左侧栏"
-            >
-              <SidebarIcon />
-            </button>
-            <button
-              type="button"
-              className={`toolbar-icon-button${showGlobalMinimap ? " is-active" : ""}`}
-              onClick={() => setShowGlobalMinimap((current) => !current)}
-              title="显示/隐藏顶部 Minimap"
-            >
-              <TopPanelIcon />
-            </button>
-            <button
-              type="button"
-              className={`toolbar-icon-button${showLocalMinimap ? " is-active" : ""}`}
-              onClick={() => setShowLocalMinimap((current) => !current)}
-              title="显示/隐藏右侧 Minimap"
-            >
-              <RightPanelIcon />
-            </button>
-          </div>
-        </header>
-
         {showGlobalMinimap ? (
           <div className="global-minimap-bar">
             <canvas
@@ -1762,64 +1763,66 @@ function App() {
 
         {error ? <p className="error-message">{error}</p> : null}
         {tailNotice ? <p className="tail-notice">{tailNotice}</p> : null}
-        <footer className="viewer-status-bar" aria-label="log 状态栏">
-          {statusItems.map((item) => (
-            <strong key={item}>{item}</strong>
-          ))}
-          <div className="status-actions" aria-label="状态栏操作">
-            <div className="status-button-group" role="group" aria-label="日志着色模式">
-              <button
-                type="button"
-                className={`status-icon-button${logColorMode === "full" ? " is-active" : ""}`}
-                onClick={() => setLogColorMode("full")}
-                title="完整着色"
-                aria-label="完整着色"
-                aria-pressed={logColorMode === "full"}
-              >
-                <span className="status-icon status-icon-color-full" aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className={`status-icon-button${logColorMode === "severity" ? " is-active" : ""}`}
-                onClick={() => setLogColorMode("severity")}
-                title="仅 severity 着色"
-                aria-label="仅 severity 着色"
-                aria-pressed={logColorMode === "severity"}
-              >
-                <span className="status-icon status-icon-color-severity" aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className={`status-icon-button${logColorMode === "off" ? " is-active" : ""}`}
-                onClick={() => setLogColorMode("off")}
-                title="关闭着色"
-                aria-label="关闭着色"
-                aria-pressed={logColorMode === "off"}
-              >
-                <span className="status-icon status-icon-color-off" aria-hidden="true" />
-              </button>
-            </div>
+      </section>
+      </div>
+
+      <footer className="viewer-status-bar" aria-label="log 状态栏">
+        {statusItems.map((item) => (
+          <strong key={item}>{item}</strong>
+        ))}
+        <div className="status-actions" aria-label="状态栏操作">
+          <div className="status-button-group" role="group" aria-label="日志着色模式">
             <button
               type="button"
-              className={`status-tail-button${followTail ? " is-active" : ""}`}
-              onClick={() => {
-                setFollowTail((current) => {
-                  const enabled = !current;
-                  if (enabled && logFile) {
-                    setPendingTailLines(0);
-                    requestAnimationFrame(() => scrollToLine(logFile.lineCount));
-                  }
-                  return enabled;
-                });
-              }}
-              title={followTail ? "点击切换为阅读锁定" : "点击切换为跟随 tail"}
-              aria-pressed={followTail}
+              className={`status-icon-button${logColorMode === "full" ? " is-active" : ""}`}
+              onClick={() => setLogColorMode("full")}
+              title="完整着色"
+              aria-label="完整着色"
+              aria-pressed={logColorMode === "full"}
             >
-              {followTail ? "跟随 Tail" : "阅读锁定"}
+              <span className="status-icon status-icon-color-full" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={`status-icon-button${logColorMode === "severity" ? " is-active" : ""}`}
+              onClick={() => setLogColorMode("severity")}
+              title="仅 severity 着色"
+              aria-label="仅 severity 着色"
+              aria-pressed={logColorMode === "severity"}
+            >
+              <span className="status-icon status-icon-color-severity" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={`status-icon-button${logColorMode === "off" ? " is-active" : ""}`}
+              onClick={() => setLogColorMode("off")}
+              title="关闭着色"
+              aria-label="关闭着色"
+              aria-pressed={logColorMode === "off"}
+            >
+              <span className="status-icon status-icon-color-off" aria-hidden="true" />
             </button>
           </div>
-        </footer>
-      </section>
+          <button
+            type="button"
+            className={`status-tail-button${followTail ? " is-active" : ""}`}
+            onClick={() => {
+              setFollowTail((current) => {
+                const enabled = !current;
+                if (enabled && logFile) {
+                  setPendingTailLines(0);
+                  requestAnimationFrame(() => scrollToLine(logFile.lineCount));
+                }
+                return enabled;
+              });
+            }}
+            title={followTail ? "点击切换为阅读锁定" : "点击切换为跟随 tail"}
+            aria-pressed={followTail}
+          >
+            {followTail ? "跟随 Tail" : "阅读锁定"}
+          </button>
+        </div>
+      </footer>
 
       {showSocketModal && createPortal(
         <div className="modal-overlay">
