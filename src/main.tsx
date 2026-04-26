@@ -628,8 +628,7 @@ function App() {
       : firstVisibleLine;
     setGotoBarOpen(true);
     setJumpLine(String(viewportCenterLine));
-    scrollToLineCentered(viewportCenterLine, { markLine: true });
-  }, [firstVisibleLine, logFile, scrollToLineCentered, scrollTop, viewportHeight]);
+  }, [firstVisibleLine, logFile, scrollTop, viewportHeight]);
 
   const jumpToLineFromText = React.useCallback(
     (text: string) => {
