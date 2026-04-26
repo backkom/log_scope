@@ -180,6 +180,8 @@ function App() {
   const [markers, setMarkers] = React.useState<LogMarker[]>([]);
   const [selectedMarker, setSelectedMarker] = React.useState<LogMarker | null>(null);
   const [selectedPayload, setSelectedPayload] = React.useState<MarkerPayload | null>(null);
+  const [showGlobalMinimap, setShowGlobalMinimap] = React.useState(true);
+  const [showLocalMinimap, setShowLocalMinimap] = React.useState(true);
   const [globalMinimapWidth, setGlobalMinimapWidth] = React.useState(1);
   const [searchQuery, setSearchQuery] = React.useState("");
   const [searchCaseSensitive, setSearchCaseSensitive] = React.useState(false);
@@ -618,10 +620,16 @@ function App() {
   }, [focusViewer]);
 
   const openGotoLineBar = React.useCallback(() => {
+    const viewportCenterLine = logFile
+      ? Math.min(
+          Math.max(1, Math.floor(scrollTop / ROW_HEIGHT) + Math.floor(Math.max(1, viewportHeight / ROW_HEIGHT) / 2) + 1),
+          Math.max(logFile.lineCount, 1),
+        )
+      : firstVisibleLine;
     setGotoBarOpen(true);
-    setJumpLine(String(firstVisibleLine));
-    scrollToLineCentered(firstVisibleLine, { markLine: true });
-  }, [firstVisibleLine, scrollToLineCentered]);
+    setJumpLine(String(viewportCenterLine));
+    scrollToLineCentered(viewportCenterLine, { markLine: true });
+  }, [firstVisibleLine, logFile, scrollToLineCentered, scrollTop, viewportHeight]);
 
   const jumpToLineFromText = React.useCallback(
     (text: string) => {
@@ -800,7 +808,7 @@ function App() {
           });
         }
       }
-      if (event.ctrlKey && event.key.toLowerCase() === "g") {
+      if ((event.ctrlKey || event.metaKey) && event.key === "g") {
         event.preventDefault();
         openGotoLineBar();
       }
@@ -864,23 +872,24 @@ function App() {
     ? [
         `大小 ${formatBytes(logFile.fileSize)}`,
         `行数 ${logFile.lineCount.toLocaleString()}`,
-        followTail ? "跟随 tail" : "阅读锁定",
+        `索引 ${logFile.indexDurationMs} ms`,
+        searchResult ? `查找 ${searchResult.durationMs} ms` : "查找 -",
         `Marker ${markers.length.toLocaleString()}`,
       ]
-    : [activeStatus, "大小 -", "行数 -", "阅读锁定", `Marker ${markers.length.toLocaleString()}`];
+    : [activeStatus, "大小 -", "行数 -", "索引 -", "查找 -", `Marker ${markers.length.toLocaleString()}`];
   const visibleMarkerLines = React.useMemo(
     () => new Set(markers.map((marker) => marker.startLine)),
     [markers],
   );
   const activeSearchLine = activeSearchMatch?.lineNumber ?? 0;
-  const searchStatus = searchResult
+  const searchStatusBrief = searchResult
     ? searchResult.matches.length > 0
       ? searchFindAll
-        ? `${searchResult.activeMatchIndex}/${searchResult.totalMatches} · L${getActiveSearchMatch(searchResult)?.lineNumber}:${getActiveSearchMatch(searchResult)?.startColumn} · ${searchResult.scannedLines.toLocaleString()} 行 · ${searchResult.durationMs} ms${searchResult.wrapped ? " · 已绕回" : ""}`
-        : `L${searchResult.matches[0].lineNumber}:${searchResult.matches[0].startColumn} · ${searchResult.scannedLines.toLocaleString()} 行 · ${searchResult.durationMs} ms${searchResult.wrapped ? " · 已绕回" : ""}`
+        ? `${searchResult.activeMatchIndex}/${searchResult.totalMatches} · L${getActiveSearchMatch(searchResult)?.lineNumber}:${getActiveSearchMatch(searchResult)?.startColumn}`
+        : `L${searchResult.matches[0].lineNumber}:${searchResult.matches[0].startColumn}`
       : searchFindAll
-        ? `0/${searchResult.totalMatches} · 扫描 ${searchResult.scannedLines.toLocaleString()} 行 · ${searchResult.durationMs} ms`
-        : `无匹配 · 扫描 ${searchResult.scannedLines.toLocaleString()} 行 · ${searchResult.durationMs} ms`
+        ? `0/${searchResult.totalMatches}`
+        : "无匹配"
     : "⌘F 打开查找";
   const viewportLineCount = Math.max(1, Math.ceil(Math.max(viewportHeight, ROW_HEIGHT) / ROW_HEIGHT));
   const rightMinimapRange = React.useMemo(
@@ -1128,10 +1137,6 @@ function App() {
               <dd>{health ? health.version : "-"}</dd>
             </div>
             <div>
-              <dt>索引</dt>
-              <dd>{logFile ? `${logFile.indexDurationMs} ms` : "-"}</dd>
-            </div>
-            <div>
               <dt>Marker</dt>
               <dd>{logFile ? markers.length.toLocaleString() : "-"}</dd>
             </div>
@@ -1145,7 +1150,7 @@ function App() {
         <section className="panel-section">
           <h2>定位</h2>
           <button type="button" className="secondary-button" onClick={openGotoLineBar} disabled={!logFile}>
-            跳转行号 (Ctrl+G)
+            跳转行号 (^+G)
           </button>
           <div className="toolbar-buttons">
             <button type="button" className="secondary-button" onClick={() => scrollToLine(1)} disabled={!logFile}>
@@ -1160,21 +1165,6 @@ function App() {
               底部
             </button>
           </div>
-          <label className="follow-toggle">
-            <input
-              type="checkbox"
-              checked={followTail}
-              onChange={(event) => {
-                const enabled = event.target.checked;
-                setFollowTail(enabled);
-                if (enabled && logFile) {
-                  setPendingTailLines(0);
-                  requestAnimationFrame(() => scrollToLine(logFile.lineCount));
-                }
-              }}
-            />
-            <span>Follow tail</span>
-          </label>
           {pendingTailLines > 0 ? (
             <button
               type="button"
@@ -1201,22 +1191,7 @@ function App() {
           >
             打开查找 (⌘F)
           </button>
-          <p className="panel-hint">{searchStatus}</p>
-        </section>
-
-        <section className="panel-section">
-          <h2>显示</h2>
-          <div className="segmented-control" role="group" aria-label="日志着色模式">
-            <button type="button" className={logColorMode === "full" ? "is-active" : ""} onClick={() => setLogColorMode("full")}>
-              着色
-            </button>
-            <button type="button" className={logColorMode === "severity" ? "is-active" : ""} onClick={() => setLogColorMode("severity")}>
-              等级
-            </button>
-            <button type="button" className={logColorMode === "off" ? "is-active" : ""} onClick={() => setLogColorMode("off")}>
-              关闭
-            </button>
-          </div>
+          <p className="panel-hint">{searchStatusBrief}</p>
         </section>
 
         <section className="panel-section marker-panel">
@@ -1253,24 +1228,32 @@ function App() {
         </section>
       </aside>
 
-      <section className="viewer-area">
+      <section
+        className={`viewer-area${showGlobalMinimap ? "" : " is-global-minimap-hidden"}${
+          showLocalMinimap ? "" : " is-local-minimap-hidden"
+        }`}
+      >
         <header className="viewer-toolbar">
           <div>
             <strong>Log viewer</strong>
-            <span>{logFile ? "Ctrl+G 跳转行号" : activePath}</span>
+            <span>{logFile ? "^+G 跳转行号" : activePath}</span>
           </div>
         </header>
 
-        <div className="global-minimap-bar">
-          <canvas
-            className="global-minimap"
-            ref={globalMinimapRef}
-            width="1024"
-            height={GLOBAL_MINIMAP_HEIGHT}
-            aria-label="global marker minimap"
-            onClick={handleGlobalMinimapClick}
-          />
-        </div>
+        {showGlobalMinimap ? (
+          <div className="global-minimap-bar">
+            <canvas
+              className="global-minimap"
+              ref={globalMinimapRef}
+              width="1024"
+              height={GLOBAL_MINIMAP_HEIGHT}
+              aria-label="global marker minimap"
+              onClick={handleGlobalMinimapClick}
+            />
+          </div>
+        ) : (
+          <div className="global-minimap-bar is-hidden" aria-hidden="true" />
+        )}
 
         <div
           className="viewer-layout"
@@ -1325,17 +1308,19 @@ function App() {
                 </div>
               </div>
 
-              <canvas
-                className="minimap-placeholder local-minimap"
-                ref={localMinimapRef}
-                width={MINIMAP_WIDTH}
-                height="640"
-                aria-label="local marker minimap"
-                onPointerDown={handleLocalMinimapPointerDown}
-                onPointerMove={handleLocalMinimapPointerMove}
-                onPointerUp={stopLocalMinimapDrag}
-                onPointerCancel={stopLocalMinimapDrag}
-              />
+              {showLocalMinimap ? (
+                <canvas
+                  className="minimap-placeholder local-minimap"
+                  ref={localMinimapRef}
+                  width={MINIMAP_WIDTH}
+                  height="640"
+                  aria-label="local marker minimap"
+                  onPointerDown={handleLocalMinimapPointerDown}
+                  onPointerMove={handleLocalMinimapPointerMove}
+                  onPointerUp={stopLocalMinimapDrag}
+                  onPointerCancel={stopLocalMinimapDrag}
+                />
+              ) : null}
             </div>
           ) : (
             <div className="viewer-scroll-space empty-scroll-space">
@@ -1346,7 +1331,9 @@ function App() {
                 </div>
               </div>
 
-              <canvas className="minimap-placeholder" width={MINIMAP_WIDTH} height="640" aria-label="minimap placeholder" />
+              {showLocalMinimap ? (
+                <canvas className="minimap-placeholder" width={MINIMAP_WIDTH} height="640" aria-label="minimap placeholder" />
+              ) : null}
             </div>
           )}
         </div>
@@ -1513,6 +1500,78 @@ function App() {
           {statusItems.map((item) => (
             <strong key={item}>{item}</strong>
           ))}
+          <div className="status-actions" aria-label="状态栏操作">
+            <div className="status-button-group" role="group" aria-label="日志着色模式">
+              <button
+                type="button"
+                className={`status-icon-button${logColorMode === "full" ? " is-active" : ""}`}
+                onClick={() => setLogColorMode("full")}
+                title="完整着色"
+                aria-label="完整着色"
+                aria-pressed={logColorMode === "full"}
+              >
+                <span className="status-icon status-icon-color-full" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className={`status-icon-button${logColorMode === "severity" ? " is-active" : ""}`}
+                onClick={() => setLogColorMode("severity")}
+                title="仅 severity 着色"
+                aria-label="仅 severity 着色"
+                aria-pressed={logColorMode === "severity"}
+              >
+                <span className="status-icon status-icon-color-severity" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className={`status-icon-button${logColorMode === "off" ? " is-active" : ""}`}
+                onClick={() => setLogColorMode("off")}
+                title="关闭着色"
+                aria-label="关闭着色"
+                aria-pressed={logColorMode === "off"}
+              >
+                <span className="status-icon status-icon-color-off" aria-hidden="true" />
+              </button>
+            </div>
+            <button
+              type="button"
+              className={`status-icon-button${showGlobalMinimap ? " is-active" : ""}`}
+              onClick={() => setShowGlobalMinimap((current) => !current)}
+              title={showGlobalMinimap ? "关闭顶部 minimap" : "显示顶部 minimap"}
+              aria-label={showGlobalMinimap ? "关闭顶部 minimap" : "显示顶部 minimap"}
+              aria-pressed={showGlobalMinimap}
+            >
+              <span className="status-icon status-icon-top" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={`status-icon-button${showLocalMinimap ? " is-active" : ""}`}
+              onClick={() => setShowLocalMinimap((current) => !current)}
+              title={showLocalMinimap ? "关闭右侧 minimap" : "显示右侧 minimap"}
+              aria-label={showLocalMinimap ? "关闭右侧 minimap" : "显示右侧 minimap"}
+              aria-pressed={showLocalMinimap}
+            >
+              <span className="status-icon status-icon-right" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={`status-tail-button${followTail ? " is-active" : ""}`}
+              onClick={() => {
+                setFollowTail((current) => {
+                  const enabled = !current;
+                  if (enabled && logFile) {
+                    setPendingTailLines(0);
+                    requestAnimationFrame(() => scrollToLine(logFile.lineCount));
+                  }
+                  return enabled;
+                });
+              }}
+              title={followTail ? "点击切换为阅读锁定" : "点击切换为跟随 tail"}
+              aria-pressed={followTail}
+            >
+              {followTail ? "跟随 Tail" : "阅读锁定"}
+            </button>
+          </div>
         </footer>
       </section>
     </main>

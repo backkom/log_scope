@@ -157,48 +157,6 @@ button:disabled {
   gap: 8px;
 }
 
-.follow-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #465158;
-  font-size: 14px;
-}
-
-.follow-toggle input {
-  width: 16px;
-  min-width: 16px;
-  height: 16px;
-  min-height: 16px;
-  margin: 0;
-}
-
-.segmented-control {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  overflow: hidden;
-  border: 1px solid #dce2e5;
-  border-radius: 7px;
-  background: #f1f4f5;
-}
-
-.segmented-control button {
-  min-height: 34px;
-  border: 0;
-  border-right: 1px solid #dce2e5;
-  background: transparent;
-  color: #69757c;
-}
-
-.segmented-control button:last-child {
-  border-right: 0;
-}
-
-.segmented-control button.is-active {
-  background: #18706a;
-  color: #ffffff;
-}
-
 .status-list {
   display: grid;
   gap: 6px;
@@ -227,6 +185,10 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   background: var(--log-viewer-bg);
+}
+
+.viewer-area.is-global-minimap-hidden {
+  grid-template-rows: var(--viewer-toolbar-height) 0 minmax(0, 1fr) auto auto;
 }
 
 .viewer-toolbar {
@@ -258,6 +220,13 @@ button:disabled {
   border-bottom: 1px solid #565a4f;
   background: var(--log-viewer-bg);
   padding: 6px 10px 7px;
+}
+
+.global-minimap-bar.is-hidden {
+  height: 0;
+  overflow: hidden;
+  border-bottom: 0;
+  padding: 0;
 }
 
 .goto-line-bar {
@@ -354,6 +323,10 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) 72px;
   min-height: 100%;
   background: var(--log-viewer-bg);
+}
+
+.viewer-area.is-local-minimap-hidden .viewer-scroll-space {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .empty-scroll-space {
@@ -660,6 +633,119 @@ button:disabled {
   color: #e0e4e0;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.status-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.status-button-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding-right: 4px;
+  border-right: 1px solid #4e5649;
+}
+
+.status-icon-button,
+.status-tail-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  border: 1px solid #4e5649;
+  border-radius: 4px;
+  background: #30342b;
+  color: #c7d0c3;
+}
+
+.status-icon-button {
+  width: 24px;
+  padding: 0;
+}
+
+.status-tail-button {
+  min-width: 78px;
+  padding: 0 8px;
+  font-weight: 700;
+}
+
+.status-icon-button.is-active,
+.status-tail-button.is-active {
+  border-color: #2f8f83;
+  background: #173d39;
+  color: #e4f5ef;
+}
+
+.status-icon {
+  position: relative;
+  display: block;
+  width: 13px;
+  height: 13px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+}
+
+.status-icon-top::before {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  right: 2px;
+  height: 2px;
+  background: currentColor;
+  content: "";
+}
+
+.status-icon-right::before {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  bottom: 2px;
+  width: 2px;
+  background: currentColor;
+  content: "";
+}
+
+.status-icon-color-full {
+  overflow: hidden;
+  border: 0;
+}
+
+.status-icon-color-full::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  background: #79d39a;
+  box-shadow:
+    7px 0 0 #f0bd7a,
+    0 7px 0 #8eb7ff,
+    7px 7px 0 #ff6f61;
+  content: "";
+}
+
+.status-icon-color-severity {
+  overflow: hidden;
+  border: 0;
+  background:
+    linear-gradient(to bottom, #79d39a 0 33%, #f0bd7a 33% 66%, #ff6f61 66% 100%);
+}
+
+.status-icon-color-off::before {
+  position: absolute;
+  top: -2px;
+  left: 5px;
+  width: 2px;
+  height: 17px;
+  background: currentColor;
+  content: "";
+  transform: rotate(45deg);
+  transform-origin: center;
 }
 
 /* ---- Inline Find Bar (Ctrl+F) ---- */
