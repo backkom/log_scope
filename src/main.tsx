@@ -1899,7 +1899,7 @@ function getRightMinimapRange(firstVisibleLine: number, viewportLineCount: numbe
 }
 
 function getMaxStartLine(totalLines: number, viewportLineCount: number) {
-  return Math.max(1, totalLines - viewportLineCount + 1);
+  return Math.max(1, totalLines + BOTTOM_PADDING_ROWS - viewportLineCount + 1);
 }
 
 function getRightMinimapFrame(
