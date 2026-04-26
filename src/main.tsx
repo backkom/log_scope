@@ -486,7 +486,7 @@ function App() {
 
   React.useEffect(() => {
     let unlisten: (() => void) | undefined;
-    
+
     listen<any>("menu-event", (event) => {
       const payload = event.payload;
       if (payload.action === "open_file") {
@@ -553,7 +553,7 @@ function App() {
     }).then((unlistenFn: any) => {
       unlisten = unlistenFn;
     });
-    
+
     return () => {
       window.removeEventListener("dragover", preventDefault);
       window.removeEventListener("drop", preventDefault);
@@ -680,11 +680,11 @@ function App() {
         setLogFile((current) =>
           current && current.sessionId === metadata.sessionId
             ? {
-                ...current,
-                path: current.path.startsWith("logscope-frame-v1://") ? current.path : metadata.path,
-                fileSize: metadata.fileSize,
-                lineCount: metadata.lineCount,
-              }
+              ...current,
+              path: current.path.startsWith("logscope-frame-v1://") ? current.path : metadata.path,
+              fileSize: metadata.fileSize,
+              lineCount: metadata.lineCount,
+            }
             : current,
         );
         if (metadata.appendedBytes > 0 || metadata.wasTruncated) {
@@ -920,9 +920,9 @@ function App() {
   const openGotoLineBar = React.useCallback(() => {
     const viewportCenterLine = logFile
       ? Math.min(
-          Math.max(1, Math.floor(scrollTop / ROW_HEIGHT) + Math.floor(Math.max(1, viewportHeight / ROW_HEIGHT) / 2) + 1),
-          Math.max(logFile.lineCount, 1),
-        )
+        Math.max(1, Math.floor(scrollTop / ROW_HEIGHT) + Math.floor(Math.max(1, viewportHeight / ROW_HEIGHT) / 2) + 1),
+        Math.max(logFile.lineCount, 1),
+      )
       : firstVisibleLine;
     setGotoBarOpen(true);
     setJumpLine(String(viewportCenterLine));
@@ -1174,14 +1174,14 @@ function App() {
   const activeStatus = placeholder?.message ?? "Ready";
   const statusItems = logFile
     ? [
-        `大小 ${formatBytes(logFile.fileSize)}`,
-        `行数 ${logFile.lineCount.toLocaleString()}`,
-        `索引 ${logFile.indexDurationMs} ms`,
-        searchResult ? `查找 ${searchResult.durationMs} ms` : "查找 -",
-        `Marker ${markers.length.toLocaleString()}`,
-        `DOM ${perfSnapshot.renderedRows}/${perfSnapshot.cachedLines}`,
-        `Map ${(perfSnapshot.globalMinimapMs + perfSnapshot.localMinimapMs).toFixed(1)} ms`,
-      ]
+      `大小 ${formatBytes(logFile.fileSize)}`,
+      `行数 ${logFile.lineCount.toLocaleString()}`,
+      `索引 ${logFile.indexDurationMs} ms`,
+      searchResult ? `查找 ${searchResult.durationMs} ms` : "查找 -",
+      `Marker ${markers.length.toLocaleString()}`,
+      `DOM ${perfSnapshot.renderedRows}/${perfSnapshot.cachedLines}`,
+      `Map ${(perfSnapshot.globalMinimapMs + perfSnapshot.localMinimapMs).toFixed(1)} ms`,
+    ]
     : [activeStatus, "大小 -", "行数 -", "索引 -", "查找 -", `Marker ${markers.length.toLocaleString()}`, "DOM -", "Map -"];
   const visibleMarkerLines = React.useMemo(
     () => new Set(markers.map((marker) => marker.startLine)),
@@ -1466,9 +1466,8 @@ function App() {
       />
 
       <section
-        className={`viewer-area${showGlobalMinimap ? "" : " is-global-minimap-hidden"}${
-          showLocalMinimap ? "" : " is-local-minimap-hidden"
-        }`}
+        className={`viewer-area${showGlobalMinimap ? "" : " is-global-minimap-hidden"}${showLocalMinimap ? "" : " is-local-minimap-hidden"
+          }`}
       >
         <header className="viewer-toolbar">
           <div className="toolbar-buttons">
@@ -1535,7 +1534,7 @@ function App() {
             if (
               logFile &&
               nextScrollTop + event.currentTarget.clientHeight >=
-                Math.max(0, logFile.lineCount * ROW_HEIGHT - ROW_HEIGHT * 2)
+              Math.max(0, logFile.lineCount * ROW_HEIGHT - ROW_HEIGHT * 2)
             ) {
               setPendingTailLines(0);
             }
@@ -1547,11 +1546,9 @@ function App() {
                 <div className="visible-lines" style={{ transform: `translateY(${visibleOffset}px)` }}>
                   {renderedLines.map((line) => (
                     <div
-                      className={`log-row${line.text === undefined ? " is-loading" : ""}${
-                        visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
-                      }${activeSearchLine === line.lineNumber ? " has-active-search" : ""}${
-                        selectedLine === line.lineNumber ? " has-selected-line" : ""
-                      } ${getSeverityClass(line.text, logColorMode)}`}
+                      className={`log-row${line.text === undefined ? " is-loading" : ""}${visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
+                        }${activeSearchLine === line.lineNumber ? " has-active-search" : ""}${selectedLine === line.lineNumber ? " has-selected-line" : ""
+                        } ${getSeverityClass(line.text, logColorMode)}`}
                       key={line.lineNumber}
                       data-line-number={line.lineNumber}
                     >
@@ -1560,17 +1557,17 @@ function App() {
                         {line.text === undefined
                           ? " "
                           : renderLogLine(
-                              line.text,
-                              searchQuery,
-                              searchCaseSensitive,
-                              searchRegex,
-                              searchWholeWord,
-                              logColorMode,
-                              line.lineNumber,
-                              activeSearchLine === line.lineNumber,
-                              selectedWord,
-                              selectedWordRange,
-                            )}
+                            line.text,
+                            searchQuery,
+                            searchCaseSensitive,
+                            searchRegex,
+                            searchWholeWord,
+                            logColorMode,
+                            line.lineNumber,
+                            activeSearchLine === line.lineNumber,
+                            selectedWord,
+                            selectedWordRange,
+                          )}
                       </code>
                     </div>
                   ))}
@@ -1596,7 +1593,7 @@ function App() {
               <div className="log-viewport">
                 <div className="empty-state">
                   <strong>等待文件</strong>
-                  <span>输入本机 log 路径后打开；viewer 只渲染当前可见行。</span>
+                  <span>将文件拖拽入后打开；viewer 只渲染当前可见行。</span>
                 </div>
               </div>
 
@@ -2052,11 +2049,11 @@ function navigateCachedSearch(
 
   const currentIndex = activeMatch
     ? result.matches.findIndex(
-        (match) =>
-          match.lineNumber === activeMatch.lineNumber &&
-          match.startColumn === activeMatch.startColumn &&
-          match.endColumn === activeMatch.endColumn,
-      )
+      (match) =>
+        match.lineNumber === activeMatch.lineNumber &&
+        match.startColumn === activeMatch.startColumn &&
+        match.endColumn === activeMatch.endColumn,
+    )
     : -1;
   let nextIndex = currentIndex;
   let wrapped = false;
@@ -2123,18 +2120,18 @@ function renderLogLine(
     colorMode === "full"
       ? tokenizeLogLine(text)
       : [
-          {
-            kind: "plain" as const,
-            text,
-          },
-        ];
+        {
+          kind: "plain" as const,
+          text,
+        },
+      ];
   const searchRanges = searchQuery ? findSearchRanges(text, searchQuery, caseSensitive, useRegex, wholeWord) : [];
   const selectedWordRanges = selectedWord
     ? findExactWordRanges(
-        text,
-        selectedWord,
-        selectedWordRange?.lineNumber === lineNumber ? selectedWordRange : null,
-      )
+      text,
+      selectedWord,
+      selectedWordRange?.lineNumber === lineNumber ? selectedWordRange : null,
+    )
     : [];
   let absoluteOffset = 0;
 
@@ -2155,9 +2152,8 @@ function renderLogLine(
     return pieces.map((piece, pieceIndex) => {
       return (
         <span
-          className={`log-token token-${token.kind}${piece.searchMatched ? " search-hit" : ""}${
-            piece.searchMatched && activeLine ? " is-active" : ""
-          }${piece.selectedWordMatched ? " selected-word-hit" : ""}`}
+          className={`log-token token-${token.kind}${piece.searchMatched ? " search-hit" : ""}${piece.searchMatched && activeLine ? " is-active" : ""
+            }${piece.selectedWordMatched ? " selected-word-hit" : ""}`}
           key={`${tokenIndex}-${pieceIndex}-${piece.start}`}
         >
           {piece.text}
