@@ -233,6 +233,22 @@ Rust command：
 - 暂未提供删除单条历史记录、清空历史记录和迁移 UI。
 - 最近数据源启动后只回填输入框，不自动重连 socket 或打开文件，避免意外读取大文件或连接网络。
 
+## 性能基准与降级策略
+
+阶段 7 第一版已实现可重复的本地性能样本与轻量观测入口：
+
+- Rust command `generate_log_fixture(sizeMb, profile?)` 支持 `mixed`、`short-lines`、`long-lines`、`dense-markers`、`append-stream` 五类 fixture；`sizeMb` 当前限制在 1-512 MB。
+- Rust command `run_core_benchmark(sizeMb, profile?)` 会生成 fixture，执行打开/索引与 marker 扫描、搜索 `error`、读取前 240 行，并返回索引耗时、marker 数、搜索耗时、匹配数和可见行读取耗时。
+- 前端数据源面板可选择 fixture profile，生成 50 MB fixture 或运行 50 MB core benchmark；benchmark 生成的文件会保留在临时目录，便于后续手工打开复查。
+- 状态栏展示当前虚拟化 DOM 行数/缓存行数，以及顶部全局 marker 条和右侧 minimap 最近一次 Canvas 绘制总耗时。
+- 打开 100 MB 及以上文件时，前端自动降级为仅 severity 着色；打开 300 MB 及以上文件时，还会默认隐藏右侧 minimap。用户仍可通过状态栏手动恢复显示模式。
+
+当前限制：
+
+- core benchmark 是应用内 smoke benchmark，不替代后续独立 Criterion/系统级峰值内存基准。
+- 暂未记录跨平台 app data、真实 100 MB/300 MB 样本和 socket burst 的长期数据表。
+- Rust 索引仍是一次性构建；阶段 7 只实现了显示侧降级，渐进式索引和搜索取消仍留待后续切片。
+
 ## 虚拟化 Viewer 要求
 
 不要把 50-100 MB log 加载进普通 DOM 节点或通用编辑器文档。

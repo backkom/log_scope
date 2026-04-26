@@ -79,7 +79,20 @@ struct FixtureMetadata {
     path: String,
     file_size: u64,
     line_count: usize,
+    profile: String,
     generation_duration_ms: u128,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CoreBenchmarkReport {
+    fixture: FixtureMetadata,
+    index_duration_ms: u128,
+    marker_count: usize,
+    search_duration_ms: u128,
+    search_total_matches: usize,
+    read_visible_duration_ms: u128,
+    read_visible_line_count: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -325,11 +338,28 @@ async fn open_log_file(
 }
 
 #[tauri::command]
-async fn generate_log_fixture(size_mb: u64) -> Result<FixtureMetadata, String> {
+async fn generate_log_fixture(
+    size_mb: u64,
+    profile: Option<String>,
+) -> Result<FixtureMetadata, String> {
     let safe_size_mb = size_mb.clamp(1, 512);
-    tauri::async_runtime::spawn_blocking(move || generate_fixture(safe_size_mb))
+    let profile = normalize_fixture_profile(profile);
+    tauri::async_runtime::spawn_blocking(move || generate_fixture(safe_size_mb, &profile))
         .await
         .map_err(|err| format!("failed to join fixture generation task: {err}"))?
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn run_core_benchmark(
+    size_mb: u64,
+    profile: Option<String>,
+) -> Result<CoreBenchmarkReport, String> {
+    let safe_size_mb = size_mb.clamp(1, 512);
+    let profile = normalize_fixture_profile(profile);
+    tauri::async_runtime::spawn_blocking(move || run_core_benchmark_sync(safe_size_mb, &profile))
+        .await
+        .map_err(|err| format!("failed to join core benchmark task: {err}"))?
         .map_err(|err| err.to_string())
 }
 
@@ -1557,7 +1587,22 @@ fn split_lines(buffer: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn generate_fixture(size_mb: u64) -> std::io::Result<FixtureMetadata> {
+fn normalize_fixture_profile(profile: Option<String>) -> String {
+    match profile
+        .unwrap_or_else(|| "mixed".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "short-lines" | "short_lines" => "short-lines".to_string(),
+        "long-lines" | "long_lines" => "long-lines".to_string(),
+        "dense-markers" | "dense_markers" => "dense-markers".to_string(),
+        "append-stream" | "append_stream" => "append-stream".to_string(),
+        _ => "mixed".to_string(),
+    }
+}
+
+fn generate_fixture(size_mb: u64, profile: &str) -> std::io::Result<FixtureMetadata> {
     let target_bytes = size_mb * 1024 * 1024;
     let fixture_dir = std::env::temp_dir().join("log_scope").join("fixtures");
     fs::create_dir_all(&fixture_dir)?;
@@ -1565,7 +1610,10 @@ fn generate_fixture(size_mb: u64) -> std::io::Result<FixtureMetadata> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let path = fixture_dir.join(format!("logscope-fixture-{size_mb}mb-{suffix}.log"));
+    let safe_profile = safe_socket_filename_part(profile);
+    let path = fixture_dir.join(format!(
+        "logscope-fixture-{safe_profile}-{size_mb}mb-{suffix}.log"
+    ));
 
     let started_at = Instant::now();
     let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, File::create(&path)?);
@@ -1574,20 +1622,7 @@ fn generate_fixture(size_mb: u64) -> std::io::Result<FixtureMetadata> {
 
     while written < target_bytes {
         line_count += 1;
-        let severity = match line_count % 5 {
-            0 => "ERROR",
-            1 | 2 => "INFO",
-            _ => "WARN",
-        };
-        let line = format!(
-            "2026-04-25T12:{:02}:{:02}.{:03}Z {severity} worker={} request_id=req-{:08} stage=fixture message=\"synthetic log row for virtualization and indexing validation\" value={}\n",
-            (line_count / 60) % 60,
-            line_count % 60,
-            line_count % 1000,
-            line_count % 16,
-            line_count,
-            line_count % 997
-        );
+        let line = fixture_line(profile, line_count);
         writer.write_all(line.as_bytes())?;
         written += line.len() as u64;
     }
@@ -1599,7 +1634,104 @@ fn generate_fixture(size_mb: u64) -> std::io::Result<FixtureMetadata> {
         path: path.to_string_lossy().into_owned(),
         file_size,
         line_count,
+        profile: profile.to_string(),
         generation_duration_ms: started_at.elapsed().as_millis(),
+    })
+}
+
+fn fixture_line(profile: &str, line_count: usize) -> String {
+    match profile {
+        "short-lines" => {
+            let severity = match line_count % 7 {
+                0 => "ERROR",
+                1 | 2 => "WARN",
+                _ => "INFO",
+            };
+            format!(
+                "{:02}:{:02}:{:02}\t{severity} id={} v={}\n",
+                (line_count / 3600) % 24,
+                (line_count / 60) % 60,
+                line_count % 60,
+                line_count,
+                line_count % 997
+            )
+        }
+        "long-lines" => {
+            let repeated = " payload_key=value trace_segment=abcdefghijklmnopqrstuvwxyz0123456789".repeat(64);
+            format!(
+                "2026-04-25T12:{:02}:{:02}.{:03}Z INFO worker={} request_id=req-{:08} long_line=true{repeated}\n",
+                (line_count / 60) % 60,
+                line_count % 60,
+                line_count % 1000,
+                line_count % 16,
+                line_count,
+            )
+        }
+        "dense-markers" if line_count % 3 == 0 => format!(
+            "13:{:02}:{:02}\t{{\"event_name\":\"fixture_marker\",\"line\":{},\"severity\":\"{}\",\"payload\":{{\"value\":{}}}}}\n",
+            (line_count / 60) % 60,
+            line_count % 60,
+            line_count,
+            if line_count % 12 == 0 { "error" } else { "info" },
+            line_count % 997
+        ),
+        "append-stream" => format!(
+            "13:{:02}:{:02}\t{} append fixture stream_id={} batch={} message=\"tail pressure sample\"\n",
+            (line_count / 60) % 60,
+            line_count % 60,
+            if line_count % 11 == 0 { "WARN" } else { "INFO" },
+            line_count % 32,
+            line_count / 128,
+        ),
+        _ => {
+            let severity = match line_count % 5 {
+                0 => "ERROR",
+                1 | 2 => "INFO",
+                _ => "WARN",
+            };
+            format!(
+                "2026-04-25T12:{:02}:{:02}.{:03}Z {severity} worker={} request_id=req-{:08} stage=fixture message=\"synthetic log row for virtualization and indexing validation\" value={}\n",
+                (line_count / 60) % 60,
+                line_count % 60,
+                line_count % 1000,
+                line_count % 16,
+                line_count,
+                line_count % 997
+            )
+        }
+    }
+}
+
+fn run_core_benchmark_sync(size_mb: u64, profile: &str) -> std::io::Result<CoreBenchmarkReport> {
+    let fixture = generate_fixture(size_mb, profile)?;
+    let session = LogSession::open(PathBuf::from(&fixture.path))?;
+
+    let search = search_text_snapshot(
+        1,
+        session.search_snapshot(),
+        "error".to_string(),
+        1,
+        0,
+        "next".to_string(),
+        false,
+        false,
+        false,
+        true,
+        true,
+    )?;
+
+    let read_started_at = Instant::now();
+    let visible = session.read_lines(1, 1, 240)?;
+    let read_visible_duration_ms = read_started_at.elapsed().as_millis();
+
+    Ok(CoreBenchmarkReport {
+        fixture,
+        index_duration_ms: session.index_duration_ms,
+        marker_count: session.markers.len(),
+        search_duration_ms: search.duration_ms,
+        search_total_matches: search.total_matches,
+        read_visible_duration_ms,
+        read_visible_line_count: visible.lines.len(),
     })
 }
 
@@ -1797,7 +1929,9 @@ fn remember_recent_socket(app: &tauri::AppHandle, host: String, port: u16) -> Re
 
 fn sanitize_store(mut store: PersistedStore) -> PersistedStore {
     store.schema_version = 1;
-    store.recent_files.retain(|source| !source.path.trim().is_empty());
+    store
+        .recent_files
+        .retain(|source| !source.path.trim().is_empty());
     store
         .recent_sockets
         .retain(|source| !source.host.trim().is_empty() && source.port > 0);
@@ -1843,6 +1977,7 @@ pub fn run() {
             open_file_placeholder,
             open_log_file,
             generate_log_fixture,
+            run_core_benchmark,
             connect_log_socket,
             get_persisted_state,
             save_ui_state,
@@ -2269,12 +2404,37 @@ mod tests {
 
     #[test]
     fn generates_fixture_at_requested_size_floor() {
-        let fixture = generate_fixture(1).unwrap();
+        let fixture = generate_fixture(1, "mixed").unwrap();
 
         assert!(fixture.file_size >= 1024 * 1024);
         assert!(fixture.line_count > 0);
+        assert_eq!(fixture.profile, "mixed");
         assert!(PathBuf::from(&fixture.path).exists());
         fs::remove_file(fixture.path).unwrap();
+    }
+
+    #[test]
+    fn generates_dense_marker_fixture_profile() {
+        let fixture = generate_fixture(1, "dense-markers").unwrap();
+        let session = LogSession::open(PathBuf::from(&fixture.path)).unwrap();
+
+        assert_eq!(fixture.profile, "dense-markers");
+        assert!(fixture.file_size >= 1024 * 1024);
+        assert!(session.markers.len() > 100);
+        assert!(PathBuf::from(&fixture.path).exists());
+        fs::remove_file(fixture.path).unwrap();
+    }
+
+    #[test]
+    fn core_benchmark_reports_reproducible_metrics() {
+        let report = run_core_benchmark_sync(1, "short-lines").unwrap();
+
+        assert_eq!(report.fixture.profile, "short-lines");
+        assert!(report.fixture.file_size >= 1024 * 1024);
+        assert!(report.fixture.line_count > 0);
+        assert!(report.read_visible_line_count > 0);
+        assert!(PathBuf::from(&report.fixture.path).exists());
+        fs::remove_file(report.fixture.path).unwrap();
     }
 
     fn test_file_path(name: &str) -> PathBuf {

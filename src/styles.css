@@ -34,7 +34,8 @@ button {
   font: inherit;
 }
 
-input {
+input,
+select {
   min-width: 0;
   min-height: 36px;
   border: 1px solid #cfd8dd;
@@ -46,6 +47,7 @@ input {
 }
 
 input:focus,
+select:focus,
 button:focus-visible {
   outline: 2px solid #2f7dd1;
   outline-offset: 2px;
@@ -148,6 +150,12 @@ button:disabled {
 .socket-fields {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 76px;
+  gap: 8px;
+}
+
+.fixture-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
   gap: 8px;
 }
 

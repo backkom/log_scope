@@ -30,7 +30,18 @@ type FixtureMetadata = {
   path: string;
   fileSize: number;
   lineCount: number;
+  profile: FixtureProfile;
   generationDurationMs: number;
+};
+
+type CoreBenchmarkReport = {
+  fixture: FixtureMetadata;
+  indexDurationMs: number;
+  markerCount: number;
+  searchDurationMs: number;
+  searchTotalMatches: number;
+  readVisibleDurationMs: number;
+  readVisibleLineCount: number;
 };
 
 type SocketConnectMetadata = {
@@ -187,6 +198,15 @@ type PersistedStore = {
   uiState: PersistedUiState;
 };
 
+type FixtureProfile = "mixed" | "short-lines" | "long-lines" | "dense-markers" | "append-stream";
+
+type FrontendPerfSnapshot = {
+  renderedRows: number;
+  cachedLines: number;
+  globalMinimapMs: number;
+  localMinimapMs: number;
+};
+
 const ROW_HEIGHT = 24;
 const BOTTOM_PADDING_ROWS = 1;
 const OVERSCAN_ROWS = 80;
@@ -196,6 +216,15 @@ const MINIMAP_WIDTH = 72;
 const GLOBAL_MINIMAP_HEIGHT = 44;
 const RIGHT_MINIMAP_FRAME_RATIO = 1 / 8;
 const MAX_TOKENIZED_CHARS = 4_096;
+const LARGE_FILE_DEGRADE_BYTES = 100 * 1024 * 1024;
+const HUGE_FILE_DEGRADE_BYTES = 300 * 1024 * 1024;
+const FIXTURE_PROFILES: Array<{ value: FixtureProfile; label: string }> = [
+  { value: "mixed", label: "Mixed" },
+  { value: "short-lines", label: "短行" },
+  { value: "long-lines", label: "超长行" },
+  { value: "dense-markers", label: "高密度 Marker" },
+  { value: "append-stream", label: "Append" },
+];
 
 function App() {
   const [health, setHealth] = React.useState<HealthCheck | null>(null);
@@ -213,7 +242,10 @@ function App() {
   const [isOpening, setIsOpening] = React.useState(false);
   const [isConnectingSocket, setIsConnectingSocket] = React.useState(false);
   const [isGeneratingFixture, setIsGeneratingFixture] = React.useState(false);
+  const [isBenchmarking, setIsBenchmarking] = React.useState(false);
+  const [fixtureProfile, setFixtureProfile] = React.useState<FixtureProfile>("mixed");
   const [lastFixture, setLastFixture] = React.useState<FixtureMetadata | null>(null);
+  const [lastBenchmark, setLastBenchmark] = React.useState<CoreBenchmarkReport | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [followTail, setFollowTail] = React.useState(true);
   const [pendingTailLines, setPendingTailLines] = React.useState(0);
@@ -240,6 +272,12 @@ function App() {
   const findInputRef = React.useRef<HTMLInputElement | null>(null);
   const gotoInputRef = React.useRef<HTMLInputElement | null>(null);
   const [logColorMode, setLogColorMode] = React.useState<"full" | "severity" | "off">("full");
+  const [perfSnapshot, setPerfSnapshot] = React.useState<FrontendPerfSnapshot>({
+    renderedRows: 0,
+    cachedLines: 0,
+    globalMinimapMs: 0,
+    localMinimapMs: 0,
+  });
   const [persistedStore, setPersistedStore] = React.useState<PersistedStore | null>(null);
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const globalMinimapRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -585,6 +623,7 @@ function App() {
       setJumpLine("1");
       await loadMarkers(metadata.sessionId);
       await refreshPersistedState();
+      applyLargeFileDegradation(metadata);
       if (viewportRef.current) {
         viewportRef.current.scrollTop = 0;
       }
@@ -650,11 +689,24 @@ function App() {
     }
   };
 
+  const applyLargeFileDegradation = (metadata: LogFileMetadata) => {
+    if (metadata.fileSize >= HUGE_FILE_DEGRADE_BYTES) {
+      setLogColorMode("severity");
+      setShowLocalMinimap(false);
+      setTailNotice("已启用 300MB+ 降级：仅 severity 着色，并隐藏右侧 minimap；可在状态栏手动恢复。");
+      return;
+    }
+    if (metadata.fileSize >= LARGE_FILE_DEGRADE_BYTES) {
+      setLogColorMode("severity");
+      setTailNotice("已启用 100MB+ 降级：仅 severity 着色，避免可见行 tokenization 成本过高。");
+    }
+  };
+
   const generateAndOpenFixture = async () => {
     setIsGeneratingFixture(true);
     setError(null);
     try {
-      const fixture = await invoke<FixtureMetadata>("generate_log_fixture", { sizeMb: 50 });
+      const fixture = await invoke<FixtureMetadata>("generate_log_fixture", { sizeMb: 50, profile: fixtureProfile });
       setLastFixture(fixture);
       setFilePath(fixture.path);
       await openPath(fixture.path);
@@ -662,6 +714,24 @@ function App() {
       setError(String(err));
     } finally {
       setIsGeneratingFixture(false);
+    }
+  };
+
+  const runCoreBenchmark = async () => {
+    setIsBenchmarking(true);
+    setError(null);
+    try {
+      const report = await invoke<CoreBenchmarkReport>("run_core_benchmark", {
+        sizeMb: 50,
+        profile: fixtureProfile,
+      });
+      setLastBenchmark(report);
+      setLastFixture(report.fixture);
+      setFilePath(report.fixture.path);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setIsBenchmarking(false);
     }
   };
 
@@ -1007,6 +1077,13 @@ function App() {
       }),
     [lineCache, renderedLineCount, requestedStartLine],
   );
+  React.useEffect(() => {
+    setPerfSnapshot((current) => ({
+      ...current,
+      renderedRows: renderedLineCount,
+      cachedLines: lineCache.size,
+    }));
+  }, [lineCache.size, renderedLineCount]);
   const activePath = logFile?.path ?? placeholder?.path ?? "尚未打开文件";
   const activeStatus = placeholder?.message ?? "阶段 2：输入路径打开文件，支持追加刷新和 follow tail";
   const statusItems = logFile
@@ -1016,8 +1093,10 @@ function App() {
         `索引 ${logFile.indexDurationMs} ms`,
         searchResult ? `查找 ${searchResult.durationMs} ms` : "查找 -",
         `Marker ${markers.length.toLocaleString()}`,
+        `DOM ${perfSnapshot.renderedRows}/${perfSnapshot.cachedLines}`,
+        `Map ${(perfSnapshot.globalMinimapMs + perfSnapshot.localMinimapMs).toFixed(1)} ms`,
       ]
-    : [activeStatus, "大小 -", "行数 -", "索引 -", "查找 -", `Marker ${markers.length.toLocaleString()}`];
+    : [activeStatus, "大小 -", "行数 -", "索引 -", "查找 -", `Marker ${markers.length.toLocaleString()}`, "DOM -", "Map -"];
   const visibleMarkerLines = React.useMemo(
     () => new Set(markers.map((marker) => marker.startLine)),
     [markers],
@@ -1049,6 +1128,7 @@ function App() {
     if (!canvas || !logFile) {
       return;
     }
+    const drawStartedAt = performance.now();
 
     const width = Math.max(globalMinimapWidth, 1);
     const pixelRatio = window.devicePixelRatio || 1;
@@ -1079,6 +1159,8 @@ function App() {
         context.fill();
       }
     }
+    const drawDurationMs = performance.now() - drawStartedAt;
+    setPerfSnapshot((current) => ({ ...current, globalMinimapMs: drawDurationMs }));
   }, [firstVisibleLine, globalMinimapWidth, logFile, markers, selectedMarker?.id, viewportLineCount]);
 
   React.useEffect(() => {
@@ -1086,6 +1168,7 @@ function App() {
     if (!canvas || !logFile) {
       return;
     }
+    const drawStartedAt = performance.now();
 
     const height = Math.max(viewportHeight, 1);
     const pixelRatio = window.devicePixelRatio || 1;
@@ -1120,6 +1203,8 @@ function App() {
         context.fill();
       }
     }
+    const drawDurationMs = performance.now() - drawStartedAt;
+    setPerfSnapshot((current) => ({ ...current, localMinimapMs: drawDurationMs }));
   }, [firstVisibleLine, logFile, markers, rightMinimapRange, selectedMarker?.id, viewportHeight, viewportLineCount]);
 
   const handleGlobalMinimapClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1261,6 +1346,27 @@ function App() {
           >
             {isGeneratingFixture ? "生成中" : "生成 50MB Fixture"}
           </button>
+          <div className="fixture-tools">
+            <select
+              value={fixtureProfile}
+              onChange={(event) => setFixtureProfile(event.target.value as FixtureProfile)}
+              aria-label="fixture profile"
+            >
+              {FIXTURE_PROFILES.map((profile) => (
+                <option value={profile.value} key={profile.value}>
+                  {profile.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={runCoreBenchmark}
+              disabled={isOpening || isGeneratingFixture || isBenchmarking}
+            >
+              {isBenchmarking ? "Benchmark 中" : "Core Benchmark"}
+            </button>
+          </div>
           <button type="button" className="secondary-button" onClick={runPlaceholder}>
             Command 自检
           </button>
@@ -1296,7 +1402,19 @@ function App() {
             </div>
             <div>
               <dt>Fixture</dt>
-              <dd>{lastFixture ? `${formatBytes(lastFixture.fileSize)} / ${lastFixture.generationDurationMs} ms` : "-"}</dd>
+              <dd>
+                {lastFixture
+                  ? `${lastFixture.profile} / ${formatBytes(lastFixture.fileSize)} / ${lastFixture.generationDurationMs} ms`
+                  : "-"}
+              </dd>
+            </div>
+            <div>
+              <dt>Bench</dt>
+              <dd>
+                {lastBenchmark
+                  ? `idx ${lastBenchmark.indexDurationMs} / search ${lastBenchmark.searchDurationMs} / read ${lastBenchmark.readVisibleDurationMs} ms`
+                  : "-"}
+              </dd>
             </div>
           </dl>
         </section>
