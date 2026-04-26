@@ -295,7 +295,7 @@ struct SocketRecord {
 fn health_check() -> HealthCheck {
     HealthCheck {
         status: "ok",
-        app_name: "log_scope",
+        app_name: "LogScope",
         version: env!("CARGO_PKG_VERSION"),
     }
 }
@@ -2253,7 +2253,14 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
             "LogScope",
             true,
             &[
-                &PredefinedMenuItem::about(app_handle, None, None)?,
+                &PredefinedMenuItem::about(
+                    app_handle,
+                    Some("About LogScope"),
+                    Some(tauri::menu::AboutMetadata {
+                        credits: Some("© leaf All rights reserved.\n[flying_butterfly@126.com]".to_string()),
+                        ..Default::default()
+                    }),
+                )?,
                 &PredefinedMenuItem::separator(app_handle)?,
                 &PredefinedMenuItem::services(app_handle, None)?,
                 &PredefinedMenuItem::separator(app_handle)?,

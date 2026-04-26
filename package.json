@@ -13,7 +13,8 @@
     "tauri:build": "tauri build",
     "checktsc": "tsc --noEmit",
     "package:macos": "bash scripts/package-macos.sh",
-    "package:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1"
+    "package:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1",
+    "publish": "node scripts/publish.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
