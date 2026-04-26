@@ -56,10 +56,21 @@ function main() {
     console.log(`Platform: ${os}`);
     console.log(`Looking for ${label} files in ${BUNDLE_DIR} ...`);
 
-    // Only search inside release/bundle to avoid picking up random build artifacts
-    const bundleSearchDir = join(BUNDLE_DIR);
-    const files = findFiles(bundleSearchDir, extensions)
-        .filter(f => f.includes('release') && f.includes('bundle'));
+    // On Windows, copy the standalone LogScope.exe from the release directory.
+    // On macOS, search the bundle directory for .dmg files.
+    let files;
+    if (os === 'win32') {
+        const exePath = join(BUNDLE_DIR, 'release', 'LogScope.exe');
+        if (existsSync(exePath)) {
+            files = [exePath];
+        } else {
+            files = [];
+        }
+    } else {
+        const bundleSearchDir = join(BUNDLE_DIR);
+        files = findFiles(bundleSearchDir, extensions)
+            .filter(f => f.includes('release') && f.includes('bundle'));
+    }
 
     if (files.length === 0) {
         console.error(`No ${label} files found. Did you run the build first?`);

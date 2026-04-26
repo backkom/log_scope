@@ -5,6 +5,10 @@ description = "A high-performance readonly log viewer."
 authors = ["log_scope contributors"]
 edition = "2021"
 
+[[bin]]
+name = "LogScope"
+path = "src/main.rs"
+
 [lib]
 name = "log_scope_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
