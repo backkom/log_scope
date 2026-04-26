@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import JsonView from "react18-json-view";
@@ -1102,15 +1103,6 @@ function App() {
     [markers],
   );
   const activeSearchLine = activeSearchMatch?.lineNumber ?? 0;
-  const searchStatusBrief = searchResult
-    ? searchResult.matches.length > 0
-      ? searchFindAll
-        ? `${searchResult.activeMatchIndex}/${searchResult.totalMatches} · L${getActiveSearchMatch(searchResult)?.lineNumber}:${getActiveSearchMatch(searchResult)?.startColumn}`
-        : `L${searchResult.matches[0].lineNumber}:${searchResult.matches[0].startColumn}`
-      : searchFindAll
-        ? `0/${searchResult.totalMatches}`
-        : "无匹配"
-    : "⌘F 打开查找";
   const viewportLineCount = Math.max(1, Math.ceil(Math.max(viewportHeight, ROW_HEIGHT) / ROW_HEIGHT));
   const rightMinimapRange = React.useMemo(
     () => getRightMinimapRange(firstVisibleLine, viewportLineCount, Math.max(1, logFile?.lineCount ?? 1)),
@@ -1382,6 +1374,8 @@ function App() {
               setSocketPort(String(source.port));
               void connectSocketSource(source.host, source.port);
             }}
+            onStoreChange={setPersistedStore}
+            onError={(message) => setError(message)}
           />
         </section>
 
@@ -1417,53 +1411,6 @@ function App() {
               </dd>
             </div>
           </dl>
-        </section>
-
-        <section className="panel-section">
-          <h2>定位</h2>
-          <button type="button" className="secondary-button" onClick={openGotoLineBar} disabled={!logFile}>
-            跳转行号 (^+G)
-          </button>
-          <div className="toolbar-buttons">
-            <button type="button" className="secondary-button" onClick={() => scrollToLine(1)} disabled={!logFile}>
-              顶部
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => scrollToLine(logFile?.lineCount ?? 1)}
-              disabled={!logFile}
-            >
-              底部
-            </button>
-          </div>
-          {pendingTailLines > 0 ? (
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => {
-                setPendingTailLines(0);
-                scrollToLine(logFile?.lineCount ?? 1);
-              }}
-            >
-              查看 {pendingTailLines.toLocaleString()} 行新增
-            </button>
-          ) : null}
-        </section>
-
-        <section className="panel-section">
-          <h2>查找</h2>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => {
-              setSelectedLine(null);
-              setFindBarOpen(true);
-            }}
-          >
-            打开查找 (⌘F)
-          </button>
-          <p className="panel-hint">{searchStatusBrief}</p>
         </section>
 
         <section className="panel-section marker-panel">
@@ -1855,53 +1802,163 @@ function RecentSources({
   recentSockets,
   onOpenFile,
   onConnectSocket,
+  onStoreChange,
+  onError,
 }: {
   recentFiles: PersistedFileSource[];
   recentSockets: PersistedSocketSource[];
   onOpenFile: (path: string) => void;
   onConnectSocket: (source: PersistedSocketSource) => void;
+  onStoreChange: (store: PersistedStore) => void;
+  onError: (message: string) => void;
 }) {
-  const hasRecentSources = recentFiles.length > 0 || recentSockets.length > 0;
-  if (!hasRecentSources) {
-    return <p className="panel-hint">历史记录会在成功打开数据源后自动保存。</p>;
-  }
+  const [isOpen, setIsOpen] = React.useState(false);
+  const [popoverPosition, setPopoverPosition] = React.useState({ top: 0, left: 0 });
+  const triggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const recentSourceCount = recentFiles.length + recentSockets.length;
+
+  React.useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [isOpen]);
+
+  const togglePopover = () => {
+    if (isOpen) {
+      setIsOpen(false);
+      return;
+    }
+
+    const rect = triggerRef.current?.getBoundingClientRect();
+    const popoverWidth = Math.min(360, window.innerWidth - 24);
+    const popoverHeight = 320;
+    const desiredTop = (rect?.bottom ?? 0) + 8;
+    const top =
+      desiredTop + popoverHeight > window.innerHeight - 12
+        ? Math.max(12, (rect?.top ?? window.innerHeight) - popoverHeight - 8)
+        : desiredTop;
+    setPopoverPosition({
+      top,
+      left: Math.max(12, Math.min(rect?.left ?? 12, window.innerWidth - popoverWidth - 12)),
+    });
+    setIsOpen(true);
+  };
+
+  const removeRecentFile = async (path: string) => {
+    try {
+      const store = await invoke<PersistedStore>("remove_recent_file", { path });
+      onStoreChange(store);
+    } catch (err) {
+      onError(String(err));
+    }
+  };
+
+  const removeRecentSocket = async (source: PersistedSocketSource) => {
+    try {
+      const store = await invoke<PersistedStore>("remove_recent_socket", {
+        host: source.host,
+        port: source.port,
+      });
+      onStoreChange(store);
+    } catch (err) {
+      onError(String(err));
+    }
+  };
 
   return (
     <div className="recent-sources">
-      {recentFiles.length > 0 ? (
-        <div className="recent-source-group">
-          <span>最近文件</span>
-          {recentFiles.slice(0, 5).map((source) => (
-            <button
-              type="button"
-              className="recent-source-button"
-              key={source.path}
-              onClick={() => onOpenFile(source.path)}
-              title={source.path}
-            >
-              <strong>{source.displayName}</strong>
-              <small>{source.path}</small>
-            </button>
-          ))}
-        </div>
-      ) : null}
-      {recentSockets.length > 0 ? (
-        <div className="recent-source-group">
-          <span>最近 Socket</span>
-          {recentSockets.slice(0, 5).map((source) => (
-            <button
-              type="button"
-              className="recent-source-button"
-              key={`${source.host}:${source.port}`}
-              onClick={() => onConnectSocket(source)}
-              title={`${source.host}:${source.port}`}
-            >
-              <strong>{source.displayName}</strong>
-              <small>logscope-frame-v1</small>
-            </button>
-          ))}
-        </div>
-      ) : null}
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`recent-source-icon-button${isOpen ? " is-active" : ""}`}
+        onClick={togglePopover}
+        disabled={recentSourceCount === 0}
+        title="历史记录"
+        aria-label="历史记录"
+        aria-expanded={isOpen}
+      >
+        <span className="recent-icon recent-icon-history" aria-hidden="true" />
+        <span className="recent-count">{recentSourceCount}</span>
+      </button>
+
+      {isOpen
+        ? createPortal(
+            <div className="recent-source-layer" onClick={() => setIsOpen(false)}>
+              <div
+                className="recent-source-popover"
+                style={{ top: popoverPosition.top, left: popoverPosition.left }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="recent-source-popover-title">历史记录</div>
+                <div className="recent-source-group-title">最近文件</div>
+                {recentFiles.length === 0 ? <p className="panel-hint">暂无记录</p> : null}
+                {recentFiles.map((source) => (
+                  <div className="recent-source-row" key={source.path}>
+                    <button
+                      type="button"
+                      className="recent-source-button"
+                      onClick={() => {
+                        setIsOpen(false);
+                        onOpenFile(source.path);
+                      }}
+                      title={source.path}
+                    >
+                      <strong>{source.displayName}</strong>
+                      <small>{source.path}</small>
+                    </button>
+                    <button
+                      type="button"
+                      className="recent-source-delete"
+                      onClick={() => void removeRecentFile(source.path)}
+                      title="删除记录"
+                      aria-label={`删除 ${source.displayName}`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+
+                <div className="recent-source-group-title">最近 Socket</div>
+                {recentSockets.length === 0 ? <p className="panel-hint">暂无记录</p> : null}
+                {recentSockets.map((source) => (
+                  <div className="recent-source-row" key={`${source.host}:${source.port}`}>
+                    <button
+                      type="button"
+                      className="recent-source-button"
+                      onClick={() => {
+                        setIsOpen(false);
+                        onConnectSocket(source);
+                      }}
+                      title={`${source.host}:${source.port}`}
+                    >
+                      <strong>{source.displayName}</strong>
+                      <small>logscope-frame-v1</small>
+                    </button>
+                    <button
+                      type="button"
+                      className="recent-source-delete"
+                      onClick={() => void removeRecentSocket(source)}
+                      title="删除记录"
+                      aria-label={`删除 ${source.displayName}`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

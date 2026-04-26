@@ -438,6 +438,40 @@ fn save_ui_state(
 }
 
 #[tauri::command]
+fn remove_recent_file(path: String, app: tauri::AppHandle) -> Result<PersistedStore, String> {
+    let mut store = load_persisted_store(&app).map_err(|err| err.to_string())?;
+    store.recent_files.retain(|source| source.path != path);
+    if store.last_source.as_ref().is_some_and(|source| {
+        source.kind == "file" && source.path.as_deref() == Some(path.as_str())
+    }) {
+        store.last_source = None;
+    }
+    save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
+    load_persisted_store(&app).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn remove_recent_socket(
+    host: String,
+    port: u16,
+    app: tauri::AppHandle,
+) -> Result<PersistedStore, String> {
+    let mut store = load_persisted_store(&app).map_err(|err| err.to_string())?;
+    store
+        .recent_sockets
+        .retain(|source| source.host != host || source.port != port);
+    if store.last_source.as_ref().is_some_and(|source| {
+        source.kind == "socket"
+            && source.host.as_deref() == Some(host.as_str())
+            && source.port == Some(port)
+    }) {
+        store.last_source = None;
+    }
+    save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
+    load_persisted_store(&app).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn get_log_lines(
     session_id: u64,
     start_line: usize,
@@ -1981,6 +2015,8 @@ pub fn run() {
             connect_log_socket,
             get_persisted_state,
             save_ui_state,
+            remove_recent_file,
+            remove_recent_socket,
             get_log_lines,
             get_log_markers,
             get_marker_payload,
