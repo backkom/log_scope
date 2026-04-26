@@ -413,6 +413,7 @@ function App() {
   const persistedStateLoadedRef = React.useRef(false);
   const saveUiStateTimerRef = React.useRef<number | null>(null);
   const markerListRef = React.useRef<HTMLDivElement | null>(null);
+  const initialLoadDoneRef = React.useRef(false);
 
   React.useEffect(() => {
     invoke<HealthCheck>("health_check")
@@ -1556,6 +1557,18 @@ function App() {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
   };
+
+  React.useEffect(() => {
+    if (persistedStore && !initialLoadDoneRef.current) {
+      initialLoadDoneRef.current = true;
+      if (persistedStore.lastSource?.kind === "file" && persistedStore.lastSource.path) {
+        void openPath(persistedStore.lastSource.path);
+      } else if (persistedStore.lastSource?.kind === "socket" && persistedStore.lastSource.host && persistedStore.lastSource.port) {
+        void connectSocketSource(persistedStore.lastSource.host, persistedStore.lastSource.port);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persistedStore]);
 
   return (
     <main className="app-shell">

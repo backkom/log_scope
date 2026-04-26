@@ -2117,12 +2117,7 @@ fn sanitize_ui_state(mut ui_state: PersistedUiState) -> PersistedUiState {
 }
 
 fn display_name_for_path(path: &str) -> String {
-    PathBuf::from(path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or(path)
-        .to_string()
+    path.to_string()
 }
 
 fn unix_timestamp_seconds() -> u64 {

@@ -752,6 +752,7 @@ button:disabled {
 }
 
 .marker-summary {
+  flex-shrink: 0;
   display: grid;
   grid-template-columns: 12px minmax(0, 1fr);
   gap: 4px 8px;
@@ -784,7 +785,8 @@ button:disabled {
 }
 
 .payload-preview {
-  min-height: 220px;
+  flex: 1;
+  min-height: 0;
   max-height: none;
   overflow-y: auto;
   overflow-x: hidden;
@@ -802,7 +804,8 @@ button:disabled {
 }
 
 .json-tree-viewer {
-  min-height: 220px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   border: 1px solid #dce2e5;
@@ -1056,30 +1059,38 @@ button:disabled {
 
 .marker-detail-area {
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  scrollbar-color: var(--log-viewer-scrollbar) var(--log-viewer-bg);
 }
 
-.marker-detail-area::-webkit-scrollbar {
+.json-tree-viewer,
+.payload-preview {
+  scrollbar-color: var(--log-viewer-scrollbar) #182125;
+}
+
+.json-tree-viewer::-webkit-scrollbar,
+.payload-preview::-webkit-scrollbar {
   width: 8px;
 }
 
-.marker-detail-area::-webkit-scrollbar-track {
-  background: var(--log-viewer-bg);
+.json-tree-viewer::-webkit-scrollbar-track,
+.payload-preview::-webkit-scrollbar-track {
+  background: #182125;
+  border-radius: 7px;
 }
 
-.marker-detail-area::-webkit-scrollbar-thumb {
-  border: 2px solid var(--log-viewer-bg);
+.json-tree-viewer::-webkit-scrollbar-thumb,
+.payload-preview::-webkit-scrollbar-thumb {
+  border: 2px solid #182125;
   border-radius: 999px;
   background: var(--log-viewer-scrollbar);
 }
 
 .payload-note,
 .panel-hint {
+  flex-shrink: 0;
   margin: 0;
   color: #8996a0;
   font-size: 13px;
@@ -1405,18 +1416,18 @@ button:disabled {
 }
 
 .modal-content {
-  background: #ffffff;
-  border: 1px solid #cfd8dd;
+  background: #252820;
+  border: 1px solid #4e5649;
   border-radius: 8px;
   padding: 24px;
   width: 400px;
-  box-shadow: 0 14px 34px rgba(20, 31, 36, 0.2);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.4);
 }
 
 .modal-content h2 {
   margin: 0 0 16px;
   font-size: 16px;
-  color: #1e2428;
+  color: #e0e4e0;
 }
 
 .modal-field {
@@ -1428,20 +1439,21 @@ button:disabled {
 
 .modal-field label {
   font-size: 13px;
-  color: #69757c;
+  color: #9aa39e;
 }
 
 .modal-field input {
   padding: 8px 12px;
-  border: 1px solid #cfd8dd;
+  border: 1px solid #4e5649;
   border-radius: 6px;
-  background: #ffffff;
-  color: #1e2428;
+  background: #2b2d27;
+  color: #e0e4e0;
   outline: none;
 }
 
 .modal-field input:focus {
   border-color: #18706a;
+  box-shadow: 0 0 0 1px #18706a;
 }
 
 .modal-actions {
