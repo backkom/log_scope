@@ -151,6 +151,57 @@ button:disabled {
   gap: 8px;
 }
 
+.recent-sources {
+  display: grid;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.recent-source-group {
+  display: grid;
+  gap: 6px;
+}
+
+.recent-source-group > span {
+  color: #69757c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.recent-source-button {
+  display: grid;
+  gap: 2px;
+  min-height: 42px;
+  overflow: hidden;
+  border: 1px solid #dce2e5;
+  border-radius: 7px;
+  background: #f7faf9;
+  color: #273137;
+  padding: 7px 9px;
+  text-align: left;
+}
+
+.recent-source-button:hover {
+  border-color: #b8c6c7;
+  background: #eef5f3;
+}
+
+.recent-source-button strong,
+.recent-source-button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-source-button strong {
+  font-size: 13px;
+}
+
+.recent-source-button small {
+  color: #69757c;
+  font-size: 11px;
+}
+
 .toolbar-buttons {
   display: grid;
   grid-template-columns: 1fr 1fr;

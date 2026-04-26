@@ -146,6 +146,47 @@ type SelectedWordRange = {
   end: number;
 };
 
+type PersistedFileSource = {
+  path: string;
+  displayName: string;
+  lastOpenedAt: number;
+};
+
+type PersistedSocketSource = {
+  host: string;
+  port: number;
+  displayName: string;
+  lastOpenedAt: number;
+};
+
+type PersistedDataSource = {
+  kind: "file" | "socket" | string;
+  path: string | null;
+  host: string | null;
+  port: number | null;
+};
+
+type PersistedUiState = {
+  followTail: boolean;
+  showGlobalMinimap: boolean;
+  showLocalMinimap: boolean;
+  logColorMode: "full" | "severity" | "off" | string;
+  searchQuery: string;
+  searchCaseSensitive: boolean;
+  searchRegex: boolean;
+  searchWholeWord: boolean;
+  searchWrapAround: boolean;
+  searchFindAll: boolean;
+};
+
+type PersistedStore = {
+  schemaVersion: number;
+  recentFiles: PersistedFileSource[];
+  recentSockets: PersistedSocketSource[];
+  lastSource: PersistedDataSource | null;
+  uiState: PersistedUiState;
+};
+
 const ROW_HEIGHT = 24;
 const BOTTOM_PADDING_ROWS = 1;
 const OVERSCAN_ROWS = 80;
@@ -199,6 +240,7 @@ function App() {
   const findInputRef = React.useRef<HTMLInputElement | null>(null);
   const gotoInputRef = React.useRef<HTMLInputElement | null>(null);
   const [logColorMode, setLogColorMode] = React.useState<"full" | "severity" | "off">("full");
+  const [persistedStore, setPersistedStore] = React.useState<PersistedStore | null>(null);
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const globalMinimapRef = React.useRef<HTMLCanvasElement | null>(null);
   const localMinimapRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -210,12 +252,106 @@ function App() {
     canvasHeight: number;
     frameHeight: number;
   } | null>(null);
+  const persistedStateLoadedRef = React.useRef(false);
+  const saveUiStateTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     invoke<HealthCheck>("health_check")
       .then(setHealth)
       .catch((err: unknown) => setError(String(err)));
   }, []);
+
+  const refreshPersistedState = React.useCallback(async () => {
+    const store = await invoke<PersistedStore>("get_persisted_state");
+    setPersistedStore(store);
+    return store;
+  }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    refreshPersistedState()
+      .then((store) => {
+        if (cancelled) {
+          return;
+        }
+
+        const uiState = store.uiState;
+        setFollowTail(uiState.followTail);
+        setShowGlobalMinimap(uiState.showGlobalMinimap);
+        setShowLocalMinimap(uiState.showLocalMinimap);
+        setLogColorMode(isLogColorMode(uiState.logColorMode) ? uiState.logColorMode : "full");
+        setSearchQuery(uiState.searchQuery ?? "");
+        setSearchCaseSensitive(uiState.searchCaseSensitive);
+        setSearchRegex(uiState.searchRegex);
+        setSearchWholeWord(uiState.searchWholeWord);
+        setSearchWrapAround(uiState.searchWrapAround);
+        setSearchFindAll(uiState.searchFindAll);
+
+        if (store.lastSource?.kind === "file" && store.lastSource.path) {
+          setFilePath(store.lastSource.path);
+        }
+        if (store.lastSource?.kind === "socket" && store.lastSource.host && store.lastSource.port) {
+          setSocketHost(store.lastSource.host);
+          setSocketPort(String(store.lastSource.port));
+        }
+
+        persistedStateLoadedRef.current = true;
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          persistedStateLoadedRef.current = true;
+          setError(String(err));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshPersistedState]);
+
+  React.useEffect(() => {
+    if (!persistedStateLoadedRef.current) {
+      return;
+    }
+
+    if (saveUiStateTimerRef.current !== null) {
+      window.clearTimeout(saveUiStateTimerRef.current);
+    }
+    saveUiStateTimerRef.current = window.setTimeout(() => {
+      const uiState: PersistedUiState = {
+        followTail,
+        showGlobalMinimap,
+        showLocalMinimap,
+        logColorMode,
+        searchQuery,
+        searchCaseSensitive,
+        searchRegex,
+        searchWholeWord,
+        searchWrapAround,
+        searchFindAll,
+      };
+      invoke<PersistedStore>("save_ui_state", { uiState })
+        .then(setPersistedStore)
+        .catch((err: unknown) => console.warn("Unable to persist UI state", err));
+    }, 400);
+
+    return () => {
+      if (saveUiStateTimerRef.current !== null) {
+        window.clearTimeout(saveUiStateTimerRef.current);
+      }
+    };
+  }, [
+    followTail,
+    showGlobalMinimap,
+    showLocalMinimap,
+    logColorMode,
+    searchQuery,
+    searchCaseSensitive,
+    searchRegex,
+    searchWholeWord,
+    searchWrapAround,
+    searchFindAll,
+  ]);
 
   React.useEffect(() => {
     const title = logFile?.path ? `${logFile.path} - log_scope` : "log_scope";
@@ -448,6 +584,7 @@ function App() {
       setScrollTop(0);
       setJumpLine("1");
       await loadMarkers(metadata.sessionId);
+      await refreshPersistedState();
       if (viewportRef.current) {
         viewportRef.current.scrollTop = 0;
       }
@@ -472,6 +609,10 @@ function App() {
       return;
     }
 
+    await connectSocketSource(normalizedHost, parsedPort);
+  };
+
+  const connectSocketSource = async (normalizedHost: string, parsedPort: number) => {
     setIsConnectingSocket(true);
     setError(null);
     try {
@@ -498,6 +639,7 @@ function App() {
       setTailNotice("Socket 已连接，正在等待 frame 数据");
       setScrollTop(0);
       setJumpLine("1");
+      await refreshPersistedState();
       if (viewportRef.current) {
         viewportRef.current.scrollTop = 0;
       }
@@ -1122,6 +1264,19 @@ function App() {
           <button type="button" className="secondary-button" onClick={runPlaceholder}>
             Command 自检
           </button>
+          <RecentSources
+            recentFiles={persistedStore?.recentFiles ?? []}
+            recentSockets={persistedStore?.recentSockets ?? []}
+            onOpenFile={(path) => {
+              setFilePath(path);
+              void openPath(path);
+            }}
+            onConnectSocket={(source) => {
+              setSocketHost(source.host);
+              setSocketPort(String(source.port));
+              void connectSocketSource(source.host, source.port);
+            }}
+          />
         </section>
 
         <section className="panel-section">
@@ -1577,6 +1732,62 @@ function App() {
   );
 }
 
+function RecentSources({
+  recentFiles,
+  recentSockets,
+  onOpenFile,
+  onConnectSocket,
+}: {
+  recentFiles: PersistedFileSource[];
+  recentSockets: PersistedSocketSource[];
+  onOpenFile: (path: string) => void;
+  onConnectSocket: (source: PersistedSocketSource) => void;
+}) {
+  const hasRecentSources = recentFiles.length > 0 || recentSockets.length > 0;
+  if (!hasRecentSources) {
+    return <p className="panel-hint">历史记录会在成功打开数据源后自动保存。</p>;
+  }
+
+  return (
+    <div className="recent-sources">
+      {recentFiles.length > 0 ? (
+        <div className="recent-source-group">
+          <span>最近文件</span>
+          {recentFiles.slice(0, 5).map((source) => (
+            <button
+              type="button"
+              className="recent-source-button"
+              key={source.path}
+              onClick={() => onOpenFile(source.path)}
+              title={source.path}
+            >
+              <strong>{source.displayName}</strong>
+              <small>{source.path}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {recentSockets.length > 0 ? (
+        <div className="recent-source-group">
+          <span>最近 Socket</span>
+          {recentSockets.slice(0, 5).map((source) => (
+            <button
+              type="button"
+              className="recent-source-button"
+              key={`${source.host}:${source.port}`}
+              onClick={() => onConnectSocket(source)}
+              title={`${source.host}:${source.port}`}
+            >
+              <strong>{source.displayName}</strong>
+              <small>logscope-frame-v1</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) {
     return `${bytes} B`;
@@ -1591,6 +1802,10 @@ function formatBytes(bytes: number) {
   }
 
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
+function isLogColorMode(value: string): value is "full" | "severity" | "off" {
+  return value === "full" || value === "severity" || value === "off";
 }
 
 function getRightMinimapRange(firstVisibleLine: number, viewportLineCount: number, totalLines: number) {

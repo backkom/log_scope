@@ -12,6 +12,7 @@ use std::{
 };
 
 use regex::Regex;
+use tauri::Manager;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +91,57 @@ struct SocketConnectMetadata {
     path: String,
     line_count: usize,
     protocol: &'static str,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedStore {
+    schema_version: u32,
+    recent_files: Vec<PersistedFileSource>,
+    recent_sockets: Vec<PersistedSocketSource>,
+    last_source: Option<PersistedDataSource>,
+    ui_state: PersistedUiState,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedFileSource {
+    path: String,
+    display_name: String,
+    last_opened_at: u64,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedSocketSource {
+    host: String,
+    port: u16,
+    display_name: String,
+    last_opened_at: u64,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedDataSource {
+    kind: String,
+    path: Option<String>,
+    host: Option<String>,
+    port: Option<u16>,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedUiState {
+    follow_tail: bool,
+    show_global_minimap: bool,
+    show_local_minimap: bool,
+    log_color_mode: String,
+    search_query: String,
+    search_case_sensitive: bool,
+    search_regex: bool,
+    search_whole_word: bool,
+    search_wrap_around: bool,
+    search_find_all: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -245,6 +297,7 @@ fn open_file_placeholder(path: String) -> FileOpenPlaceholder {
 #[tauri::command]
 async fn open_log_file(
     path: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<LogFileMetadata, String> {
     let path_buf = PathBuf::from(path);
@@ -266,6 +319,7 @@ async fn open_log_file(
         .lock()
         .map_err(|_| "log session state is unavailable".to_string())?;
     sessions.insert(session_id, Arc::new(Mutex::new(session)));
+    remember_recent_file(&app, metadata.path.clone())?;
 
     Ok(metadata)
 }
@@ -283,6 +337,7 @@ async fn generate_log_fixture(size_mb: u64) -> Result<FixtureMetadata, String> {
 async fn connect_log_socket(
     host: String,
     port: u16,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<SocketConnectMetadata, String> {
     let normalized_host = host.trim().to_string();
@@ -324,6 +379,8 @@ async fn connect_log_socket(
         }
     });
 
+    remember_recent_socket(&app, normalized_host.clone(), port)?;
+
     Ok(SocketConnectMetadata {
         session_id,
         host: normalized_host,
@@ -332,6 +389,22 @@ async fn connect_log_socket(
         line_count: 0,
         protocol: "logscope-frame-v1",
     })
+}
+
+#[tauri::command]
+fn get_persisted_state(app: tauri::AppHandle) -> Result<PersistedStore, String> {
+    load_persisted_store(&app).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn save_ui_state(
+    ui_state: PersistedUiState,
+    app: tauri::AppHandle,
+) -> Result<PersistedStore, String> {
+    let mut store = load_persisted_store(&app).map_err(|err| err.to_string())?;
+    store.ui_state = sanitize_ui_state(ui_state);
+    save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
+    Ok(store)
 }
 
 #[tauri::command]
@@ -1611,6 +1684,156 @@ fn write_socket_text_record<W: Write>(writer: &mut W, text: &str) -> std::io::Re
     Ok(())
 }
 
+impl Default for PersistedStore {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            recent_files: Vec::new(),
+            recent_sockets: Vec::new(),
+            last_source: None,
+            ui_state: PersistedUiState::default(),
+        }
+    }
+}
+
+impl Default for PersistedUiState {
+    fn default() -> Self {
+        Self {
+            follow_tail: true,
+            show_global_minimap: true,
+            show_local_minimap: true,
+            log_color_mode: "full".to_string(),
+            search_query: String::new(),
+            search_case_sensitive: false,
+            search_regex: false,
+            search_whole_word: false,
+            search_wrap_around: true,
+            search_find_all: true,
+        }
+    }
+}
+
+fn load_persisted_store(app: &tauri::AppHandle) -> std::io::Result<PersistedStore> {
+    let path = persisted_store_path(app)?;
+    if !path.exists() {
+        return Ok(PersistedStore::default());
+    }
+
+    let bytes = fs::read(path)?;
+    let store = serde_json::from_slice::<PersistedStore>(&bytes).unwrap_or_default();
+    Ok(sanitize_store(store))
+}
+
+fn save_persisted_store(app: &tauri::AppHandle, store: &PersistedStore) -> std::io::Result<()> {
+    let path = persisted_store_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(&sanitize_store(store.clone())).map_err(|err| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("failed to encode persisted state: {err}"),
+        )
+    })?;
+    fs::write(path, bytes)
+}
+
+fn persisted_store_path(app: &tauri::AppHandle) -> std::io::Result<PathBuf> {
+    let dir = app.path().app_data_dir().map_err(|err| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("failed to resolve app data dir: {err}"),
+        )
+    })?;
+    Ok(dir.join("state-v1.json"))
+}
+
+fn remember_recent_file(app: &tauri::AppHandle, path: String) -> Result<(), String> {
+    let mut store = load_persisted_store(app).map_err(|err| err.to_string())?;
+    let now = unix_timestamp_seconds();
+    store.recent_files.retain(|source| source.path != path);
+    store.recent_files.insert(
+        0,
+        PersistedFileSource {
+            display_name: display_name_for_path(&path),
+            path: path.clone(),
+            last_opened_at: now,
+        },
+    );
+    store.recent_files.truncate(12);
+    store.last_source = Some(PersistedDataSource {
+        kind: "file".to_string(),
+        path: Some(path),
+        host: None,
+        port: None,
+    });
+    save_persisted_store(app, &store).map_err(|err| err.to_string())
+}
+
+fn remember_recent_socket(app: &tauri::AppHandle, host: String, port: u16) -> Result<(), String> {
+    let mut store = load_persisted_store(app).map_err(|err| err.to_string())?;
+    let now = unix_timestamp_seconds();
+    store
+        .recent_sockets
+        .retain(|source| source.host != host || source.port != port);
+    store.recent_sockets.insert(
+        0,
+        PersistedSocketSource {
+            display_name: format!("{host}:{port}"),
+            host: host.clone(),
+            port,
+            last_opened_at: now,
+        },
+    );
+    store.recent_sockets.truncate(12);
+    store.last_source = Some(PersistedDataSource {
+        kind: "socket".to_string(),
+        path: None,
+        host: Some(host),
+        port: Some(port),
+    });
+    save_persisted_store(app, &store).map_err(|err| err.to_string())
+}
+
+fn sanitize_store(mut store: PersistedStore) -> PersistedStore {
+    store.schema_version = 1;
+    store.recent_files.retain(|source| !source.path.trim().is_empty());
+    store
+        .recent_sockets
+        .retain(|source| !source.host.trim().is_empty() && source.port > 0);
+    store.recent_files.truncate(12);
+    store.recent_sockets.truncate(12);
+    store.ui_state = sanitize_ui_state(store.ui_state);
+    store
+}
+
+fn sanitize_ui_state(mut ui_state: PersistedUiState) -> PersistedUiState {
+    if !matches!(
+        ui_state.log_color_mode.as_str(),
+        "full" | "severity" | "off"
+    ) {
+        ui_state.log_color_mode = "full".to_string();
+    }
+    ui_state.search_query = ui_state.search_query.chars().take(256).collect();
+    ui_state
+}
+
+fn display_name_for_path(path: &str) -> String {
+    PathBuf::from(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn unix_timestamp_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1621,6 +1844,8 @@ pub fn run() {
             open_log_file,
             generate_log_fixture,
             connect_log_socket,
+            get_persisted_state,
+            save_ui_state,
             get_log_lines,
             get_log_markers,
             get_marker_payload,
