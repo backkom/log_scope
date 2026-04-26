@@ -1109,13 +1109,17 @@ function App() {
         event.preventDefault();
         openGotoLineBar();
       }
-      if (event.key === "Escape" && findBarOpen) {
-        event.preventDefault();
-        setFindBarOpen(false);
-      }
-      if (event.key === "Escape" && gotoBarOpen) {
-        event.preventDefault();
-        closeGotoLineBar();
+      if (event.key === "Escape") {
+        if (findBarOpen) {
+          event.preventDefault();
+          setFindBarOpen(false);
+        } else if (gotoBarOpen) {
+          event.preventDefault();
+          closeGotoLineBar();
+        } else if (showSourcePanel) {
+          event.preventDefault();
+          setShowSourcePanel(false);
+        }
       }
       if (event.key === "F3" && (findBarOpen || searchQuery)) {
         event.preventDefault();
@@ -1127,6 +1131,7 @@ function App() {
   }, [
     findBarOpen,
     gotoBarOpen,
+    showSourcePanel,
     searchQuery,
     logFile,
     activeSearchMatch,
@@ -1378,7 +1383,11 @@ function App() {
         <div className="toolbar-buttons">
           <button
             type="button"
-            className={`toolbar-icon-button${isDisconnected ? " is-active" : ""}`}
+            className="toolbar-icon-button"
+            style={{
+              backgroundColor: isDisconnected ? "#ffe9e9" : "#e9f2ef",
+              color: isDisconnected ? "#c92a2a" : "#18706a",
+            }}
             disabled={!logFile && !isConnectingSocket}
             onClick={() => setIsDisconnected((current) => !current)}
             title={isDisconnected ? "恢复更新" : "暂停更新"}
