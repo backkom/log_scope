@@ -1290,6 +1290,13 @@ function App() {
 
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      const isEditableTarget =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+
       if ((event.ctrlKey || event.metaKey) && event.key === "f") {
         event.preventDefault();
         const sel = window.getSelection();
@@ -1327,22 +1334,25 @@ function App() {
           setShowSourcePanel(false);
         }
       }
-      // Arrow key navigation inside the marker list
-      if (showSourcePanel && (event.key === "ArrowDown" || event.key === "ArrowUp") && !findBarOpen && !gotoBarOpen) {
-        // Only handle if the marker list or source panel area is focused
-        const activeEl = document.activeElement;
-        const isInSourcePanel = activeEl?.closest?.(".source-panel") || activeEl === document.body;
-        if (isInSourcePanel && filteredMarkers.length > 0) {
+      if (
+        showSourcePanel &&
+        (event.key === "ArrowDown" || event.key === "ArrowUp") &&
+        !findBarOpen &&
+        !gotoBarOpen &&
+        !isEditableTarget &&
+        filteredMarkers.length > 0
+      ) {
+        const currentIdx = selectedMarker
+          ? filteredMarkers.findIndex((m) => m.id === selectedMarker.id)
+          : -1;
+        let nextIdx = currentIdx;
+        if (event.key === "ArrowDown") {
+          nextIdx = currentIdx < 0 ? 0 : Math.min(currentIdx + 1, filteredMarkers.length - 1);
+        } else {
+          nextIdx = currentIdx < 0 ? 0 : Math.max(currentIdx - 1, 0);
+        }
+        if (nextIdx !== currentIdx) {
           event.preventDefault();
-          const currentIdx = selectedMarker
-            ? filteredMarkers.findIndex((m) => m.id === selectedMarker.id)
-            : -1;
-          let nextIdx: number;
-          if (event.key === "ArrowDown") {
-            nextIdx = currentIdx < filteredMarkers.length - 1 ? currentIdx + 1 : 0;
-          } else {
-            nextIdx = currentIdx > 0 ? currentIdx - 1 : filteredMarkers.length - 1;
-          }
           void selectMarker(filteredMarkers[nextIdx]);
         }
       }
