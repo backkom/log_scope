@@ -1451,13 +1451,17 @@ function App() {
 
     for (const marker of markers) {
       const point = markerGlobalMinimapPoint(marker, logFile.lineCount, width, GLOBAL_MINIMAP_HEIGHT);
+      const isSelected = selectedMarker?.id === marker.id;
       context.fillStyle = marker.color;
       if (marker.kind === "message") {
-        drawMessageTriangle(context, point.x, point.y, selectedMarker?.id === marker.id ? 5 : 4, marker.direction);
+        drawMessageTriangle(context, point.x, point.y, isSelected ? 5 : 4, marker.direction);
       } else {
         context.beginPath();
-        context.arc(point.x, point.y, selectedMarker?.id === marker.id ? 4 : 3, 0, Math.PI * 2);
+        context.arc(point.x, point.y, isSelected ? 4 : 3, 0, Math.PI * 2);
         context.fill();
+      }
+      if (isSelected) {
+        drawSelectedMarkerRing(context, point.x, point.y, marker.kind === "message" ? 8 : 7);
       }
     }
     const drawDurationMs = performance.now() - drawStartedAt;
@@ -1495,13 +1499,17 @@ function App() {
       }
 
       const point = markerRightMinimapPoint(marker, rightMinimapRange.startLine, rightMinimapRange.lineCount, height);
+      const isSelected = selectedMarker?.id === marker.id;
       context.fillStyle = marker.color;
       if (marker.kind === "message") {
-        drawMessageTriangle(context, point.x, point.y, selectedMarker?.id === marker.id ? 6 : 5, marker.direction);
+        drawMessageTriangle(context, point.x, point.y, isSelected ? 6 : 5, marker.direction);
       } else {
         context.beginPath();
-        context.arc(point.x, point.y, selectedMarker?.id === marker.id ? 4 : 3, 0, Math.PI * 2);
+        context.arc(point.x, point.y, isSelected ? 4 : 3, 0, Math.PI * 2);
         context.fill();
+      }
+      if (isSelected) {
+        drawSelectedMarkerRing(context, point.x, point.y, marker.kind === "message" ? 9 : 7);
       }
     }
     const drawDurationMs = performance.now() - drawStartedAt;
@@ -2369,6 +2377,21 @@ function drawMessageTriangle(
   }
   context.closePath();
   context.fill();
+}
+
+function drawSelectedMarkerRing(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+) {
+  context.save();
+  context.strokeStyle = "#f8f0c9";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.stroke();
+  context.restore();
 }
 
 function isSearchCacheValid(

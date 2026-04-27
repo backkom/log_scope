@@ -188,7 +188,7 @@ Rust core 负责：
 - 消息 body 尝试按严格 JSON 解析；解析失败时保留 raw text 并标记 `parse_status = raw`，不影响 marker 生成。
 - 消息 marker 的颜色由 `message_id` 通过稳定 hash 计算得到，同一个消息 ID 在多次运行中应得到同一个颜色。
 - 消息 marker 在 minimap 横向位置由 `message_id / max_message_id` 决定，`max_message_id` 使用当前 session 已识别消息中的最大 ID；同一个消息 ID 在同一个 session 中应保持同一横向位置。
-- 前端 minimap 使用两张 Canvas：顶部全局 marker 条横向映射整个 log 的行号范围，并绘制当前视口对应的红色线框矩形；右侧 minimap 按当前 8 个视口高度的连续局部范围纵向映射 marker，并绘制贴边、无边线的视口矩形。消息 marker 使用三角形，`Receive` 和 `Send` 使用不同朝向；其他 marker 使用圆点。点击任一 minimap 中的 marker 后，viewer 将 marker 起始行居中并加载 payload；可见行中的 marker 起始行会做轻量背景标记。
+- 前端 minimap 使用两张 Canvas：顶部全局 marker 条横向映射整个 log 的行号范围，并绘制当前视口对应的红色线框矩形；右侧 minimap 按当前 8 个视口高度的连续局部范围纵向映射 marker，并绘制贴边、无边线的视口矩形。消息 marker 使用三角形，`Receive` 和 `Send` 使用不同朝向；其他 marker 使用圆点。点击任一 minimap 中的 marker 后，viewer 将 marker 起始行居中并加载 payload；选中的 marker 必须在顶部全局 marker 条和右侧 minimap 中用高对比圆环框住；可见行中的 marker 起始行会做轻量背景标记。
 - 右侧 minimap 同时维护两个坐标系：
   - 滑块坐标系：矩形高度固定为 Canvas 高度的 1/8；矩形 top 在整个轨道中的比例映射为全文件 viewer 可滚动范围。拖动矩形只使用全文件范围，不受右侧当前 marker 展示范围限制。
   - Marker 坐标系：右侧 Canvas 展示一个连续的 8 视口窗口。该窗口由当前 `firstVisibleLine` 和全文件滚动比例共同计算，使当前视口范围映射到矩形框内部；marker 只在落入该窗口时绘制，并按窗口内相对行号映射到纵向位置。
