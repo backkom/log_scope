@@ -33,6 +33,7 @@ namespace LogScope
         private const int DefaultTcpPort = 8765;
         private const int DiscoveryPort = 9876;
         private const int DiscoveryIntervalMs = 3000;
+        private const int MaxPortAttempts = 4;
 
         private readonly object _sync = new object();
         private readonly List<TcpClient> _clients = new List<TcpClient>();
@@ -71,7 +72,7 @@ namespace LogScope
         {
             Stop();
 
-            _tcpPort = tcpPort > 0 && tcpPort <= 65535 ? tcpPort : DefaultTcpPort;
+            var requestedPort = tcpPort > 0 && tcpPort <= 65535 ? tcpPort : DefaultTcpPort;
             _localAddress = GetLocalIPv4Address();
             _broadcastAddress = ResolveBroadcastAddress(_localAddress, subnetmask);
             _displayHostname = (name ?? string.Empty) + Environment.MachineName;
@@ -79,8 +80,9 @@ namespace LogScope
             _generation++;
             var generation = _generation;
             _running = true;
-            _listener = new TcpListener(IPAddress.Any, _tcpPort);
-            _listener.Start();
+            _listener = StartListenerWithFallback(requestedPort);
+            var localEndpoint = _listener.LocalEndpoint as IPEndPoint;
+            _tcpPort = localEndpoint != null ? localEndpoint.Port : requestedPort;
             var listener = _listener;
             var broadcastAddress = _broadcastAddress;
             var localAddress = _localAddress;
@@ -285,6 +287,33 @@ namespace LogScope
             }
 
             return builder.ToString();
+        }
+
+        private static TcpListener StartListenerWithFallback(int requestedPort)
+        {
+            var startPort = requestedPort > 0 && requestedPort <= 65535 ? requestedPort : DefaultTcpPort;
+            var endPort = Math.Min(65535, startPort + MaxPortAttempts - 1);
+            SocketException lastError = null;
+
+            for (var currentPort = startPort; currentPort <= endPort; currentPort++)
+            {
+                Console.WriteLine("[LogScope] trying TCP port " + currentPort);
+                try
+                {
+                    var listener = new TcpListener(IPAddress.Any, currentPort);
+                    listener.Start();
+                    Console.WriteLine("[LogScope] listening on TCP port " + currentPort);
+                    return listener;
+                }
+                catch (SocketException ex)
+                {
+                    lastError = ex;
+                    Console.WriteLine("[LogScope] failed to bind TCP port " + currentPort + ": " + ex.Message);
+                }
+            }
+
+            Console.WriteLine("[LogScope] exhausted TCP port attempts from " + startPort + " to " + endPort);
+            throw lastError ?? new SocketException((int)SocketError.AddressAlreadyInUse);
         }
 
         private void RemoveClientAt(int index)

@@ -350,8 +350,6 @@ function App() {
   const [health, setHealth] = React.useState<HealthCheck | null>(null);
   const [placeholder, setPlaceholder] = React.useState<FileOpenPlaceholder | null>(null);
   const [filePath, setFilePath] = React.useState("");
-  const [socketHost, setSocketHost] = React.useState("127.0.0.1");
-  const [socketPort, setSocketPort] = React.useState("8765");
   const [logFile, setLogFile] = React.useState<LogFileMetadata | null>(null);
   const [lineCache, setLineCache] = React.useState<Map<number, string>>(() => new Map());
   const [scrollTop, setScrollTop] = React.useState(0);
@@ -363,6 +361,8 @@ function App() {
   const [isConnectingSocket, setIsConnectingSocket] = React.useState(false);
   const [showSocketModal, setShowSocketModal] = React.useState(false);
   const [discoveredServers, setDiscoveredServers] = React.useState<DiscoveredServer[]>([]);
+  const [discoveryRefreshToken, setDiscoveryRefreshToken] = React.useState(0);
+  const [selectedDiscoveredServerKey, setSelectedDiscoveredServerKey] = React.useState<string | null>(null);
   const [isDisconnected, setIsDisconnected] = React.useState(false);
   const [showSourcePanel, setShowSourcePanel] = React.useState(false);
   const [sourcePanelWidth, setSourcePanelWidth] = React.useState(280);
@@ -433,10 +433,12 @@ function App() {
   React.useEffect(() => {
     if (!showSocketModal) {
       invoke("stop_udp_discovery").catch(() => {});
+      setSelectedDiscoveredServerKey(null);
       return;
     }
     // Start listening and clear previous results
     setDiscoveredServers([]);
+    setSelectedDiscoveredServerKey(null);
     invoke("start_udp_discovery").catch(() => {});
 
     const unlisten = listen<DiscoveredServer>("udp-server-discovered", (event) => {
@@ -454,7 +456,7 @@ function App() {
       unlisten.then((fn) => fn());
       invoke("stop_udp_discovery").catch(() => {});
     };
-  }, [showSocketModal]);
+  }, [discoveryRefreshToken, showSocketModal]);
 
   const refreshPersistedState = React.useCallback(async () => {
     const store = await invoke<PersistedStore>("get_persisted_state");
@@ -486,11 +488,6 @@ function App() {
         if (store.lastSource?.kind === "file" && store.lastSource.path) {
           setFilePath(store.lastSource.path);
         }
-        if (store.lastSource?.kind === "socket" && store.lastSource.host && store.lastSource.port) {
-          setSocketHost(store.lastSource.host);
-          setSocketPort(String(store.lastSource.port));
-        }
-
         persistedStateLoadedRef.current = true;
       })
       .catch((err: unknown) => {
@@ -625,8 +622,6 @@ function App() {
         setFilePath(payload.path);
         openPath(payload.path);
       } else if (payload.action === "open_recent_socket") {
-        setSocketHost(payload.host);
-        setSocketPort(String(payload.port));
         connectSocketSource(payload.host, payload.port);
       } else if (payload.action === "gen_fixture") {
         invoke<FixtureMetadata>("generate_log_fixture", { sizeMb: 50, profile: payload.profile })
@@ -874,18 +869,6 @@ function App() {
     }
   };
 
-  const connectSocket = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const normalizedHost = socketHost.trim();
-    const parsedPort = Number.parseInt(socketPort, 10);
-    if (!normalizedHost || !Number.isFinite(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
-      setError("请输入有效的 socket host 和端口");
-      return;
-    }
-
-    await connectSocketSource(normalizedHost, parsedPort);
-  };
-
   const connectSocketSource = async (normalizedHost: string, parsedPort: number) => {
     setIsConnectingSocket(true);
     setError(null);
@@ -918,12 +901,19 @@ function App() {
       if (viewportRef.current) {
         viewportRef.current.scrollTop = 0;
       }
+      return true;
     } catch (err) {
       setError(String(err));
+      return false;
     } finally {
       setIsConnectingSocket(false);
     }
   };
+
+  const selectedDiscoveredServer = React.useMemo(
+    () => discoveredServers.find((server) => `${server.host}:${server.port}` === selectedDiscoveredServerKey) ?? null,
+    [discoveredServers, selectedDiscoveredServerKey],
+  );
 
   const applyLargeFileDegradation = (metadata: LogFileMetadata) => {
     if (metadata.fileSize >= HUGE_FILE_DEGRADE_BYTES) {
@@ -974,6 +964,21 @@ function App() {
       const viewportTop = viewport.scrollTop;
       const viewportBottom = viewportTop + viewport.clientHeight;
       return lineBottom > viewportTop && lineTop < viewportBottom;
+    },
+    [logFile],
+  );
+
+  const isMarkerInViewport = React.useCallback(
+    (marker: LogMarker) => {
+      const viewport = viewportRef.current;
+      if (!logFile || !viewport) {
+        return false;
+      }
+      const markerTop = (Math.max(1, marker.startLine) - 1) * ROW_HEIGHT;
+      const markerBottom = Math.max(markerTop + ROW_HEIGHT, marker.endLine * ROW_HEIGHT);
+      const viewportTop = viewport.scrollTop;
+      const viewportBottom = viewportTop + viewport.clientHeight;
+      return markerBottom > viewportTop && markerTop < viewportBottom;
     },
     [logFile],
   );
@@ -1072,7 +1077,9 @@ function App() {
       setSelectedMarker(marker);
       setShowSourcePanel(true);
       setSelectedPayload(null);
-      scrollToLineCentered(marker.startLine);
+      if (!isMarkerInViewport(marker)) {
+        scrollToLineCentered(marker.startLine);
+      }
       // Scroll the marker list to show the selected item (if it exists in filtered list)
       requestAnimationFrame(() => scrollMarkerListToSelected(marker.id));
       try {
@@ -1086,7 +1093,7 @@ function App() {
         setError(String(err));
       }
     },
-    [logFile, scrollToLineCentered, scrollMarkerListToSelected],
+    [isMarkerInViewport, logFile, scrollToLineCentered, scrollMarkerListToSelected],
   );
 
   const focusViewer = React.useCallback(() => {
@@ -1410,6 +1417,16 @@ function App() {
   const visibleMarkerLines = React.useMemo(
     () => new Set(markers.map((marker) => marker.startLine)),
     [markers],
+  );
+  const selectedMarkerRange = React.useMemo(
+    () =>
+      selectedMarker
+        ? {
+          startLine: selectedMarker.startLine,
+          endLine: selectedMarker.endLine,
+        }
+        : null,
+    [selectedMarker],
   );
   const activeSearchLine = activeSearchMatch?.lineNumber ?? 0;
   const viewportLineCount = Math.max(1, Math.ceil(Math.max(viewportHeight, ROW_HEIGHT) / ROW_HEIGHT));
@@ -1870,33 +1887,40 @@ function App() {
               <div className="viewer-scroll-space" style={{ height: scrollSpaceHeight }}>
                 <div className="log-viewport" style={{ height: viewportHeight || undefined }}>
                   <div className="visible-lines" style={{ transform: `translateY(${visibleOffset}px)` }}>
-                    {renderedLines.map((line) => (
-                      <div
-                        className={`log-row${line.text === undefined ? " is-loading" : ""}${visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
-                          }${activeSearchLine === line.lineNumber ? " has-active-search" : ""}${selectedLine === line.lineNumber ? " has-selected-line" : ""
-                          } ${getSeverityClass(line.text, logColorMode)}`}
-                        key={line.lineNumber}
-                        data-line-number={line.lineNumber}
-                      >
-                        <span className="line-number">{line.lineNumber}</span>
-                        <code title={line.text ?? ""}>
-                          {line.text === undefined
-                            ? " "
-                            : renderLogLine(
-                              line.text,
-                              searchQuery,
-                              searchCaseSensitive,
-                              searchRegex,
-                              searchWholeWord,
-                              logColorMode,
-                              line.lineNumber,
-                              activeSearchLine === line.lineNumber,
-                              selectedWord,
-                              selectedWordRange,
-                            )}
-                        </code>
-                      </div>
-                    ))}
+                    {renderedLines.map((line) => {
+                      const isSelectedMarkerLine =
+                        selectedMarkerRange !== null &&
+                        line.lineNumber >= selectedMarkerRange.startLine &&
+                        line.lineNumber <= selectedMarkerRange.endLine;
+                      return (
+                        <div
+                          className={`log-row${line.text === undefined ? " is-loading" : ""}${visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
+                            }${isSelectedMarkerLine ? " has-selected-marker" : ""
+                            }${activeSearchLine === line.lineNumber ? " has-active-search" : ""}${selectedLine === line.lineNumber ? " has-selected-line" : ""
+                            } ${getSeverityClass(line.text, logColorMode)}`}
+                          key={line.lineNumber}
+                          data-line-number={line.lineNumber}
+                        >
+                          <span className={`line-number${isSelectedMarkerLine ? " is-selected-marker" : ""}`}>{line.lineNumber}</span>
+                          <code title={line.text ?? ""}>
+                            {line.text === undefined
+                              ? " "
+                              : renderLogLine(
+                                line.text,
+                                searchQuery,
+                                searchCaseSensitive,
+                                searchRegex,
+                                searchWholeWord,
+                                logColorMode,
+                                line.lineNumber,
+                                activeSearchLine === line.lineNumber,
+                                selectedWord,
+                                selectedWordRange,
+                              )}
+                          </code>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -2153,15 +2177,17 @@ function App() {
         <div className="modal-overlay">
           <div className="modal-content">
             <h2>连接 Socket</h2>
-
-            {/* Discovered servers section */}
             <div className="discovered-servers">
               <div className="discovered-servers-header">
                 <span className="discovered-servers-title">发现的服务器</span>
                 <button
                   type="button"
                   className="refresh-button"
-                  onClick={() => setDiscoveredServers([])}
+                  onClick={() => {
+                    setDiscoveredServers([]);
+                    setSelectedDiscoveredServerKey(null);
+                    setDiscoveryRefreshToken((current) => current + 1);
+                  }}
                   title="刷新列表"
                 >
                   ⟳
@@ -2178,13 +2204,8 @@ function App() {
                     <button
                       type="button"
                       key={`${server.host}:${server.port}`}
-                      className="discovered-server-item"
-                      onClick={() => {
-                        setSocketHost(server.host);
-                        setSocketPort(String(server.port));
-                        void connectSocketSource(server.host, server.port);
-                        setShowSocketModal(false);
-                      }}
+                      className={`discovered-server-item${selectedDiscoveredServerKey === `${server.host}:${server.port}` ? " is-selected" : ""}`}
+                      onClick={() => setSelectedDiscoveredServerKey(`${server.host}:${server.port}`)}
                     >
                       <span className="server-hostname">{server.hostname}</span>
                       <span className="server-address">{server.host}:{server.port}</span>
@@ -2193,34 +2214,26 @@ function App() {
                 )}
               </div>
             </div>
-
-            <form onSubmit={(e) => {
-              connectSocket(e);
-              setShowSocketModal(false);
-            }}>
-              <div className="modal-field">
-                <label>Host</label>
-                <input
-                  value={socketHost}
-                  onChange={(event) => setSocketHost(event.target.value)}
-                  placeholder="127.0.0.1"
-                  autoFocus
-                />
-              </div>
-              <div className="modal-field">
-                <label>Port</label>
-                <input
-                  value={socketPort}
-                  onChange={(event) => setSocketPort(event.target.value)}
-                  inputMode="numeric"
-                  placeholder="8765"
-                />
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={() => setShowSocketModal(false)}>取消</button>
-                <button type="submit" className="primary-button" disabled={isConnectingSocket}>连接</button>
-              </div>
-            </form>
+            <div className="modal-actions">
+              <button type="button" className="secondary-button" onClick={() => setShowSocketModal(false)}>关闭</button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!selectedDiscoveredServer || isConnectingSocket}
+                onClick={() => {
+                  if (!selectedDiscoveredServer) {
+                    return;
+                  }
+                  void connectSocketSource(selectedDiscoveredServer.host, selectedDiscoveredServer.port).then((connected) => {
+                    if (connected) {
+                      setShowSocketModal(false);
+                    }
+                  });
+                }}
+              >
+                连接
+              </button>
+            </div>
           </div>
         </div>,
         document.body

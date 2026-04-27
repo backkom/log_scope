@@ -1,6 +1,6 @@
 # 项目上下文
 
-最后更新：2026-04-26
+最后更新：2026-04-27
 
 本文档是 `log_scope` 的长期项目记忆。后续 AI agent 和开发者在做项目决策前应先阅读本文档；当需求、架构、取舍或实现细节发生变化时，必须同步更新本文档。
 
@@ -188,7 +188,7 @@ Rust core 负责：
 - 消息 body 尝试按严格 JSON 解析；解析失败时保留 raw text 并标记 `parse_status = raw`，不影响 marker 生成。
 - 消息 marker 的颜色由 `message_id` 通过稳定 hash 计算得到，同一个消息 ID 在多次运行中应得到同一个颜色。
 - 消息 marker 在 minimap 横向位置由 `message_id / max_message_id` 决定，`max_message_id` 使用当前 session 已识别消息中的最大 ID；同一个消息 ID 在同一个 session 中应保持同一横向位置。
-- 前端 minimap 使用两张 Canvas：顶部全局 marker 条横向映射整个 log 的行号范围，并绘制当前视口对应的红色线框矩形；右侧 minimap 按当前 8 个视口高度的连续局部范围纵向映射 marker，并绘制贴边、无边线的视口矩形。消息 marker 使用三角形，`Receive` 和 `Send` 使用不同朝向；其他 marker 使用圆点。点击任一 minimap 中的 marker 后，viewer 将 marker 起始行居中并加载 payload；选中的 marker 必须在顶部全局 marker 条和右侧 minimap 中用高对比圆环框住；可见行中的 marker 起始行会做轻量背景标记。
+- 前端 minimap 使用两张 Canvas：顶部全局 marker 条横向映射整个 log 的行号范围，并绘制当前视口对应的红色线框矩形；右侧 minimap 按当前 8 个视口高度的连续局部范围纵向映射 marker，并绘制贴边、无边线的视口矩形。消息 marker 使用三角形，`Receive` 和 `Send` 使用不同朝向；其他 marker 使用圆点。点击任一 minimap 中的 marker 后，若该 marker 当前不在视口内，则将其起始行居中；若已在视口内，则保持当前阅读位置不变，同时加载 payload。选中的 marker 必须在顶部全局 marker 条和右侧 minimap 中用高对比圆环框住；可见行中该 marker 覆盖范围内的行号 gutter 和文本行背景都需要使用独立背景色强调，且必须覆盖 marker 首行已有的默认 marker 背景色。
 - 右侧 minimap 同时维护两个坐标系：
   - 滑块坐标系：矩形高度固定为 Canvas 高度的 1/8；矩形 top 在整个轨道中的比例映射为全文件 viewer 可滚动范围。拖动矩形只使用全文件范围，不受右侧当前 marker 展示范围限制。
   - Marker 坐标系：右侧 Canvas 展示一个连续的 8 视口窗口。该窗口由当前 `firstVisibleLine` 和全文件滚动比例共同计算，使当前视口范围映射到矩形框内部；marker 只在落入该窗口时绘制，并按窗口内相对行号映射到纵向位置。
@@ -215,7 +215,7 @@ Frame 格式：
 - socket reader 后台读取 `logscope-frame-v1` frame，将 record 文本追加到临时文件。
 - 前端继续通过既有 `refresh_log_file`、`get_log_lines`、`get_log_markers` 路径读取 socket session，因此 socket 流复用现有虚拟化 viewer、follow tail、搜索和 marker/minimap 能力。
 - 仓库提供 `scripts/logscope_socket_server.py` 作为本地测试服务端，默认监听 `127.0.0.1:8765`，持续发送随机 log，并定期伪造单行 JSON marker 和 `Send/Receive Message` marker 块。
-- 仓库提供 `scripts/LogSender.cs` 作为 Unity 侧发送端参考实现：`LogSender.Instance.Configure(subnetmask, name)` 启动 TCP 8765 服务和 UDP 9876 发现广播，`SendLog(log)` 按 `log.batch` frame 发送到已连接客户端；`name` 直接前置拼接到主机名用于发现列表展示，`subnetmask` 可传子网掩码或广播地址。
+- 仓库提供 `scripts/LogSender.cs` 作为 Unity 侧发送端参考实现：`LogSender.Instance.Configure(subnetmask, name)` 启动 TCP 服务和 UDP 9876 发现广播，默认从调用方请求的 TCP 端口开始监听；若端口被同机其他 sender 占用，则最多继续尝试后续 3 个端口（共 4 次，例如请求 9876 时会尝试到 9879），并为每次尝试成功/失败输出日志，最终把实际监听端口写入 discovery 广播。`SendLog(log)` 按 `log.batch` frame 发送到已连接客户端；`name` 直接前置拼接到主机名用于发现列表展示，`subnetmask` 可传子网掩码或广播地址。
 
 当前限制：
 
@@ -251,8 +251,8 @@ Frame 格式：
 - Rust command `start_udp_discovery()` 在端口 9876-9879 各启动一个监听线程，解析收到的 JSON 并通过 `udp-server-discovered` 事件推送到前端。
 - Rust command `stop_udp_discovery()` 设置停止标志，监听线程在超时后退出。
 - 前端打开 Connect Socket 弹窗时自动调用 `start_udp_discovery()`，关闭时调用 `stop_udp_discovery()`。
-- 弹窗内"发现的服务器"列表按 `host:port` 去重；用户可点击刷新按钮清空列表（服务器仍在广播则重新填充）。
-- 点击服务器条目后，自动填入 host/port 并发起 TCP 连接。
+- Connect Socket 弹窗不再允许手工输入 host/port，只展示发现到的 socket 连接列表；列表项按 `host:port` 去重，支持滚动显示至少 3 个连接。用户先单选一个列表项，再通过显式“连接”按钮发起 TCP 连接。
+- 用户点击刷新按钮时会清空当前列表并重新启动 discovery 监听；服务器仍在广播时会重新填充。
 
 ## 持久化与历史记录
 
@@ -262,7 +262,7 @@ Frame 格式：
 
 - 最近打开文件：路径、显示名、最近打开时间，最多保留 12 条。
 - 最近连接 socket：host、port、显示名、最近打开时间，最多保留 12 条。
-- 最近数据源：用于启动后回填文件路径或 socket host/port 输入框，不自动打开。
+- 最近数据源：用于记录上一次打开的是文件还是 socket endpoint，不自动打开。
 - 低风险 UI 状态：follow tail、顶部全局 marker 条显示状态、右侧 minimap 显示状态、日志着色模式、最近搜索词和查找选项。
 
 Rust command：
@@ -277,7 +277,7 @@ Rust command：
 当前限制：
 
 - 暂未提供删除单条历史记录、清空历史记录和迁移 UI。
-- 最近数据源启动后只回填输入框，不自动重连 socket 或打开文件，避免意外读取大文件或连接网络。
+- 最近数据源启动后仅用于恢复上下文，不自动重连 socket 或打开文件，避免意外读取大文件或连接网络。
 
 ## 性能基准与降级策略
 

@@ -652,6 +652,14 @@ button:disabled {
   color: #c4d2c4;
 }
 
+.log-row.has-selected-marker .line-number,
+.log-row.has-selected-marker code,
+.log-row .line-number.is-selected-marker,
+.log-row.has-marker .line-number.is-selected-marker {
+  background: #5d4316;
+  color: #f7e3b2;
+}
+
 .log-token {
   color: inherit;
 }
@@ -1513,8 +1521,8 @@ button:disabled {
   border: 1px solid #4e5649;
   border-radius: 6px;
   background: #2b2d27;
-  max-height: 160px;
-  min-height: 48px;
+  max-height: 198px;
+  min-height: 198px;
   overflow-y: auto;
   scrollbar-color: var(--log-viewer-scrollbar) #2b2d27;
 }
@@ -1562,7 +1570,8 @@ button:disabled {
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  padding: 10px 12px;
+  min-height: 66px;
+  padding: 12px;
   border: 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   background: transparent;
@@ -1579,6 +1588,11 @@ button:disabled {
 
 .discovered-server-item:hover {
   background: #173d39;
+}
+
+.discovered-server-item.is-selected {
+  background: #1d4b45;
+  box-shadow: inset 0 0 0 1px #2f8f83;
 }
 
 .discovered-server-item:active {
