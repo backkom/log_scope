@@ -113,6 +113,8 @@ type MarkerPayload = {
   parseStatus: string;
   parsedJson: unknown | null;
   parseError: string | null;
+  wasTruncated: boolean;
+  originalBytes: number;
 };
 
 type LogSearchMatch = {
@@ -1824,6 +1826,9 @@ function App() {
                     }
                     return null;
                   })()}
+                  {selectedPayload?.wasTruncated ? (
+                    <p className="payload-note">当前仅显示前 64 KiB 预览，原始 payload 为 {selectedPayload.originalBytes} bytes。</p>
+                  ) : null}
                   {selectedPayload?.parseError ? <p className="payload-note">{selectedPayload.parseError}</p> : null}
                 </>
               ) : (

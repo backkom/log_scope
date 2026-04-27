@@ -126,6 +126,7 @@ struct DiscoveredServer {
 
 /// UDP broadcast discovery port (same as Python server).
 const DISCOVERY_PORT: u16 = 9876;
+const MAX_MARKER_PAYLOAD_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -223,6 +224,8 @@ struct MarkerPayload {
     parse_status: String,
     parsed_json: Option<serde_json::Value>,
     parse_error: Option<String>,
+    was_truncated: bool,
+    original_bytes: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -657,11 +660,13 @@ fn get_marker_payload(
     let session = session
         .lock()
         .map_err(|_| format!("log session {session_id} is unavailable"))?;
-    session
+    let payload = session
         .marker_payloads
         .get(&marker_id)
         .cloned()
-        .ok_or_else(|| format!("marker {marker_id} was not found"))
+        .ok_or_else(|| format!("marker {marker_id} was not found"))?;
+
+    Ok(limit_marker_payload_for_ui(payload))
 }
 
 #[tauri::command]
@@ -1185,7 +1190,10 @@ fn scan_log_markers(
         let timestamp_content = split_timestamped_line(&line_text);
 
         if let Some(current) = open_stack.take() {
-            if timestamp_content.is_some() || parse_message_header(&line_text).is_some() {
+            if timestamp_content.is_some()
+                || parse_message_header(&line_text).is_some()
+                || !is_stack_trace_continuation(&line_text)
+            {
                 close_text_marker(
                     current,
                     line_number.saturating_sub(1),
@@ -1390,6 +1398,8 @@ fn close_message_marker(
             parse_status: parse_status.clone(),
             parsed_json,
             parse_error,
+            was_truncated: false,
+            original_bytes: 0,
         },
     );
 
@@ -1432,6 +1442,8 @@ fn close_text_marker(
             parse_status: parse_status.clone(),
             parsed_json,
             parse_error,
+            was_truncated: false,
+            original_bytes: 0,
         },
     );
 
@@ -1475,6 +1487,8 @@ fn push_json_marker(
             parse_status: "ok".to_string(),
             parsed_json: Some(parsed_json),
             parse_error: None,
+            was_truncated: false,
+            original_bytes: 0,
         },
     );
 
@@ -1518,6 +1532,8 @@ fn push_raw_marker(
             parse_status: "raw".to_string(),
             parsed_json: None,
             parse_error: None,
+            was_truncated: false,
+            original_bytes: 0,
         },
     );
 
@@ -1648,6 +1664,57 @@ fn try_lenient_json_parse(raw: &str) -> Option<serde_json::Value> {
     }
 
     None
+}
+
+fn is_stack_trace_continuation(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    trimmed.starts_with("(Filename:")
+        || trimmed.starts_with("at ")
+        || trimmed.starts_with("[C]:")
+        || trimmed.starts_with("UnityEngine.")
+        || trimmed.starts_with("System.")
+        || trimmed.starts_with("SPGF.")
+        || trimmed.starts_with("Assets/")
+        || trimmed.contains(": in function ")
+        || trimmed.contains(": in main chunk")
+        || trimmed.contains(") [0x")
+}
+
+fn limit_marker_payload_for_ui(mut payload: MarkerPayload) -> MarkerPayload {
+    payload.original_bytes = payload.raw_text.len();
+    if payload.raw_text.len() <= MAX_MARKER_PAYLOAD_BYTES {
+        return payload;
+    }
+
+    let truncated = truncate_utf8_to_bytes(&payload.raw_text, MAX_MARKER_PAYLOAD_BYTES);
+    payload.raw_text = format!(
+        "{truncated}\n\n...[truncated, showing first {} bytes of {} bytes]",
+        MAX_MARKER_PAYLOAD_BYTES, payload.original_bytes
+    );
+    payload.parsed_json = None;
+    payload.was_truncated = true;
+    payload.parse_status = "truncated".to_string();
+    payload.parse_error = Some(format!(
+        "Marker payload exceeds {} bytes; UI preview is truncated to {} bytes.",
+        MAX_MARKER_PAYLOAD_BYTES, MAX_MARKER_PAYLOAD_BYTES
+    ));
+    payload
+}
+
+fn truncate_utf8_to_bytes(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
 }
 
 /// Escape control characters (U+0000..U+001F) that appear **inside JSON
@@ -2616,6 +2683,7 @@ mod tests {
             .get(&session.markers[0].id)
             .expect("payload exists");
         assert_eq!(payload.parsed_json.as_ref().unwrap()["AppVersion"], 300);
+        assert!(!payload.was_truncated);
         fs::remove_file(path).unwrap();
     }
 
@@ -2692,6 +2760,61 @@ mod tests {
             .iter()
             .any(|marker| marker.kind == "keyword" && marker.start_line == 7));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn closes_stack_trace_before_next_plain_log_line() {
+        let path = test_file_path("stack-end.log");
+        fs::write(
+            &path,
+            concat!(
+                "System.Exception: boom\n",
+                "stack traceback:\n",
+                "\tAssets/Lua~/foo.lua:1: in main chunk\n",
+                "  at Game.Main() [0x00001] in Game.cs:10\n",
+                "\n",
+                "(Filename: Game.cs Line: 10)\n",
+                "\n",
+                "Failed to create MaterialEnum, enum UnityEngine.Rendering.ztest not found\n",
+            ),
+        )
+        .unwrap();
+
+        let session = LogSession::open(path.clone()).unwrap();
+        let stack_marker = session
+            .markers
+            .iter()
+            .find(|marker| marker.kind == "error_stack")
+            .expect("stack marker exists");
+        assert_eq!(stack_marker.start_line, 2);
+        assert_eq!(stack_marker.end_line, 7);
+        let payload = session
+            .marker_payloads
+            .get(&stack_marker.id)
+            .expect("stack payload exists");
+        assert!(!payload.raw_text.contains("Failed to create MaterialEnum"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn truncates_large_marker_payload_for_ui_preview() {
+        let payload = MarkerPayload {
+            marker_id: "marker-1".to_string(),
+            raw_text: "a".repeat(MAX_MARKER_PAYLOAD_BYTES + 128),
+            parse_status: "raw".to_string(),
+            parsed_json: Some(serde_json::json!({ "large": true })),
+            parse_error: None,
+            was_truncated: false,
+            original_bytes: 0,
+        };
+
+        let limited = limit_marker_payload_for_ui(payload);
+        assert!(limited.was_truncated);
+        assert_eq!(limited.original_bytes, MAX_MARKER_PAYLOAD_BYTES + 128);
+        assert_eq!(limited.parse_status, "truncated");
+        assert!(limited.parsed_json.is_none());
+        assert!(limited.raw_text.len() > MAX_MARKER_PAYLOAD_BYTES);
+        assert!(limited.raw_text.contains("truncated"));
     }
 
     #[test]

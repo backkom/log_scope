@@ -182,7 +182,7 @@ Rust core 负责：
 阶段 3 第一版当前实现：
 
 - Rust command `get_log_markers(sessionId, startLine?, endLine?)` 返回当前 session 的 marker 摘要，可按行范围过滤。
-- Rust command `get_marker_payload(sessionId, markerId)` 按需返回 marker body；前端不在 marker 摘要中持有完整 payload。
+- Rust command `get_marker_payload(sessionId, markerId)` 按需返回 marker body；前端不在 marker 摘要中持有完整 payload。为避免超大 marker 详情卡死 UI，当前返回给前端的 payload 预览限制为 64 KiB；超限时标记为截断预览，不返回 JSON tree。
 - 当前已实现 `Send Message` / `Receive Message` 网络消息块提取，字段包括 `direction`、`message_id`、`message_name`、起止行号、起止字节偏移、颜色和 JSON 解析状态。
 - 消息块结束规则：优先遇到 `============================================` 分隔线结束；若缺少分隔线，则遇到下一条消息 header 前结束；文件结尾仍会关闭当前块。
 - 消息 body 尝试按严格 JSON 解析；解析失败时保留 raw text 并标记 `parse_status = raw`，不影响 marker 生成。
@@ -194,6 +194,7 @@ Rust core 负责：
   - Marker 坐标系：右侧 Canvas 展示一个连续的 8 视口窗口。该窗口由当前 `firstVisibleLine` 和全文件滚动比例共同计算，使当前视口范围映射到矩形框内部；marker 只在落入该窗口时绘制，并按窗口内相对行号映射到纵向位置。
 - 右侧 minimap 的滑块位置、marker 窗口和 viewer 可见行都必须由同一个当前视口状态派生；拖动滑块时需要立即同步 viewer scrollTop/firstVisibleLine，使 marker 位置和矩形位置一起更新。矩形内点击不改变视口，矩形上/下方点击分别按一个当前视口高度向上/向下翻动。
 - 当前已补充轻量 extractor：单行 JSON 事件（优先用 `event_name` 作为标题）、`ChangeState ... { ... }` 块、Lua `stack traceback:` 块、基础关键字 marker（error/failed/not found/exception/warn/corrupt/currupted）。
+- `stack traceback:` 多行 marker 不能仅靠时间戳结束；需要按续行特征（Lua/C# 栈帧、`(Filename: ...)`、空行等）收口，遇到普通日志行时立即结束，避免错误吞并到文件末尾。
 - 当前 marker 索引在打开文件后构建；文件追加或截断刷新后会重建 marker 索引。该方案先保证正确性，后续高频 tail 压测如暴露成本，再改为增量 marker 扫描。
 
 ## Socket 协议
@@ -304,7 +305,7 @@ Rust command：
 - macOS：`yarn run package:macos`，内部执行 `scripts/package-macos.sh`，默认生成未签名 `.app` 和 `.dmg`。本机 macOS 已验证可产出 `src-tauri/target/release/bundle/macos/LogScope.app` 和 `src-tauri/target/release/bundle/dmg/LogScope_0.1.0_aarch64.dmg`。如需签名/公证，配置 Tauri 所需证书环境后使用 `LOGSCOPE_SIGN=1` 或脚本 `--sign`。
 - Windows：`yarn run package:windows`，内部执行 `scripts/package-windows.ps1`，默认请求 Tauri 生成 `nsis,msi` 安装包；该脚本必须在 Windows 主机执行，macOS 当前只维护脚本内容，实际安装包待 Windows 验证。
 
-图标资源由 `src-tauri/icons/icon.png` 生成，并已补齐 Tauri 打包需要的 `.icns`、`.ico` 和 PNG 尺寸资源。后续更换图标时需重新执行 `yarn tauri icon src-tauri/icons/icon.png --output src-tauri/icons` 并重新跑至少 macOS 打包 smoke test。
+图标资源由 `src-tauri/icons/icon.png` 生成，并已补齐 Tauri 打包需要的 `.icns`、`.ico` 和 PNG 尺寸资源。后续更换图标时统一执行 `yarn run icons:sync` 更新全部派生图标；该脚本内部等价于 `tauri icon src-tauri/icons/icon.png --output src-tauri/icons`。图标更新后需重新跑至少 macOS 打包 smoke test。
 
 ## 虚拟化 Viewer 要求
 
