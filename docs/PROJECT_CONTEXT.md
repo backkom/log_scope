@@ -215,6 +215,7 @@ Frame 格式：
 - socket reader 后台读取 `logscope-frame-v1` frame，将 record 文本追加到临时文件。
 - 前端继续通过既有 `refresh_log_file`、`get_log_lines`、`get_log_markers` 路径读取 socket session，因此 socket 流复用现有虚拟化 viewer、follow tail、搜索和 marker/minimap 能力。
 - 仓库提供 `scripts/logscope_socket_server.py` 作为本地测试服务端，默认监听 `127.0.0.1:8765`，持续发送随机 log，并定期伪造单行 JSON marker 和 `Send/Receive Message` marker 块。
+- 仓库提供 `scripts/LogSender.cs` 作为 Unity 侧发送端参考实现：`LogSender.Instance.Configure(subnetmask, name)` 启动 TCP 8765 服务和 UDP 9876 发现广播，`SendLog(log)` 按 `log.batch` frame 发送到已连接客户端；`name` 直接前置拼接到主机名用于发现列表展示，`subnetmask` 可传子网掩码或广播地址。
 
 当前限制：
 
