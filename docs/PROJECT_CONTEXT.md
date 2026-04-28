@@ -1,6 +1,6 @@
 # 项目上下文
 
-最后更新：2026-04-27
+最后更新：2026-04-28
 
 本文档是 `log_scope` 的长期项目记忆。后续 AI agent 和开发者在做项目决策前应先阅读本文档；当需求、架构、取舍或实现细节发生变化时，必须同步更新本文档。
 
@@ -34,6 +34,8 @@
 
 - 最近打开的文件路径。
 - 最近连接过的 IP/端口组合。
+- 最近 socket 连接记录的展示名需要尽量与“连接 Socket”发现列表一致，优先显示 `hostname · ip:port`；若缺少 hostname，则至少显示 `ip:port`。
+- `lastSource` 恢复 socket 时也要保留 `hostname`；不能因为自动重连时只拿到 `host/port` 就把 recent 记录里已有的 hostname 覆盖成空。
 - 后续可按需要保存每个数据源的展示、搜索、过滤状态。
 
 ## 主界面要求
@@ -59,7 +61,14 @@
   3. Marker 列表：按 startLine 升序排列（越新越靠下），可滚动；点击条目触发右侧 viewer 跳转并加载 payload 详情。过滤只影响列表本身，不影响 minimap。
   4. Marker 详情区：选中 marker 后展示其类型、方向、行号、解析状态；如 payload 为合法 JSON，则通过 JSON Tree View 折叠展示，否则显示原始载荷。
 - 当左侧面板显示时，键盘上下方向键属于整个 app 的全局快捷键：可在过滤后的 marker 列表中导航当前选中项；到达首项或末项后停止，不做循环跳转。若焦点在输入框、下拉框或其它可编辑控件内，则仍保留控件自身的方向键行为。右侧 minimap 选中 marker 时，如列表中存在该 marker 也会同步滚动到对应条目。
+- Marker kind 过滤按钮的开关状态属于用户显式选择；tail/append 刷新时只能为“首次出现的新 kind”默认开启，不能把用户已关闭的 kind 自动重新打开。
 - 不放任何全局的查找、定位操作入口；查找、行号跳转等全局 viewer 操作均通过快捷键、覆盖浮层和 viewer 内部交互触发。
+- Marker 详情区标题右侧使用图标按钮；点击后应复制该 marker 在原始日志中的完整文本切片，而不是仅复制 title 或仅复制解析后的 body 预览。
+- Marker 全文复制应由 Tauri/Rust 原生侧写入系统剪贴板，不依赖浏览器 `navigator.clipboard`，避免异步取全文后丢失用户手势而触发 `NotAllowedError`。
+- Marker 复制语义：
+- 若 marker payload 已解析为 JSON，则复制格式化后的 JSON。
+- 若 marker 为 `Send/Receive Message`，则复制转换后的 JSON，至少包含 `direction`、`messageId`、`messageName`、`lineTime`、`startLine/endLine`、`parseStatus` 和 `payload`。
+- 其它无法解析为 JSON 的 marker，复制其原始日志文本切片。
 中部（Viewer 核心区）：
 - 以只读文本编辑器风格展示 log。
 - 显示行号。
@@ -215,8 +224,11 @@ Frame 格式：
 - Rust command `connect_log_socket(host, port)` 主动 TCP 连接服务端，连接成功后创建一个临时 socket session 文件。
 - socket reader 后台读取 `logscope-frame-v1` frame，将 record 文本追加到临时文件。
 - 前端继续通过既有 `refresh_log_file`、`get_log_lines`、`get_log_markers` 路径读取 socket session，因此 socket 流复用现有虚拟化 viewer、follow tail、搜索和 marker/minimap 能力。
-- 仓库提供 `scripts/logscope_socket_server.py` 作为本地测试服务端，默认监听 `127.0.0.1:8765`，持续发送随机 log，并定期伪造单行 JSON marker 和 `Send/Receive Message` marker 块。
+- 仓库提供 `scripts/logscope_socket_server.py` 作为本地测试服务端，默认监听 `0.0.0.0:8765`，持续发送随机 log，并定期伪造单行 JSON marker 和 `Send/Receive Message` marker 块；如只需本机自测，可显式传 `--host 127.0.0.1`。
+- 若 `scripts/logscope_socket_server.py` 开启 UDP discovery 但传入 `--host 127.0.0.1` 或 `localhost`，脚本应自动切换为 `0.0.0.0` 并打印提示，避免 discovery 暴露一个实际只监听回环地址的 TCP 端口。
 - 仓库提供 `scripts/LogSender.cs` 作为 Unity 侧发送端参考实现：`LogSender.Instance.Configure(subnetmask, name)` 启动 TCP 服务和 UDP 9876 发现广播，默认从调用方请求的 TCP 端口开始监听；若端口被同机其他 sender 占用，则最多继续尝试后续 3 个端口（共 4 次，例如请求 9876 时会尝试到 9879），并为每次尝试成功/失败输出日志，最终把实际监听端口写入 discovery 广播。`SendLog(log)` 按 `log.batch` frame 发送到已连接客户端；`name` 直接前置拼接到主机名用于发现列表展示，`subnetmask` 可传子网掩码或广播地址。
+- UDP discovery 接收端如发现广播里的 `host` 为空、`127.0.0.1`、`0.0.0.0` 或 `localhost`，应回退为 UDP 包源地址，避免跨机器连接时误连到本机回环地址。
+- `scripts/LogSender.cs` 的本机 IPv4 选择应优先使用基于默认路由的 UDP probe 结果；只有当 probe 失败或返回回环/未指定地址时，才退回到已启用网卡上的私有 IPv4 枚举。不要默认选“第一张私网网卡”，否则在 VPN / Docker / VM 多网卡场景下容易广播出不可达地址。
 
 当前限制：
 

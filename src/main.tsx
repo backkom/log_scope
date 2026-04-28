@@ -175,6 +175,7 @@ type PersistedFileSource = {
 type PersistedSocketSource = {
   host: string;
   port: number;
+  hostname?: string | null;
   displayName: string;
   lastOpenedAt: number;
 };
@@ -184,6 +185,7 @@ type PersistedDataSource = {
   path: string | null;
   host: string | null;
   port: number | null;
+  hostname?: string | null;
 };
 
 type PersistedUiState = {
@@ -348,6 +350,15 @@ function RightPanelIcon() {
   );
 }
 
+function CopyIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="11" height="11" rx="2" ry="2" />
+      <path d="M5 15V6a2 2 0 0 1 2-2h9" />
+    </svg>
+  );
+}
+
 function App() {
   const [health, setHealth] = React.useState<HealthCheck | null>(null);
   const [placeholder, setPlaceholder] = React.useState<FileOpenPlaceholder | null>(null);
@@ -378,6 +389,7 @@ function App() {
   const [markers, setMarkers] = React.useState<LogMarker[]>([]);
   const [selectedMarker, setSelectedMarker] = React.useState<LogMarker | null>(null);
   const [selectedPayload, setSelectedPayload] = React.useState<MarkerPayload | null>(null);
+  const [copiedMarkerId, setCopiedMarkerId] = React.useState<string | null>(null);
   const [markerFilterText, setMarkerFilterText] = React.useState("");
   const [markerFilterKinds, setMarkerFilterKinds] = React.useState<Set<string>>(() => new Set());
   const [markerListScrollTop, setMarkerListScrollTop] = React.useState(0);
@@ -424,6 +436,7 @@ function App() {
   const saveUiStateTimerRef = React.useRef<number | null>(null);
   const markerListRef = React.useRef<HTMLDivElement | null>(null);
   const initialLoadDoneRef = React.useRef(false);
+  const knownMarkerKindsRef = React.useRef<Set<string>>(new Set());
 
   React.useEffect(() => {
     invoke<HealthCheck>("health_check")
@@ -446,11 +459,30 @@ function App() {
     const unlisten = listen<DiscoveredServer>("udp-server-discovered", (event) => {
       const server = event.payload;
       setDiscoveredServers((prev) => {
-        const key = `${server.host}:${server.port}`;
-        if (prev.some((s) => `${s.host}:${s.port}` === key)) {
-          return prev; // deduplicate
+        const identity = (server.hostname || server.host).trim().toLowerCase();
+        const next = [...prev];
+        const index = next.findIndex((item) => {
+          const itemIdentity = (item.hostname || item.host).trim().toLowerCase();
+          return itemIdentity === identity || item.host === server.host;
+        });
+        if (index >= 0) {
+          next[index] = server;
+        } else {
+          next.push(server);
         }
-        return [...prev, server];
+        return next;
+      });
+      setSelectedDiscoveredServerKey((current) => {
+        if (!current) {
+          return current;
+        }
+        const [currentHost, currentPort] = current.split(":");
+        const currentIdentity = (server.hostname || currentHost || server.host).trim().toLowerCase();
+        const serverIdentity = (server.hostname || server.host).trim().toLowerCase();
+        if (currentIdentity !== serverIdentity && currentHost !== server.host) {
+          return current;
+        }
+        return `${server.host}:${server.port}`;
       });
     });
 
@@ -850,6 +882,11 @@ function App() {
       setMarkers([]);
       setSelectedMarker(null);
       setSelectedPayload(null);
+      setCopiedMarkerId(null);
+      setMarkerFilterText("");
+      setMarkerFilterKinds(new Set());
+      setMarkerListScrollTop(0);
+      knownMarkerKindsRef.current = new Set();
       setSearchResult(null);
       setActiveSearchMatch(null);
       searchCacheRef.current = null;
@@ -871,13 +908,18 @@ function App() {
     }
   };
 
-  const connectSocketSource = async (normalizedHost: string, parsedPort: number) => {
+  const connectSocketSource = async (
+    normalizedHost: string,
+    parsedPort: number,
+    hostname?: string | null,
+  ) => {
     setIsConnectingSocket(true);
     setError(null);
     try {
       const metadata = await invoke<SocketConnectMetadata>("connect_log_socket", {
         host: normalizedHost,
         port: parsedPort,
+        hostname: hostname ?? null,
       });
       setLogFile({
         sessionId: metadata.sessionId,
@@ -891,6 +933,11 @@ function App() {
       setMarkers([]);
       setSelectedMarker(null);
       setSelectedPayload(null);
+      setCopiedMarkerId(null);
+      setMarkerFilterText("");
+      setMarkerFilterKinds(new Set());
+      setMarkerListScrollTop(0);
+      knownMarkerKindsRef.current = new Set();
       setSearchResult(null);
       setActiveSearchMatch(null);
       searchCacheRef.current = null;
@@ -1005,10 +1052,19 @@ function App() {
 
   // Auto-add new marker kinds to the filter set (default all ON)
   React.useEffect(() => {
+    const unseenKinds = markerKinds.filter((kind) => !knownMarkerKindsRef.current.has(kind));
+    if (unseenKinds.length === 0) {
+      return;
+    }
+
+    for (const kind of unseenKinds) {
+      knownMarkerKindsRef.current.add(kind);
+    }
+
     setMarkerFilterKinds((prev) => {
       const next = new Set(prev);
       let changed = false;
-      for (const kind of markerKinds) {
+      for (const kind of unseenKinds) {
         if (!next.has(kind)) {
           next.add(kind);
           changed = true;
@@ -1079,6 +1135,7 @@ function App() {
       setSelectedMarker(marker);
       setShowSourcePanel(true);
       setSelectedPayload(null);
+      setCopiedMarkerId(null);
       if (!isMarkerInViewport(marker)) {
         scrollToLineCentered(marker.startLine);
       }
@@ -1097,6 +1154,26 @@ function App() {
     },
     [isMarkerInViewport, logFile, scrollToLineCentered, scrollMarkerListToSelected],
   );
+
+  const copySelectedMarkerText = React.useCallback(async () => {
+    if (!selectedMarker || !logFile) {
+      return;
+    }
+    try {
+      const fullText = await invoke<string>("get_marker_copy_text", {
+        sessionId: logFile.sessionId,
+        markerId: selectedMarker.id,
+      });
+      await invoke("copy_text_to_clipboard", { text: fullText });
+      setCopiedMarkerId(selectedMarker.id);
+      window.setTimeout(() => {
+        setCopiedMarkerId((current) => (current === selectedMarker.id ? null : current));
+      }, 1500);
+      setError(null);
+    } catch (err) {
+      setError(`复制 Marker 文本失败: ${String(err)}`);
+    }
+  }, [logFile, selectedMarker]);
 
   const focusViewer = React.useCallback(() => {
     requestAnimationFrame(() => {
@@ -1639,7 +1716,11 @@ function App() {
       if (persistedStore.lastSource?.kind === "file" && persistedStore.lastSource.path) {
         void openPath(persistedStore.lastSource.path);
       } else if (persistedStore.lastSource?.kind === "socket" && persistedStore.lastSource.host && persistedStore.lastSource.port) {
-        void connectSocketSource(persistedStore.lastSource.host, persistedStore.lastSource.port);
+        void connectSocketSource(
+          persistedStore.lastSource.host,
+          persistedStore.lastSource.port,
+          persistedStore.lastSource.hostname,
+        );
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1813,14 +1894,25 @@ function App() {
             <div className="marker-detail-area" style={{ flex: Math.max(0.01, 1 - markerSplitRatio) }}>
               {selectedMarker ? (
                 <>
-                  <button type="button" className="marker-summary" onClick={() => scrollToLine(selectedMarker.startLine)}>
-                    <span className="marker-dot" style={{ background: selectedMarker.color }} />
-                    <strong>{selectedMarker.title}</strong>
-                    <small>
-                      {selectedMarker.kind} {selectedMarker.direction ? `· ${selectedMarker.direction}` : ""} · L
-                      {selectedMarker.startLine} · {selectedMarker.parseStatus}
-                    </small>
-                  </button>
+                  <div className="marker-summary-row">
+                    <button type="button" className="marker-summary" onClick={() => scrollToLine(selectedMarker.startLine)}>
+                      <span className="marker-dot" style={{ background: selectedMarker.color }} />
+                      <strong>{selectedMarker.title}</strong>
+                      <small>
+                        {selectedMarker.kind} {selectedMarker.direction ? `· ${selectedMarker.direction}` : ""} · L
+                        {selectedMarker.startLine} · {selectedMarker.parseStatus}
+                      </small>
+                    </button>
+                    <button
+                      type="button"
+                      className={`marker-copy-button${copiedMarkerId === selectedMarker.id ? " is-copied" : ""}`}
+                      onClick={() => void copySelectedMarkerText()}
+                      title="复制 Marker 全部文本"
+                      aria-label="复制 Marker 全部文本"
+                    >
+                      <CopyIcon />
+                    </button>
+                  </div>
                   {!selectedPayload ? <pre className="payload-preview">载入中...</pre> : null}
                   {(() => {
                     const jsonData = selectedPayload?.parsedJson ?? null;
@@ -2239,7 +2331,11 @@ function App() {
                   if (!selectedDiscoveredServer) {
                     return;
                   }
-                  void connectSocketSource(selectedDiscoveredServer.host, selectedDiscoveredServer.port).then((connected) => {
+                  void connectSocketSource(
+                    selectedDiscoveredServer.host,
+                    selectedDiscoveredServer.port,
+                    selectedDiscoveredServer.hostname,
+                  ).then((connected) => {
                     if (connected) {
                       setShowSocketModal(false);
                     }

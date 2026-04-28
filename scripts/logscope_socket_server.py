@@ -214,7 +214,7 @@ def broadcast_discovery(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a logscope-frame-v1 random log server.")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--interval", type=float, default=0.08, help="seconds between batches")
     parser.add_argument("--batch-size", type=int, default=8)
@@ -236,6 +236,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if not args.no_broadcast and args.host in ("127.0.0.1", "localhost"):
+        print(
+            "discovery is enabled while host is loopback; switching TCP listener to 0.0.0.0 for LAN access",
+            flush=True,
+        )
+        args.host = "0.0.0.0"
     with LogScopeServer((args.host, args.port), args) as server:
         print(
             f"logscope-frame-v1 server listening on {args.host}:{args.port} "

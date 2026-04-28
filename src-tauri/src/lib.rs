@@ -3,6 +3,7 @@ use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     net::{TcpStream, UdpSocket},
+    process::{Command, Stdio},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -151,6 +152,7 @@ struct PersistedFileSource {
 struct PersistedSocketSource {
     host: String,
     port: u16,
+    hostname: Option<String>,
     display_name: String,
     last_opened_at: u64,
 }
@@ -162,6 +164,7 @@ struct PersistedDataSource {
     path: Option<String>,
     host: Option<String>,
     port: Option<u16>,
+    hostname: Option<String>,
 }
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
@@ -392,6 +395,7 @@ async fn run_core_benchmark(
 async fn connect_log_socket(
     host: String,
     port: u16,
+    hostname: Option<String>,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<SocketConnectMetadata, String> {
@@ -401,10 +405,20 @@ async fn connect_log_socket(
     }
 
     let address = format!("{normalized_host}:{port}");
+    let connect_host = normalized_host.clone();
     let stream = tauri::async_runtime::spawn_blocking(move || TcpStream::connect(address))
         .await
         .map_err(|err| format!("failed to join socket connect task: {err}"))?
-        .map_err(|err| format!("failed to connect socket: {err}"))?;
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::ConnectionRefused {
+                format!(
+                    "failed to connect socket: {err}. target={connect_host}:{port}. \
+possible causes: server is only listening on 127.0.0.1, the discovered port is stale after restart, or firewall blocked inbound TCP."
+                )
+            } else {
+                format!("failed to connect socket: {err}")
+            }
+        })?;
 
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -434,7 +448,7 @@ async fn connect_log_socket(
         }
     });
 
-    remember_recent_socket(&app, normalized_host.clone(), port)?;
+    remember_recent_socket(&app, normalized_host.clone(), port, hostname)?;
 
     Ok(SocketConnectMetadata {
         session_id,
@@ -472,18 +486,28 @@ async fn start_udp_discovery(
         let mut buf = [0u8; 1024];
         while active_flag.load(Ordering::SeqCst) {
             match socket.recv_from(&mut buf) {
-                Ok((len, _addr)) => {
+                Ok((len, addr)) => {
                     if let Ok(text) = std::str::from_utf8(&buf[..len]) {
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
                             if value.get("protocol").and_then(|v| v.as_str())
                                 == Some("logscope-discovery-v1")
                             {
+                                let advertised_host = value
+                                    .get("host")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .trim();
+                                let host = if advertised_host.is_empty()
+                                    || advertised_host == "127.0.0.1"
+                                    || advertised_host == "0.0.0.0"
+                                    || advertised_host.eq_ignore_ascii_case("localhost")
+                                {
+                                    addr.ip().to_string()
+                                } else {
+                                    advertised_host.to_string()
+                                };
                                 let server = DiscoveredServer {
-                                    host: value
-                                        .get("host")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
+                                    host,
                                     port: value
                                         .get("port")
                                         .and_then(|v| v.as_u64())
@@ -667,6 +691,47 @@ fn get_marker_payload(
         .ok_or_else(|| format!("marker {marker_id} was not found"))?;
 
     Ok(limit_marker_payload_for_ui(payload))
+}
+
+#[tauri::command]
+fn get_marker_copy_text(
+    session_id: u64,
+    marker_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let session = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "log session state is unavailable".to_string())?;
+        Arc::clone(
+            sessions
+                .get(&session_id)
+                .ok_or_else(|| format!("log session {session_id} was not found"))?,
+        )
+    };
+
+    let session = session
+        .lock()
+        .map_err(|_| format!("log session {session_id} is unavailable"))?;
+    let marker = session
+        .markers
+        .iter()
+        .find(|marker| marker.id == marker_id)
+        .cloned()
+        .ok_or_else(|| format!("marker {marker_id} was not found"))?;
+    let payload = session
+        .marker_payloads
+        .get(&marker_id)
+        .cloned()
+        .ok_or_else(|| format!("marker {marker_id} payload was not found"))?;
+
+    build_marker_copy_text(&session.path, &marker, &payload)
+}
+
+#[tauri::command]
+fn copy_text_to_clipboard(text: String) -> Result<(), String> {
+    write_text_to_system_clipboard(&text)
 }
 
 #[tauri::command]
@@ -2142,6 +2207,102 @@ fn write_socket_text_record<W: Write>(writer: &mut W, text: &str) -> std::io::Re
     Ok(())
 }
 
+fn read_marker_text_from_file(path: &PathBuf, start_byte: u64, end_byte: u64) -> std::io::Result<String> {
+    let byte_len = end_byte.saturating_sub(start_byte) as usize;
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(start_byte))?;
+    let mut buffer = vec![0_u8; byte_len];
+    file.read_exact(&mut buffer)?;
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
+}
+
+fn build_marker_copy_text(
+    path: &PathBuf,
+    marker: &LogMarker,
+    payload: &MarkerPayload,
+) -> Result<String, String> {
+    if marker.kind == "message" {
+        let payload_value = payload
+            .parsed_json
+            .clone()
+            .unwrap_or_else(|| serde_json::Value::String(payload.raw_text.clone()));
+        let value = serde_json::json!({
+            "direction": marker.direction,
+            "messageId": marker.message_id,
+            "messageName": marker.message_name,
+            "lineTime": marker.line_time,
+            "startLine": marker.start_line,
+            "endLine": marker.end_line,
+            "parseStatus": payload.parse_status,
+            "payload": payload_value,
+        });
+        return serde_json::to_string_pretty(&value)
+            .map_err(|err| format!("failed to encode message json: {err}"));
+    }
+
+    if let Some(value) = &payload.parsed_json {
+        return serde_json::to_string_pretty(value)
+            .map_err(|err| format!("failed to encode marker json: {err}"));
+    }
+
+    read_marker_text_from_file(path, marker.start_byte, marker.end_byte)
+        .map_err(|err| format!("failed to read marker text: {err}"))
+}
+
+fn write_text_to_system_clipboard(text: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|err| format!("failed to launch pbcopy: {err}"))?;
+        {
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| "pbcopy stdin is unavailable".to_string())?;
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|err| format!("failed to write clipboard text: {err}"))?;
+        }
+        let status = child
+            .wait()
+            .map_err(|err| format!("failed to wait for pbcopy: {err}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("pbcopy exited with status {status}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut child = Command::new("cmd")
+            .args(["/C", "clip"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|err| format!("failed to launch clip: {err}"))?;
+        {
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| "clip stdin is unavailable".to_string())?;
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|err| format!("failed to write clipboard text: {err}"))?;
+        }
+        let status = child
+            .wait()
+            .map_err(|err| format!("failed to wait for clip: {err}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("clip exited with status {status}"));
+    }
+
+    #[allow(unreachable_code)]
+    Err("clipboard copy is only implemented for macOS and Windows".to_string())
+}
+
 impl Default for PersistedStore {
     fn default() -> Self {
         Self {
@@ -2225,24 +2386,42 @@ fn remember_recent_file(app: &tauri::AppHandle, path: String) -> Result<(), Stri
         path: Some(path),
         host: None,
         port: None,
+        hostname: None,
     });
     let result = save_persisted_store(app, &store).map_err(|err| err.to_string());
     deferred_update_app_menu(app);
     result
 }
 
-fn remember_recent_socket(app: &tauri::AppHandle, host: String, port: u16) -> Result<(), String> {
+fn remember_recent_socket(
+    app: &tauri::AppHandle,
+    host: String,
+    port: u16,
+    hostname: Option<String>,
+) -> Result<(), String> {
     let mut store = load_persisted_store(app).map_err(|err| err.to_string())?;
     let now = unix_timestamp_seconds();
+    let existing_hostname = store
+        .recent_sockets
+        .iter()
+        .find(|source| source.host == host && source.port == port)
+        .and_then(|source| source.hostname.clone());
+    let normalized_hostname = normalize_hostname(hostname.as_deref(), &host)
+        .or(existing_hostname);
     store
         .recent_sockets
         .retain(|source| source.host != host || source.port != port);
     store.recent_sockets.insert(
         0,
         PersistedSocketSource {
-            display_name: format!("{host}:{port}"),
+            display_name: display_name_for_socket(
+                normalized_hostname.as_deref(),
+                &host,
+                port,
+            ),
             host: host.clone(),
             port,
+            hostname: normalized_hostname.clone(),
             last_opened_at: now,
         },
     );
@@ -2252,6 +2431,7 @@ fn remember_recent_socket(app: &tauri::AppHandle, host: String, port: u16) -> Re
         path: None,
         host: Some(host),
         port: Some(port),
+        hostname: normalized_hostname,
     });
     let result = save_persisted_store(app, &store).map_err(|err| err.to_string());
     deferred_update_app_menu(app);
@@ -2266,6 +2446,26 @@ fn sanitize_store(mut store: PersistedStore) -> PersistedStore {
     store
         .recent_sockets
         .retain(|source| !source.host.trim().is_empty() && source.port > 0);
+    for source in &mut store.recent_sockets {
+        source.hostname = normalize_hostname(source.hostname.as_deref(), &source.host);
+        source.display_name = display_name_for_socket(
+            source.hostname.as_deref(),
+            &source.host,
+            source.port,
+        );
+    }
+    if let Some(last_source) = &mut store.last_source {
+        last_source.hostname = normalize_hostname(last_source.hostname.as_deref(), last_source.host.as_deref().unwrap_or_default());
+        if last_source.kind == "socket" && last_source.hostname.is_none() {
+            if let (Some(host), Some(port)) = (last_source.host.as_deref(), last_source.port) {
+                last_source.hostname = store
+                    .recent_sockets
+                    .iter()
+                    .find(|source| source.host == host && source.port == port)
+                    .and_then(|source| source.hostname.clone());
+            }
+        }
+    }
     store.recent_files.truncate(12);
     store.recent_sockets.truncate(12);
     store.ui_state = sanitize_ui_state(store.ui_state);
@@ -2285,6 +2485,23 @@ fn sanitize_ui_state(mut ui_state: PersistedUiState) -> PersistedUiState {
 
 fn display_name_for_path(path: &str) -> String {
     path.to_string()
+}
+
+fn normalize_hostname(hostname: Option<&str>, host: &str) -> Option<String> {
+    let trimmed = hostname.unwrap_or_default().trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case(host) {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn display_name_for_socket(hostname: Option<&str>, host: &str, port: u16) -> String {
+    let trimmed_host = host.trim();
+    match hostname.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(name) => format!("{name} · {trimmed_host}:{port}"),
+        None => format!("{trimmed_host}:{port}"),
+    }
 }
 
 fn unix_timestamp_seconds() -> u64 {
@@ -2544,6 +2761,8 @@ pub fn run() {
             get_log_lines,
             get_log_markers,
             get_marker_payload,
+            get_marker_copy_text,
+            copy_text_to_clipboard,
             refresh_log_file,
             search_log_text
         ])

@@ -759,7 +759,15 @@ button:disabled {
   flex: 1;
 }
 
+.marker-summary-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .marker-summary {
+  flex: 1;
   flex-shrink: 0;
   display: grid;
   grid-template-columns: 12px minmax(0, 1fr);
@@ -772,6 +780,35 @@ button:disabled {
   color: #e0e4e0;
   padding: 8px 10px;
   text-align: left;
+}
+
+.marker-copy-button {
+  flex: 0 0 auto;
+  width: 38px;
+  border: 1px solid #4e5649;
+  border-radius: 7px;
+  background: #30342b;
+  color: #d0d5cf;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.marker-copy-button:hover {
+  background: #3e423a;
+  border-color: #636860;
+  color: #eef3ee;
+}
+
+.marker-copy-button.is-copied {
+  background: #173d39;
+  border-color: #2f8f83;
+  color: #b4f0e4;
 }
 
 .marker-summary strong,
