@@ -422,6 +422,7 @@ function App() {
   });
   const [persistedStore, setPersistedStore] = React.useState<PersistedStore | null>(null);
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
+  const logViewportRef = React.useRef<HTMLDivElement | null>(null);
   const globalMinimapRef = React.useRef<HTMLCanvasElement | null>(null);
   const localMinimapRef = React.useRef<HTMLCanvasElement | null>(null);
   const localMinimapDragRef = React.useRef<{
@@ -437,6 +438,7 @@ function App() {
   const markerListRef = React.useRef<HTMLDivElement | null>(null);
   const initialLoadDoneRef = React.useRef(false);
   const knownMarkerKindsRef = React.useRef<Set<string>>(new Set());
+  const pendingHorizontalRevealRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     invoke<HealthCheck>("health_check")
@@ -607,22 +609,25 @@ function App() {
     return () => cancelAnimationFrame(animationFrameId);
   }, [gotoBarOpen]);
 
+  const focusFindInput = React.useCallback((selectText = true) => {
+    if (!findInputRef.current) {
+      return;
+    }
+    findInputRef.current.focus();
+    if (selectText) {
+      findInputRef.current.select();
+    }
+  }, []);
+
   React.useEffect(() => {
     if (!findBarOpen) {
       return;
     }
 
-    const focusInput = () => {
-      if (findInputRef.current) {
-        findInputRef.current.focus();
-        findInputRef.current.select();
-      }
-    };
-
-    focusInput();
-    const animationFrameId = requestAnimationFrame(focusInput);
+    focusFindInput();
+    const animationFrameId = requestAnimationFrame(() => focusFindInput());
     return () => cancelAnimationFrame(animationFrameId);
-  }, [findBarOpen]);
+  }, [findBarOpen, focusFindInput]);
 
   const closeFindBar = React.useCallback(() => {
     setFindBarOpen(false);
@@ -1037,9 +1042,64 @@ function App() {
       if (!isLineInViewport(match.lineNumber)) {
         scrollToLineCentered(match.lineNumber);
       }
+      pendingHorizontalRevealRef.current = getSearchMatchKey(match);
     },
     [isLineInViewport, scrollToLineCentered],
   );
+
+  const revealSearchMatchHorizontally = React.useCallback((match: LogSearchMatch) => {
+    const viewport = logViewportRef.current;
+    if (!viewport) {
+      return false;
+    }
+
+    const row = viewport.querySelector<HTMLElement>(`.log-row[data-line-number="${match.lineNumber}"]`);
+    if (!row) {
+      return false;
+    }
+
+    const pieces = row.querySelectorAll<HTMLElement>(
+      `[data-search-start="${match.startColumn}"][data-search-end="${match.endColumn}"]`,
+    );
+    if (pieces.length === 0) {
+      return false;
+    }
+
+    const gutter = row.querySelector<HTMLElement>(".line-number");
+    const gutterWidth = gutter?.offsetWidth ?? 0;
+    let rangeLeft = Number.POSITIVE_INFINITY;
+    let rangeRight = Number.NEGATIVE_INFINITY;
+    const viewportRect = viewport.getBoundingClientRect();
+
+    for (const piece of pieces) {
+      const pieceRect = piece.getBoundingClientRect();
+      rangeLeft = Math.min(rangeLeft, viewport.scrollLeft + pieceRect.left - viewportRect.left);
+      rangeRight = Math.max(rangeRight, viewport.scrollLeft + pieceRect.right - viewportRect.left);
+    }
+
+    if (!Number.isFinite(rangeLeft) || !Number.isFinite(rangeRight)) {
+      return false;
+    }
+
+    const padding = 24;
+    const visibleLeft = viewport.scrollLeft + gutterWidth;
+    const visibleRight = viewport.scrollLeft + viewport.clientWidth;
+    if (rangeLeft >= visibleLeft + padding && rangeRight <= visibleRight - padding) {
+      return true;
+    }
+
+    let nextScrollLeft = viewport.scrollLeft;
+    if (rangeLeft < visibleLeft + padding) {
+      nextScrollLeft = Math.max(0, rangeLeft - gutterWidth - padding);
+    } else if (rangeRight > visibleRight - padding) {
+      nextScrollLeft = Math.max(0, rangeRight - viewport.clientWidth + padding);
+    }
+
+    if (Math.abs(nextScrollLeft - viewport.scrollLeft) > 1) {
+      viewport.scrollLeft = nextScrollLeft;
+    }
+    return true;
+  }, []);
 
   // Derived: unique marker kinds for filter buttons
   const markerKinds = React.useMemo(() => {
@@ -1241,6 +1301,27 @@ function App() {
     selection?.addRange(range);
   }, []);
 
+  const getViewportSearchAnchor = React.useCallback(
+    (direction: "next" | "previous") => {
+      const shouldRestartFromViewport =
+        !activeSearchMatch || !isLineInViewport(activeSearchMatch.lineNumber);
+      if (shouldRestartFromViewport) {
+        return {
+          startLine: firstVisibleLine,
+          startColumn: 0,
+          activeMatchForNavigation: null,
+        };
+      }
+
+      return {
+        startLine: activeSearchMatch.lineNumber,
+        startColumn: direction === "next" ? activeSearchMatch.startColumn + 1 : activeSearchMatch.startColumn,
+        activeMatchForNavigation: activeSearchMatch,
+      };
+    },
+    [activeSearchMatch, firstVisibleLine, isLineInViewport],
+  );
+
   const runSearch = async (
     direction: "next" | "previous",
     override?: {
@@ -1264,10 +1345,11 @@ function App() {
     if (searchFindAll && !override?.forceRefresh) {
       const cached = searchCacheRef.current;
       if (cached && isSearchCacheValid(cached, logFile, query, searchCaseSensitive, searchRegex, searchWholeWord)) {
+        const anchor = getViewportSearchAnchor(direction);
         const nextResult = navigateCachedSearch(
           cached.result,
           direction,
-          activeSearchMatch,
+          anchor.activeMatchForNavigation,
           firstVisibleLine,
           searchWrapAround,
         );
@@ -1289,16 +1371,10 @@ function App() {
       if (override?.startLine !== undefined || override?.startColumn !== undefined) {
         startLine = override.startLine ?? firstVisibleLine;
         startColumn = override.startColumn ?? 0;
-      } else if (activeSearchMatch && activeSearchMatch.lineNumber >= 1) {
-        startLine = activeSearchMatch.lineNumber;
-        if (direction === "next") {
-          startColumn = activeSearchMatch.startColumn + 1;
-        } else {
-          startColumn = activeSearchMatch.startColumn;
-        }
       } else {
-        startLine = firstVisibleLine;
-        startColumn = 0;
+        const anchor = getViewportSearchAnchor(direction);
+        startLine = anchor.startLine;
+        startColumn = anchor.startColumn;
       }
 
       const result = await invoke<LogSearchResult>("search_log_text", {
@@ -1378,6 +1454,20 @@ function App() {
         event.preventDefault();
         const sel = window.getSelection();
         const selectedText = sel ? sel.toString().trim() : "";
+        if (findBarOpen) {
+          if (selectedText) {
+            searchCacheRef.current = null;
+            setSearchResult(null);
+            setActiveSearchMatch(null);
+            setSearchQuery(selectedText);
+          }
+          if (document.activeElement !== findInputRef.current) {
+            focusFindInput();
+          } else {
+            findInputRef.current?.select();
+          }
+          return;
+        }
         const queryToUse = selectedText || searchQuery;
         if (selectedText) {
           setSearchQuery(selectedText);
@@ -1455,6 +1545,7 @@ function App() {
     firstVisibleLine,
     openGotoLineBar,
     closeGotoLineBar,
+    focusFindInput,
     revealSearchMatchIfNeeded,
     filteredMarkers,
     selectedMarker,
@@ -1518,6 +1609,7 @@ function App() {
     [selectedMarker],
   );
   const activeSearchLine = activeSearchMatch?.lineNumber ?? 0;
+  const activeSearchMatchKey = activeSearchMatch ? getSearchMatchKey(activeSearchMatch) : null;
   const viewportLineCount = Math.max(1, Math.ceil(Math.max(viewportHeight, ROW_HEIGHT) / ROW_HEIGHT));
   const rightMinimapRange = React.useMemo(
     () => getRightMinimapRange(firstVisibleLine, viewportLineCount, Math.max(1, logFile?.lineCount ?? 1)),
@@ -1529,6 +1621,19 @@ function App() {
       setPendingTailLines(0);
     }
   }, [isNearBottom]);
+
+  React.useEffect(() => {
+    if (!activeSearchMatch || !activeSearchMatchKey) {
+      pendingHorizontalRevealRef.current = null;
+      return;
+    }
+    if (pendingHorizontalRevealRef.current !== activeSearchMatchKey) {
+      return;
+    }
+    if (revealSearchMatchHorizontally(activeSearchMatch)) {
+      pendingHorizontalRevealRef.current = null;
+    }
+  }, [activeSearchMatch, activeSearchMatchKey, renderedLines, revealSearchMatchHorizontally, scrollTop]);
 
   React.useEffect(() => {
     const canvas = globalMinimapRef.current;
@@ -1992,7 +2097,7 @@ function App() {
           >
             {logFile ? (
               <div className="viewer-scroll-space" style={{ height: scrollSpaceHeight }}>
-                <div className="log-viewport" style={{ height: viewportHeight || undefined }}>
+                <div className="log-viewport" ref={logViewportRef} style={{ height: viewportHeight || undefined }}>
                   <div className="visible-lines" style={{ transform: `translateY(${visibleOffset}px)` }}>
                     {renderedLines.map((line) => {
                       const isSelectedMarkerLine =
@@ -2163,11 +2268,12 @@ function App() {
                 placeholder="查找"
                 aria-label="查找文本"
                 onKeyDown={(event) => {
-                  event.stopPropagation();
                   if (event.key === "Escape") {
+                    event.stopPropagation();
                     event.preventDefault();
                     closeFindBar();
                   } else if (event.key === "Enter") {
+                    event.stopPropagation();
                     event.preventDefault();
                     void (async () => {
                       await runSearch(event.shiftKey ? "previous" : "next");
@@ -2544,6 +2650,10 @@ function getActiveSearchMatch(result: LogSearchResult | null) {
   return result.matches[Math.max(0, result.activeMatchIndex - 1)] ?? result.matches[0] ?? null;
 }
 
+function getSearchMatchKey(match: LogSearchMatch) {
+  return `${match.lineNumber}:${match.startColumn}:${match.endColumn}`;
+}
+
 function navigateCachedSearch(
   result: LogSearchResult,
   direction: "next" | "previous",
@@ -2572,6 +2682,13 @@ function navigateCachedSearch(
         ? result.matches.findIndex((match) => match.lineNumber >= firstVisibleLine)
         : findLastIndex(result.matches, (match) => match.lineNumber <= firstVisibleLine);
     if (nextIndex === -1) {
+      if (!wrapAround) {
+        return {
+          ...result,
+          direction,
+          wrapped: false,
+        };
+      }
       nextIndex = direction === "next" ? 0 : result.matches.length - 1;
       wrapped = true;
     }
@@ -2663,6 +2780,8 @@ function renderLogLine(
           className={`log-token token-${token.kind}${piece.searchMatched ? " search-hit" : ""}${piece.searchMatched && activeLine ? " is-active" : ""
             }${piece.selectedWordMatched ? " selected-word-hit" : ""}`}
           key={`${tokenIndex}-${pieceIndex}-${piece.start}`}
+          data-search-start={piece.searchMatched ? piece.matchStart : undefined}
+          data-search-end={piece.searchMatched ? piece.matchEnd : undefined}
         >
           {piece.text}
         </span>
@@ -2878,6 +2997,8 @@ function splitTokenByDecorationRanges(
     searchMatched: boolean;
     selectedWordMatched: boolean;
     start: number;
+    matchStart: number | null;
+    matchEnd: number | null;
   }> = [];
 
   for (let index = 0; index < sortedBoundaries.length - 1; index += 1) {
@@ -2891,16 +3012,38 @@ function splitTokenByDecorationRanges(
       searchMatched: rangeContains(searchRanges, start, end),
       selectedWordMatched: rangeContains(selectedWordRanges, start, end),
       start,
+      matchStart: getContainingRangeEdge(searchRanges, start, end, "start"),
+      matchEnd: getContainingRangeEdge(searchRanges, start, end, "end"),
     });
   }
 
   return pieces.length > 0
     ? pieces
-    : [{ text: tokenText, searchMatched: false, selectedWordMatched: false, start: tokenStart }];
+    : [{
+      text: tokenText,
+      searchMatched: false,
+      selectedWordMatched: false,
+      start: tokenStart,
+      matchStart: null,
+      matchEnd: null,
+    }];
 }
 
 function rangeContains(ranges: Array<{ start: number; end: number }>, start: number, end: number) {
   return ranges.some((range) => range.start <= start && range.end >= end);
+}
+
+function getContainingRangeEdge(
+  ranges: Array<{ start: number; end: number }>,
+  start: number,
+  end: number,
+  edge: "start" | "end",
+) {
+  const range = ranges.find((item) => item.start <= start && item.end >= end);
+  if (!range) {
+    return null;
+  }
+  return edge === "start" ? range.start : range.end;
 }
 
 function getSeverityClass(text: string | undefined, colorMode: "full" | "severity" | "off") {
