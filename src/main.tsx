@@ -375,7 +375,8 @@ function App() {
   const [showSocketModal, setShowSocketModal] = React.useState(false);
   const [discoveredServers, setDiscoveredServers] = React.useState<DiscoveredServer[]>([]);
   const [discoveryRefreshToken, setDiscoveryRefreshToken] = React.useState(0);
-  const [selectedDiscoveredServerKey, setSelectedDiscoveredServerKey] = React.useState<string | null>(null);
+  const [socketHostInput, setSocketHostInput] = React.useState("");
+  const [socketPortInput, setSocketPortInput] = React.useState("");
   const [isDisconnected, setIsDisconnected] = React.useState(false);
   const [showSourcePanel, setShowSourcePanel] = React.useState(false);
   const [sourcePanelWidth, setSourcePanelWidth] = React.useState(280);
@@ -450,12 +451,10 @@ function App() {
   React.useEffect(() => {
     if (!showSocketModal) {
       invoke("stop_udp_discovery").catch(() => {});
-      setSelectedDiscoveredServerKey(null);
       return;
     }
     // Start listening and clear previous results
     setDiscoveredServers([]);
-    setSelectedDiscoveredServerKey(null);
     invoke("start_udp_discovery").catch(() => {});
 
     const unlisten = listen<DiscoveredServer>("udp-server-discovered", (event) => {
@@ -473,18 +472,6 @@ function App() {
           next.push(server);
         }
         return next;
-      });
-      setSelectedDiscoveredServerKey((current) => {
-        if (!current) {
-          return current;
-        }
-        const [currentHost, currentPort] = current.split(":");
-        const currentIdentity = (server.hostname || currentHost || server.host).trim().toLowerCase();
-        const serverIdentity = (server.hostname || server.host).trim().toLowerCase();
-        if (currentIdentity !== serverIdentity && currentHost !== server.host) {
-          return current;
-        }
-        return `${server.host}:${server.port}`;
       });
     });
 
@@ -964,10 +951,58 @@ function App() {
     }
   };
 
-  const selectedDiscoveredServer = React.useMemo(
-    () => discoveredServers.find((server) => `${server.host}:${server.port}` === selectedDiscoveredServerKey) ?? null,
-    [discoveredServers, selectedDiscoveredServerKey],
+  const normalizedSocketHost = socketHostInput.trim();
+  const normalizedSocketPortText = socketPortInput.trim();
+  const parsedSocketPort = Number.parseInt(socketPortInput, 10);
+  const hasSocketEndpointInput = normalizedSocketHost.length > 0 && normalizedSocketPortText.length > 0;
+  const isSocketPortValid = Number.isInteger(parsedSocketPort) && parsedSocketPort > 0 && parsedSocketPort <= 65535;
+  const matchedDiscoveredServer = React.useMemo(
+    () => discoveredServers.find((server) => server.host === normalizedSocketHost && server.port === parsedSocketPort) ?? null,
+    [discoveredServers, normalizedSocketHost, parsedSocketPort],
   );
+
+  const handleSocketModalClose = React.useCallback(() => {
+    setShowSocketModal(false);
+  }, []);
+
+  const handleDiscoveredServerPick = React.useCallback((server: DiscoveredServer) => {
+    setSocketHostInput(server.host);
+    setSocketPortInput(String(server.port));
+  }, []);
+
+  const handleConnectSocketFromInput = React.useCallback(async () => {
+    if (!hasSocketEndpointInput || !isSocketPortValid) {
+      return false;
+    }
+    return connectSocketSource(
+      normalizedSocketHost,
+      parsedSocketPort,
+      matchedDiscoveredServer?.hostname ?? null,
+    );
+  }, [
+    connectSocketSource,
+    isSocketPortValid,
+    matchedDiscoveredServer?.hostname,
+    normalizedSocketHost,
+    parsedSocketPort,
+  ]);
+
+  React.useEffect(() => {
+    if (!showSocketModal) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      handleSocketModalClose();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleSocketModalClose, showSocketModal]);
 
   const applyLargeFileDegradation = (metadata: LogFileMetadata) => {
     if (metadata.fileSize >= HUGE_FILE_DEGRADE_BYTES) {
@@ -2387,9 +2422,21 @@ function App() {
       </footer>
 
       {showSocketModal && createPortal(
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <h2>连接 Socket</h2>
+        <div
+          className="modal-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              handleSocketModalClose();
+            }
+          }}
+        >
+          <div
+            className="modal-content"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h2>连接 Socket</h2>
+            </div>
             <div className="discovered-servers">
               <div className="discovered-servers-header">
                 <span className="discovered-servers-title">发现的服务器</span>
@@ -2398,7 +2445,6 @@ function App() {
                   className="refresh-button"
                   onClick={() => {
                     setDiscoveredServers([]);
-                    setSelectedDiscoveredServerKey(null);
                     setDiscoveryRefreshToken((current) => current + 1);
                   }}
                   title="刷新列表"
@@ -2417,8 +2463,8 @@ function App() {
                     <button
                       type="button"
                       key={`${server.host}:${server.port}`}
-                      className={`discovered-server-item${selectedDiscoveredServerKey === `${server.host}:${server.port}` ? " is-selected" : ""}`}
-                      onClick={() => setSelectedDiscoveredServerKey(`${server.host}:${server.port}`)}
+                      className={`discovered-server-item${matchedDiscoveredServer?.host === server.host && matchedDiscoveredServer.port === server.port ? " is-selected" : ""}`}
+                      onClick={() => handleDiscoveredServerPick(server)}
                     >
                       <span className="server-hostname">{server.hostname}</span>
                       <span className="server-address">{server.host}:{server.port}</span>
@@ -2427,29 +2473,50 @@ function App() {
                 )}
               </div>
             </div>
-            <div className="modal-actions">
-              <button type="button" className="secondary-button" onClick={() => setShowSocketModal(false)}>关闭</button>
-              <button
-                type="button"
-                className="primary-button"
-                disabled={!selectedDiscoveredServer || isConnectingSocket}
-                onClick={() => {
-                  if (!selectedDiscoveredServer) {
-                    return;
-                  }
-                  void connectSocketSource(
-                    selectedDiscoveredServer.host,
-                    selectedDiscoveredServer.port,
-                    selectedDiscoveredServer.hostname,
-                  ).then((connected) => {
-                    if (connected) {
-                      setShowSocketModal(false);
-                    }
-                  });
-                }}
-              >
-                连接
-              </button>
+            <div className="socket-connect-editor">
+              <div className="socket-inline-field">
+                <label className="modal-field-inline" htmlFor="socket-host-input">
+                  <span>IP</span>
+                  <input
+                    id="socket-host-input"
+                    value={socketHostInput}
+                    onChange={(event) => setSocketHostInput(event.target.value)}
+                    placeholder="例如 127.0.0.1"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+              </div>
+              <div className="socket-editor-actions">
+                <div className="socket-inline-field">
+                  <label className="modal-field-inline" htmlFor="socket-port-input">
+                    <span>端口</span>
+                    <input
+                      id="socket-port-input"
+                      value={socketPortInput}
+                      onChange={(event) => setSocketPortInput(event.target.value.replace(/[^\d]/g, ""))}
+                      inputMode="numeric"
+                      placeholder="8765"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  className="primary-button socket-connect-button"
+                  disabled={!hasSocketEndpointInput || !isSocketPortValid || isConnectingSocket}
+                  onClick={() => {
+                    void handleConnectSocketFromInput().then((connected) => {
+                      if (connected) {
+                        handleSocketModalClose();
+                      }
+                    });
+                  }}
+                >
+                  连接
+                </button>
+              </div>
             </div>
           </div>
         </div>,

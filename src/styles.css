@@ -1461,18 +1461,29 @@ button:disabled {
 }
 
 .modal-content {
-  background: #252820;
-  border: 1px solid #4e5649;
-  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(20, 84, 78, 0.16) 0%, rgba(12, 16, 18, 0) 28%),
+    #202520;
+  border: 1px solid #546055;
+  border-radius: 12px;
   padding: 24px;
-  width: 400px;
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.4);
+  width: min(560px, calc(100vw - 32px));
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .modal-content h2 {
-  margin: 0 0 16px;
+  margin: 0;
   font-size: 16px;
-  color: #e0e4e0;
+  color: #f2f7f3;
+  letter-spacing: 0.01em;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
 }
 
 .modal-field {
@@ -1484,28 +1495,79 @@ button:disabled {
 
 .modal-field label {
   font-size: 13px;
-  color: #9aa39e;
+  color: #d8e2da;
+}
+
+.modal-field-inline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.modal-field-inline > span {
+  flex: 0 0 auto;
+  min-width: 28px;
+  color: #dce7df;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.modal-field-inline > input {
+  flex: 1;
+}
+
+.socket-inline-field {
+  min-width: 0;
 }
 
 .modal-field input {
-  padding: 8px 12px;
-  border: 1px solid #4e5649;
-  border-radius: 6px;
-  background: #2b2d27;
-  color: #e0e4e0;
+  padding: 9px 12px;
+  border: 1px solid #5f6d62;
+  border-radius: 8px;
+  background: #2a302b;
+  color: #f0f5f1;
   outline: none;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    background 0.12s ease;
+}
+
+.modal-field input::placeholder {
+  color: #91a097;
 }
 
 .modal-field input:focus {
-  border-color: #18706a;
-  box-shadow: 0 0 0 1px #18706a;
+  border-color: #3aa697;
+  background: #313832;
+  box-shadow: 0 0 0 1px #3aa697;
 }
 
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-top: 24px;
+.socket-connect-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(120px, 0.7fr) auto;
+  gap: 14px;
+  align-items: center;
+}
+
+.socket-editor-actions {
+  display: contents;
+}
+
+.socket-connect-button {
+  min-width: 108px;
+  align-self: center;
+  margin-top: 0;
+}
+
+@media (max-width: 720px) {
+  .socket-connect-editor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .socket-connect-button {
+    width: 100%;
+  }
 }
 
 /* ---- Discovered Servers (Connect Socket modal) ---- */
@@ -1524,7 +1586,7 @@ button:disabled {
 .discovered-servers-title {
   font-size: 13px;
   font-weight: 600;
-  color: #9aa39e;
+  color: #d4dfd7;
 }
 
 .refresh-button {
@@ -1533,35 +1595,33 @@ button:disabled {
   justify-content: center;
   width: 26px;
   height: 26px;
-  border: 1px solid #4e5649;
-  border-radius: 5px;
-  background: #30342b;
-  color: #c7d0c3;
+  border: 1px solid #59675d;
+  border-radius: 7px;
+  background: #2c312d;
+  color: #d9e4dc;
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, transform 0.2s;
+  transition: background 0.12s, border-color 0.12s;
 }
 
 .refresh-button:hover {
-  background: #3e423a;
-  border-color: #636860;
-  transform: rotate(90deg);
+  background: #38403a;
+  border-color: #748278;
 }
 
 .refresh-button:active {
-  background: #4e514a;
-  transform: rotate(180deg);
+  background: #424b44;
 }
 
 .discovered-servers-list {
-  border: 1px solid #4e5649;
-  border-radius: 6px;
-  background: #2b2d27;
+  border: 1px solid #4f5c52;
+  border-radius: 10px;
+  background: #252a25;
   max-height: 198px;
   min-height: 198px;
   overflow-y: auto;
-  scrollbar-color: var(--log-viewer-scrollbar) #2b2d27;
+  scrollbar-color: #687366 #252a25;
 }
 
 .discovered-servers-list::-webkit-scrollbar {
@@ -1583,7 +1643,7 @@ button:disabled {
   justify-content: center;
   gap: 8px;
   padding: 14px 12px;
-  color: #7a7e75;
+  color: #95a198;
   font-size: 13px;
 }
 
@@ -1610,13 +1670,13 @@ button:disabled {
   min-height: 66px;
   padding: 12px;
   border: 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   background: transparent;
-  color: #e0e4e0;
+  color: #edf3ee;
   font-size: 13px;
   text-align: left;
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background 0.1s, box-shadow 0.1s;
 }
 
 .discovered-server-item:last-child {
@@ -1624,16 +1684,16 @@ button:disabled {
 }
 
 .discovered-server-item:hover {
-  background: #173d39;
+  background: #1d3d39;
 }
 
 .discovered-server-item.is-selected {
-  background: #1d4b45;
-  box-shadow: inset 0 0 0 1px #2f8f83;
+  background: #24514b;
+  box-shadow: inset 0 0 0 1px #44af9d;
 }
 
 .discovered-server-item:active {
-  background: #1a4944;
+  background: #214842;
 }
 
 .server-hostname {
@@ -1645,7 +1705,7 @@ button:disabled {
 
 .server-address {
   flex-shrink: 0;
-  color: #8996a0;
+  color: #acc0b5;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
 }

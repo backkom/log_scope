@@ -229,6 +229,7 @@ Frame 格式：
 - 仓库提供 `scripts/LogSender.cs` 作为 Unity 侧发送端参考实现：`LogSender.Instance.Configure(subnetmask, name)` 启动 TCP 服务和 UDP 9876 发现广播，默认从调用方请求的 TCP 端口开始监听；若端口被同机其他 sender 占用，则最多继续尝试后续 3 个端口（共 4 次，例如请求 9876 时会尝试到 9879），并为每次尝试成功/失败输出日志，最终把实际监听端口写入 discovery 广播。`SendLog(log)` 按 `log.batch` frame 发送到已连接客户端；`name` 直接前置拼接到主机名用于发现列表展示，`subnetmask` 可传子网掩码或广播地址。
 - UDP discovery 接收端如发现广播里的 `host` 为空、`127.0.0.1`、`0.0.0.0` 或 `localhost`，应回退为 UDP 包源地址，避免跨机器连接时误连到本机回环地址。
 - `scripts/LogSender.cs` 的本机 IPv4 选择应优先使用基于默认路由的 UDP probe 结果；只有当 probe 失败或返回回环/未指定地址时，才退回到已启用网卡上的私有 IPv4 枚举。不要默认选“第一张私网网卡”，否则在 VPN / Docker / VM 多网卡场景下容易广播出不可达地址。
+- “连接 Socket”弹窗采用上下布局：上方为 UDP discovery 连接列表，下方为 `IP`、`端口` 输入框和独立连接按钮。点击上方列表项只负责把 `host/port` 回填到底部输入框；输入框中的 `host/port` 若与上方列表某项完全匹配，则该项高亮显示。点击底部连接按钮时一律使用当前输入框的 `host/port` 发起连接；若存在匹配的 discovery 项，则同时保存其 `hostname`，否则以空 `hostname` 连接并持久化。弹窗不提供右上角关闭按钮，支持 `Esc` 或点击对话框外部关闭；`IP/端口` label 与各自输入框同一行展示。
 
 当前限制：
 
