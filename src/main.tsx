@@ -2435,7 +2435,23 @@ function App() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="modal-header">
-              <h2>连接 Socket</h2>
+              <div className="modal-header-left">
+                <svg className="modal-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+                  <path d="M1.42 9a16 16 0 0 1 21.16 0" />
+                  <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+                  <line x1="12" y1="20" x2="12.01" y2="20" />
+                </svg>
+                <h2>连接 Socket</h2>
+              </div>
+              <button
+                type="button"
+                className="modal-close-button"
+                onClick={handleSocketModalClose}
+                title="关闭"
+              >
+                ×
+              </button>
             </div>
             <div className="discovered-servers">
               <div className="discovered-servers-header">
@@ -2455,21 +2471,49 @@ function App() {
               <div className="discovered-servers-list">
                 {discoveredServers.length === 0 ? (
                   <div className="discovered-servers-empty">
-                    <span className="discovery-spinner" />
-                    正在搜索局域网服务器…
+                    <svg className="discovery-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="10" />
+                      <path d="M12 6v6l4 2" />
+                    </svg>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="discovery-spinner" />
+                      正在搜索局域网服务器…
+                    </span>
+                    <span className="discovery-empty-hint">可在下方手动输入 IP 和端口</span>
                   </div>
                 ) : (
-                  discoveredServers.map((server) => (
-                    <button
-                      type="button"
-                      key={`${server.host}:${server.port}`}
-                      className={`discovered-server-item${matchedDiscoveredServer?.host === server.host && matchedDiscoveredServer.port === server.port ? " is-selected" : ""}`}
-                      onClick={() => handleDiscoveredServerPick(server)}
-                    >
-                      <span className="server-hostname">{server.hostname}</span>
-                      <span className="server-address">{server.host}:{server.port}</span>
-                    </button>
-                  ))
+                  discoveredServers.map((server) => {
+                    const isSelected = matchedDiscoveredServer?.host === server.host && matchedDiscoveredServer.port === server.port;
+                    const initial = (server.hostname || server.host || "?").charAt(0).toUpperCase();
+                    const avatarColors = ["#1a6b5a", "#2d5a3d", "#3d5a1a", "#1a5a6b", "#4a3d6b", "#6b4a1a"];
+                    const colorIndex = initial.charCodeAt(0) % avatarColors.length;
+                    return (
+                      <button
+                        type="button"
+                        key={`${server.host}:${server.port}`}
+                        className={`discovered-server-item${isSelected ? " is-selected" : ""}`}
+                        onClick={() => handleDiscoveredServerPick(server)}
+                      >
+                        <div className="server-avatar" style={{ background: avatarColors[colorIndex] }}>
+                          {initial}
+                          <span className="server-avatar-dot" />
+                        </div>
+                        <div className="server-info">
+                          <span className="server-hostname">{server.hostname}</span>
+                          <span className="server-address">{server.host}:{server.port}</span>
+                        </div>
+                        {isSelected ? (
+                          <svg className="server-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        ) : (
+                          <svg className="server-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="9 18 15 12 9 6" />
+                          </svg>
+                        )}
+                      </button>
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -2514,7 +2558,12 @@ function App() {
                     });
                   }}
                 >
-                  连接
+                  {isConnectingSocket ? (
+                    <>
+                      <span className="btn-spinner" />
+                      连接中…
+                    </>
+                  ) : "连接"}
                 </button>
               </div>
             </div>

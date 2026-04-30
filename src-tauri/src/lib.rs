@@ -3,7 +3,6 @@ use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     net::{TcpStream, UdpSocket},
-    process::{Command, Stdio},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -2250,57 +2249,11 @@ fn build_marker_copy_text(
 }
 
 fn write_text_to_system_clipboard(text: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut child = Command::new("pbcopy")
-            .stdin(Stdio::piped())
-            .spawn()
-            .map_err(|err| format!("failed to launch pbcopy: {err}"))?;
-        {
-            let stdin = child
-                .stdin
-                .as_mut()
-                .ok_or_else(|| "pbcopy stdin is unavailable".to_string())?;
-            stdin
-                .write_all(text.as_bytes())
-                .map_err(|err| format!("failed to write clipboard text: {err}"))?;
-        }
-        let status = child
-            .wait()
-            .map_err(|err| format!("failed to wait for pbcopy: {err}"))?;
-        if status.success() {
-            return Ok(());
-        }
-        return Err(format!("pbcopy exited with status {status}"));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let mut child = Command::new("cmd")
-            .args(["/C", "clip"])
-            .stdin(Stdio::piped())
-            .spawn()
-            .map_err(|err| format!("failed to launch clip: {err}"))?;
-        {
-            let stdin = child
-                .stdin
-                .as_mut()
-                .ok_or_else(|| "clip stdin is unavailable".to_string())?;
-            stdin
-                .write_all(text.as_bytes())
-                .map_err(|err| format!("failed to write clipboard text: {err}"))?;
-        }
-        let status = child
-            .wait()
-            .map_err(|err| format!("failed to wait for clip: {err}"))?;
-        if status.success() {
-            return Ok(());
-        }
-        return Err(format!("clip exited with status {status}"));
-    }
-
-    #[allow(unreachable_code)]
-    Err("clipboard copy is only implemented for macOS and Windows".to_string())
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|err| format!("failed to open clipboard: {err}"))?;
+    clipboard
+        .set_text(text)
+        .map_err(|err| format!("failed to write clipboard text: {err}"))
 }
 
 impl Default for PersistedStore {
