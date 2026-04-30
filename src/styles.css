@@ -1637,6 +1637,65 @@ button:disabled {
   box-shadow: 0 0 0 2px rgba(58, 166, 151, 0.2);
 }
 
+.server-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+
+.server-filter-icon {
+  width: 14px;
+  height: 14px;
+  color: #6b7b6f;
+  flex-shrink: 0;
+}
+
+.server-filter-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid #4a5a4e;
+  border-radius: 8px;
+  background: #2a302b;
+  color: #e0ebe2;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.server-filter-input::placeholder {
+  color: #6b7b6f;
+}
+
+.server-filter-input:focus {
+  border-color: #3aa697;
+  box-shadow: 0 0 0 1px rgba(58, 166, 151, 0.2);
+}
+
+.server-filter-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  color: #8a9a8e;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.server-filter-clear:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #d4dfd7;
+}
+
 .socket-connect-editor {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(120px, 0.7fr) auto;

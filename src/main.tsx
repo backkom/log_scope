@@ -377,6 +377,7 @@ function App() {
   const [discoveryRefreshToken, setDiscoveryRefreshToken] = React.useState(0);
   const [socketHostInput, setSocketHostInput] = React.useState("");
   const [socketPortInput, setSocketPortInput] = React.useState("");
+  const [serverFilterText, setServerFilterText] = React.useState("");
   const [isDisconnected, setIsDisconnected] = React.useState(false);
   const [showSourcePanel, setShowSourcePanel] = React.useState(false);
   const [sourcePanelWidth, setSourcePanelWidth] = React.useState(280);
@@ -642,6 +643,7 @@ function App() {
         }).catch(console.error);
       } else if (payload.action === "connect_socket") {
         setShowSocketModal(true);
+        setServerFilterText("");
       } else if (payload.action === "health_check") {
         runPlaceholder();
       } else if (payload.action === "open_recent_file") {
@@ -960,6 +962,13 @@ function App() {
     () => discoveredServers.find((server) => server.host === normalizedSocketHost && server.port === parsedSocketPort) ?? null,
     [discoveredServers, normalizedSocketHost, parsedSocketPort],
   );
+  const filteredServers = React.useMemo(() => {
+    const q = serverFilterText.trim().toLowerCase();
+    if (!q) return discoveredServers;
+    return discoveredServers.filter((server) =>
+      server.hostname.toLowerCase().includes(q) || server.host.toLowerCase().includes(q) || server.port.toString().includes(q)
+    );
+  }, [discoveredServers, serverFilterText]);
 
   const handleSocketModalClose = React.useCallback(() => {
     setShowSocketModal(false);
@@ -2468,6 +2477,31 @@ function App() {
                   ⟳
                 </button>
               </div>
+              <div className="server-filter-bar">
+                <svg className="server-filter-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+                <input
+                  className="server-filter-input"
+                  type="text"
+                  value={serverFilterText}
+                  onChange={(event) => setServerFilterText(event.target.value)}
+                  placeholder="过滤 hostname 或 IP…"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                {serverFilterText && (
+                  <button
+                    type="button"
+                    className="server-filter-clear"
+                    onClick={() => setServerFilterText("")}
+                    title="清除过滤"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
               <div className="discovered-servers-list">
                 {discoveredServers.length === 0 ? (
                   <div className="discovered-servers-empty">
@@ -2481,8 +2515,17 @@ function App() {
                     </span>
                     <span className="discovery-empty-hint">可在下方手动输入 IP 和端口</span>
                   </div>
+                ) : filteredServers.length === 0 ? (
+                  <div className="discovered-servers-empty">
+                    <svg className="discovery-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="11" cy="11" r="8" />
+                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <span>未匹配到服务器</span>
+                    <span className="discovery-empty-hint">尝试修改过滤条件</span>
+                  </div>
                 ) : (
-                  discoveredServers.map((server) => {
+                  filteredServers.map((server) => {
                     const isSelected = matchedDiscoveredServer?.host === server.host && matchedDiscoveredServer.port === server.port;
                     const initial = (server.hostname || server.host || "?").charAt(0).toUpperCase();
                     const avatarColors = ["#1a6b5a", "#2d5a3d", "#3d5a1a", "#1a5a6b", "#4a3d6b", "#6b4a1a"];
