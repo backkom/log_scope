@@ -1637,6 +1637,42 @@ button:disabled {
   box-shadow: 0 0 0 2px rgba(58, 166, 151, 0.2);
 }
 
+.favorite-dialog {
+  width: min(440px, calc(100vw - 32px));
+}
+
+.favorite-dialog-path {
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+  background: #1a201b;
+  border: 1px solid #3a4a3e;
+  color: #8a9a8e;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.favorite-dialog-field {
+  margin-bottom: 20px;
+}
+
+.favorite-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.favorite-dialog-actions .secondary-button {
+  min-width: 72px;
+}
+
+.favorite-dialog-actions .primary-button {
+  min-width: 72px;
+}
+
 .server-filter-bar {
   display: flex;
   align-items: center;

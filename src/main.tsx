@@ -188,6 +188,15 @@ type PersistedDataSource = {
   hostname?: string | null;
 };
 
+type PersistedFavorite = {
+  kind: "file" | "socket";
+  path: string | null;
+  host: string | null;
+  port: number | null;
+  hostname?: string | null;
+  displayName: string;
+};
+
 type PersistedUiState = {
   followTail: boolean;
   showSourcePanel: boolean;
@@ -206,6 +215,7 @@ type PersistedStore = {
   schemaVersion: number;
   recentFiles: PersistedFileSource[];
   recentSockets: PersistedSocketSource[];
+  favorites: PersistedFavorite[];
   lastSource: PersistedDataSource | null;
   uiState: PersistedUiState;
 };
@@ -378,6 +388,9 @@ function App() {
   const [socketHostInput, setSocketHostInput] = React.useState("");
   const [socketPortInput, setSocketPortInput] = React.useState("");
   const [serverFilterText, setServerFilterText] = React.useState("");
+  const [showFavoriteDialog, setShowFavoriteDialog] = React.useState(false);
+  const [favoriteDialogName, setFavoriteDialogName] = React.useState("");
+  const [favoriteDialogPath, setFavoriteDialogPath] = React.useState("");
   const [isDisconnected, setIsDisconnected] = React.useState(false);
   const [showSourcePanel, setShowSourcePanel] = React.useState(false);
   const [sourcePanelWidth, setSourcePanelWidth] = React.useState(280);
@@ -436,6 +449,8 @@ function App() {
     frameHeight: number;
   } | null>(null);
   const persistedStateLoadedRef = React.useRef(false);
+  const logFileRef = React.useRef<LogFileMetadata | null>(null);
+  React.useEffect(() => { logFileRef.current = logFile; }, [logFile]);
   const saveUiStateTimerRef = React.useRef<number | null>(null);
   const markerListRef = React.useRef<HTMLDivElement | null>(null);
   const initialLoadDoneRef = React.useRef(false);
@@ -651,6 +666,20 @@ function App() {
         openPath(payload.path);
       } else if (payload.action === "open_recent_socket") {
         connectSocketSource(payload.host, payload.port);
+      } else if (payload.action === "open_favorite_file") {
+        setFilePath(payload.path);
+        openPath(payload.path);
+      } else if (payload.action === "open_favorite_socket") {
+        connectSocketSource(payload.host, payload.port, payload.hostname);
+      } else if (payload.action === "add_favorite") {
+        const current = logFileRef.current;
+        if (!current) return;
+        const displayPath = current.path.startsWith("logscope-frame-v1://")
+          ? current.path.slice("logscope-frame-v1://".length)
+          : current.path;
+        setFavoriteDialogPath(displayPath);
+        setFavoriteDialogName("");
+        setShowFavoriteDialog(true);
       } else if (payload.action === "gen_fixture") {
         invoke<FixtureMetadata>("generate_log_fixture", { sizeMb: 50, profile: payload.profile })
           .then((fixture) => {
@@ -974,6 +1003,31 @@ function App() {
     setShowSocketModal(false);
   }, []);
 
+  const handleFavoriteDialogConfirm = React.useCallback(async () => {
+    const current = logFileRef.current;
+    if (!current) return;
+    const name = favoriteDialogName.trim() || undefined;
+    try {
+      if (current.path.startsWith("logscope-frame-v1://")) {
+        const afterProto = current.path.slice("logscope-frame-v1://".length);
+        const sepIdx = afterProto.lastIndexOf(":");
+        if (sepIdx > 0) {
+          const host = afterProto.slice(0, sepIdx);
+          const port = Number.parseInt(afterProto.slice(sepIdx + 1), 10);
+          if (host && Number.isInteger(port)) {
+            await invoke<PersistedStore>("add_favorite_socket", { host, port, hostname: null, customName: name });
+          }
+        }
+      } else {
+        await invoke<PersistedStore>("add_favorite_file", { path: current.path, customName: name });
+      }
+      await refreshPersistedState();
+    } catch (err) {
+      setError(`收藏失败: ${String(err)}`);
+    }
+    setShowFavoriteDialog(false);
+  }, [favoriteDialogName, refreshPersistedState]);
+
   const handleDiscoveredServerPick = React.useCallback((server: DiscoveredServer) => {
     setSocketHostInput(server.host);
     setSocketPortInput(String(server.port));
@@ -1012,6 +1066,23 @@ function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleSocketModalClose, showSocketModal]);
+
+  React.useEffect(() => {
+    if (!showFavoriteDialog) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      setShowFavoriteDialog(false);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showFavoriteDialog]);
 
   const applyLargeFileDegradation = (metadata: LogFileMetadata) => {
     if (metadata.fileSize >= HUGE_FILE_DEGRADE_BYTES) {
@@ -1350,8 +1421,12 @@ function App() {
       const shouldRestartFromViewport =
         !activeSearchMatch || !isLineInViewport(activeSearchMatch.lineNumber);
       if (shouldRestartFromViewport) {
+        const viewportLineCount = Math.max(1, Math.ceil(Math.max(viewportHeight, ROW_HEIGHT) / ROW_HEIGHT));
+        const lastVisibleLine = logFile
+          ? Math.min(firstVisibleLine + viewportLineCount - 1, logFile.lineCount)
+          : firstVisibleLine;
         return {
-          startLine: firstVisibleLine,
+          startLine: direction === "previous" ? lastVisibleLine : firstVisibleLine,
           startColumn: 0,
           activeMatchForNavigation: null,
         };
@@ -1363,7 +1438,7 @@ function App() {
         activeMatchForNavigation: activeSearchMatch,
       };
     },
-    [activeSearchMatch, firstVisibleLine, isLineInViewport],
+    [activeSearchMatch, firstVisibleLine, isLineInViewport, viewportHeight, logFile],
   );
 
   const runSearch = async (
@@ -1390,11 +1465,16 @@ function App() {
       const cached = searchCacheRef.current;
       if (cached && isSearchCacheValid(cached, logFile, query, searchCaseSensitive, searchRegex, searchWholeWord)) {
         const anchor = getViewportSearchAnchor(direction);
+        const viewportLineCount = Math.max(1, Math.ceil(Math.max(viewportHeight, ROW_HEIGHT) / ROW_HEIGHT));
+        const lastVisibleLine = logFile
+          ? Math.min(firstVisibleLine + viewportLineCount - 1, logFile.lineCount)
+          : firstVisibleLine;
         const nextResult = navigateCachedSearch(
           cached.result,
           direction,
           anchor.activeMatchForNavigation,
           firstVisibleLine,
+          lastVisibleLine,
           searchWrapAround,
         );
         setSearchResult(nextResult);
@@ -1556,11 +1636,42 @@ function App() {
         const currentIdx = selectedMarker
           ? filteredMarkers.findIndex((m) => m.id === selectedMarker.id)
           : -1;
+
+        let selectedInViewport = false;
+        if (currentIdx >= 0 && selectedMarker && logFile) {
+          const viewport = viewportRef.current;
+          if (viewport) {
+            const markerTop = (Math.max(1, selectedMarker.startLine) - 1) * ROW_HEIGHT;
+            const markerBottom = Math.max(markerTop + ROW_HEIGHT, selectedMarker.endLine * ROW_HEIGHT);
+            const vpTop = viewport.scrollTop;
+            const vpBottom = vpTop + viewport.clientHeight;
+            selectedInViewport = markerBottom > vpTop && markerTop < vpBottom;
+          }
+        }
+
         let nextIdx = currentIdx;
         if (event.key === "ArrowDown") {
-          nextIdx = currentIdx < 0 ? 0 : Math.min(currentIdx + 1, filteredMarkers.length - 1);
+          if (currentIdx < 0 || !selectedInViewport) {
+            nextIdx = filteredMarkers.findIndex((m) => m.startLine >= firstVisibleLine);
+            if (nextIdx < 0) nextIdx = 0;
+          } else {
+            nextIdx = Math.min(currentIdx + 1, filteredMarkers.length - 1);
+          }
         } else {
-          nextIdx = currentIdx < 0 ? 0 : Math.max(currentIdx - 1, 0);
+          if (currentIdx < 0 || !selectedInViewport) {
+            const viewport = viewportRef.current;
+            let viewportBottomLine = 1;
+            if (viewport && logFile) {
+              viewportBottomLine = Math.min(
+                Math.floor((viewport.scrollTop + viewport.clientHeight) / ROW_HEIGHT) + 1,
+                logFile.lineCount,
+              );
+            }
+            nextIdx = findLastIndex(filteredMarkers, (m) => m.startLine <= viewportBottomLine);
+            if (nextIdx < 0) nextIdx = filteredMarkers.length - 1;
+          } else {
+            nextIdx = Math.max(currentIdx - 1, 0);
+          }
         }
         if (nextIdx !== currentIdx) {
           event.preventDefault();
@@ -2614,6 +2725,78 @@ function App() {
         </div>,
         document.body
       )}
+
+      {showFavoriteDialog && createPortal(
+        <div
+          className="modal-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowFavoriteDialog(false);
+            }
+          }}
+        >
+          <div
+            className="modal-content favorite-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div className="modal-header-left">
+                <svg className="modal-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                </svg>
+                <h2>添加到收藏</h2>
+              </div>
+              <button
+                type="button"
+                className="modal-close-button"
+                onClick={() => setShowFavoriteDialog(false)}
+                title="关闭"
+              >
+                ×
+              </button>
+            </div>
+            <div className="favorite-dialog-path" title={favoriteDialogPath}>
+              {favoriteDialogPath}
+            </div>
+            <div className="favorite-dialog-field">
+              <label className="modal-field-inline" htmlFor="favorite-name-input">
+                <span>名称</span>
+                <input
+                  id="favorite-name-input"
+                  value={favoriteDialogName}
+                  onChange={(event) => setFavoriteDialogName(event.target.value)}
+                  placeholder="留空则显示完整路径"
+                  autoComplete="off"
+                  spellCheck={false}
+                  autoFocus
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      void handleFavoriteDialogConfirm();
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            <div className="favorite-dialog-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setShowFavoriteDialog(false)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => void handleFavoriteDialogConfirm()}
+              >
+                确定
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </main>
   );
 }
@@ -2818,6 +3001,7 @@ function navigateCachedSearch(
   direction: "next" | "previous",
   activeMatch: LogSearchMatch | null,
   firstVisibleLine: number,
+  lastVisibleLine: number,
   wrapAround: boolean,
 ) {
   if (result.matches.length === 0) {
@@ -2836,10 +3020,11 @@ function navigateCachedSearch(
   let wrapped = false;
 
   if (currentIndex === -1) {
+    const anchorLine = direction === "next" ? firstVisibleLine : lastVisibleLine;
     nextIndex =
       direction === "next"
-        ? result.matches.findIndex((match) => match.lineNumber >= firstVisibleLine)
-        : findLastIndex(result.matches, (match) => match.lineNumber <= firstVisibleLine);
+        ? result.matches.findIndex((match) => match.lineNumber >= anchorLine)
+        : findLastIndex(result.matches, (match) => match.lineNumber <= anchorLine);
     if (nextIndex === -1) {
       if (!wrapAround) {
         return {

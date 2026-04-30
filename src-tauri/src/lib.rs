@@ -134,8 +134,21 @@ struct PersistedStore {
     schema_version: u32,
     recent_files: Vec<PersistedFileSource>,
     recent_sockets: Vec<PersistedSocketSource>,
+    #[serde(default)]
+    favorites: Vec<PersistedFavorite>,
     last_source: Option<PersistedDataSource>,
     ui_state: PersistedUiState,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedFavorite {
+    kind: String,
+    path: Option<String>,
+    host: Option<String>,
+    port: Option<u16>,
+    hostname: Option<String>,
+    display_name: String,
 }
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
@@ -593,6 +606,77 @@ fn remove_recent_socket(
         store.last_source = None;
     }
     save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
+    load_persisted_store(&app).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn add_favorite_file(path: String, custom_name: Option<String>, app: tauri::AppHandle) -> Result<PersistedStore, String> {
+    let mut store = load_persisted_store(&app).map_err(|err| err.to_string())?;
+    store.favorites.retain(|fav| !(fav.kind == "file" && fav.path.as_deref() == Some(path.as_str())));
+    let display_name = custom_name
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| path.clone());
+    store.favorites.insert(0, PersistedFavorite {
+        kind: "file".to_string(),
+        path: Some(path),
+        host: None,
+        port: None,
+        hostname: None,
+        display_name,
+    });
+    save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
+    deferred_update_app_menu(&app);
+    load_persisted_store(&app).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn add_favorite_socket(
+    host: String,
+    port: u16,
+    hostname: Option<String>,
+    custom_name: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<PersistedStore, String> {
+    let mut store = load_persisted_store(&app).map_err(|err| err.to_string())?;
+    store.favorites.retain(|fav| !(fav.kind == "socket" && fav.host.as_deref() == Some(host.as_str()) && fav.port == Some(port)));
+    let full_addr = format!("{host}:{port}");
+    let display_name = custom_name
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or(full_addr);
+    store.favorites.insert(0, PersistedFavorite {
+        kind: "socket".to_string(),
+        path: None,
+        host: Some(host),
+        port: Some(port),
+        hostname,
+        display_name,
+    });
+    save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
+    deferred_update_app_menu(&app);
+    load_persisted_store(&app).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn remove_favorite(
+    kind: String,
+    path: Option<String>,
+    host: Option<String>,
+    port: Option<u16>,
+    app: tauri::AppHandle,
+) -> Result<PersistedStore, String> {
+    let mut store = load_persisted_store(&app).map_err(|err| err.to_string())?;
+    store.favorites.retain(|fav| {
+        if fav.kind != kind {
+            return true;
+        }
+        if kind == "file" {
+            fav.path != path
+        } else {
+            fav.host != host || fav.port != port
+        }
+    });
+    save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
+    deferred_update_app_menu(&app);
     load_persisted_store(&app).map_err(|err| err.to_string())
 }
 
@@ -2262,6 +2346,7 @@ impl Default for PersistedStore {
             schema_version: 1,
             recent_files: Vec::new(),
             recent_sockets: Vec::new(),
+            favorites: Vec::new(),
             last_source: None,
             ui_state: PersistedUiState::default(),
         }
@@ -2421,6 +2506,16 @@ fn sanitize_store(mut store: PersistedStore) -> PersistedStore {
     }
     store.recent_files.truncate(12);
     store.recent_sockets.truncate(12);
+    store.favorites.retain(|fav| {
+        if fav.kind == "file" {
+            fav.path.as_deref().is_some_and(|p| !p.trim().is_empty())
+        } else if fav.kind == "socket" {
+            fav.host.as_deref().is_some_and(|h| !h.trim().is_empty()) && fav.port.is_some_and(|p| p > 0)
+        } else {
+            false
+        }
+    });
+    store.favorites.truncate(50);
     store.ui_state = sanitize_ui_state(store.ui_state);
     store
 }
@@ -2532,6 +2627,51 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
         &recent_items_refs,
     )?;
 
+    // ---- Favorites submenu ----
+    let mut fav_open_items: Vec<MenuItem<tauri::Wry>> = Vec::new();
+    let mut fav_remove_items: Vec<MenuItem<tauri::Wry>> = Vec::new();
+
+    if let Ok(store) = load_persisted_store(app_handle) {
+        for fav in &store.favorites {
+            if fav.kind == "file" {
+                if let Some(ref path) = fav.path {
+                    fav_open_items.push(MenuItem::with_id(app_handle, format!("open_favorite_file_{path}"), &fav.display_name, true, None::<&str>)?);
+                    fav_remove_items.push(MenuItem::with_id(app_handle, format!("remove_favorite_file_{path}"), &fav.display_name, true, None::<&str>)?);
+                }
+            } else if fav.kind == "socket" {
+                if let (Some(ref host), Some(port)) = (&fav.host, fav.port) {
+                    let id_key = format!("{host}:{port}");
+                    fav_open_items.push(MenuItem::with_id(app_handle, format!("open_favorite_socket_{id_key}"), &fav.display_name, true, None::<&str>)?);
+                    fav_remove_items.push(MenuItem::with_id(app_handle, format!("remove_favorite_socket_{id_key}"), &fav.display_name, true, None::<&str>)?);
+                }
+            }
+        }
+    }
+
+    let mut fav_menu_items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
+    for item in &fav_open_items {
+        fav_menu_items.push(item);
+    }
+    let fav_separator;
+    if !fav_open_items.is_empty() {
+        fav_separator = PredefinedMenuItem::separator(app_handle)?;
+        fav_menu_items.push(&fav_separator);
+    }
+    let add_fav_item = MenuItem::with_id(app_handle, "add_favorite", "Add to Favorites", true, None::<&str>)?;
+    fav_menu_items.push(&add_fav_item);
+
+    let fav_remove_submenu;
+    if !fav_remove_items.is_empty() {
+        let mut remove_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
+        for item in &fav_remove_items {
+            remove_refs.push(item);
+        }
+        fav_remove_submenu = Submenu::with_items(app_handle, "Remove from Favorites", true, &remove_refs)?;
+        fav_menu_items.push(&fav_remove_submenu);
+    }
+
+    let favorites_submenu = Submenu::with_items(app_handle, "Favorites", true, &fav_menu_items)?;
+
     let open_file_item = MenuItem::with_id(app_handle, "open_file", "Open...", true, Some("CmdOrCtrl+O"))?;
     let connect_socket_item = MenuItem::with_id(app_handle, "connect_socket", "Connect Socket", true, Some("CmdOrCtrl+Shift+O"))?;
 
@@ -2566,21 +2706,6 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
 
     let debug_submenu = Submenu::with_items(app_handle, "Debug", true, &[&fixture_submenu, &bench_submenu, &health_check_item])?;
 
-    let edit_submenu = Submenu::with_items(
-        app_handle,
-        "Edit",
-        true,
-        &[
-            &PredefinedMenuItem::undo(app_handle, None)?,
-            &PredefinedMenuItem::redo(app_handle, None)?,
-            &PredefinedMenuItem::separator(app_handle)?,
-            &PredefinedMenuItem::cut(app_handle, None)?,
-            &PredefinedMenuItem::copy(app_handle, None)?,
-            &PredefinedMenuItem::paste(app_handle, None)?,
-            &PredefinedMenuItem::select_all(app_handle, None)?,
-        ],
-    )?;
-
     #[cfg(target_os = "macos")]
     {
         let app_menu = Submenu::with_items(
@@ -2606,13 +2731,13 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
                 &PredefinedMenuItem::quit(app_handle, None)?,
             ],
         )?;
-        let menu = Menu::with_items(app_handle, &[&app_menu, &file_submenu, &edit_submenu, &debug_submenu])?;
+        let menu = Menu::with_items(app_handle, &[&app_menu, &file_submenu, &favorites_submenu, &debug_submenu])?;
         app_handle.set_menu(menu)?;
     }
     
     #[cfg(not(target_os = "macos"))]
     {
-        let menu = Menu::with_items(app_handle, &[&file_submenu, &edit_submenu, &debug_submenu])?;
+        let menu = Menu::with_items(app_handle, &[&file_submenu, &favorites_submenu, &debug_submenu])?;
         app_handle.set_menu(menu)?;
     }
 
@@ -2646,6 +2771,7 @@ pub fn run() {
                         schema_version: 1,
                         recent_files: Vec::new(),
                         recent_sockets: Vec::new(),
+                        favorites: Vec::new(),
                         last_source: None,
                         ui_state: sanitize_ui_state(PersistedUiState {
                             follow_tail: true,
@@ -2684,6 +2810,40 @@ pub fn run() {
                             deferred_update_app_menu(app_handle);
                         }
                     }
+                } else if let Some(path) = id.strip_prefix("open_favorite_file_") {
+                    let _ = app_handle.emit(
+                        "menu-event",
+                        serde_json::json!({ "action": "open_favorite_file", "path": path }),
+                    );
+                } else if let Some(host_port) = id.strip_prefix("open_favorite_socket_") {
+                    if let Some((host, port)) = host_port.rsplit_once(':') {
+                        if let Ok(port) = port.parse::<u16>() {
+                            let hostname = load_persisted_store(app_handle)
+                                .ok()
+                                .and_then(|store| store.favorites.into_iter()
+                                    .find(|f| f.kind == "socket" && f.host.as_deref() == Some(host) && f.port == Some(port))
+                                    .and_then(|f| f.hostname));
+                            let _ = app_handle.emit(
+                                "menu-event",
+                                serde_json::json!({ "action": "open_favorite_socket", "host": host, "port": port, "hostname": hostname }),
+                            );
+                        }
+                    }
+                } else if id == "add_favorite" {
+                    let _ = app_handle.emit(
+                        "menu-event",
+                        serde_json::json!({ "action": "add_favorite" }),
+                    );
+                } else if let Some(path) = id.strip_prefix("remove_favorite_file_") {
+                    let _ = remove_favorite("file".to_string(), Some(path.to_string()), None, None, app_handle.clone());
+                    deferred_update_app_menu(app_handle);
+                } else if let Some(host_port) = id.strip_prefix("remove_favorite_socket_") {
+                    if let Some((host, port)) = host_port.rsplit_once(':') {
+                        if let Ok(port) = port.parse::<u16>() {
+                            let _ = remove_favorite("socket".to_string(), None, Some(host.to_string()), Some(port), app_handle.clone());
+                            deferred_update_app_menu(app_handle);
+                        }
+                    }
                 } else if let Some(profile) = id.strip_prefix("gen_fixture_") {
                     let _ = app_handle.emit(
                         "menu-event",
@@ -2711,6 +2871,9 @@ pub fn run() {
             save_ui_state,
             remove_recent_file,
             remove_recent_socket,
+            add_favorite_file,
+            add_favorite_socket,
+            remove_favorite,
             get_log_lines,
             get_log_markers,
             get_marker_payload,
