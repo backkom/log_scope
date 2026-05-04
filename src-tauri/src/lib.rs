@@ -29,10 +29,89 @@ struct FileOpenPlaceholder {
     message: &'static str,
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+struct MarkerKeywordRule {
+    error: Vec<String>,
+    warning: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct MarkerRuleEnabled {
+    message_blocks: bool,
+    error_stack: bool,
+    json_event: bool,
+    state_change: bool,
+    keyword: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct MarkerKindColors {
+    error_stack: String,
+    json_event: String,
+    state_change: String,
+    keyword_error: String,
+    keyword_warning: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct MarkerConfig {
+    rule_enabled: MarkerRuleEnabled,
+    kind_colors: MarkerKindColors,
+    keyword_rules: MarkerKeywordRule,
+    stack_trace_patterns: Vec<String>,
+}
+
+impl Default for MarkerConfig {
+    fn default() -> Self {
+        Self {
+            rule_enabled: MarkerRuleEnabled {
+                message_blocks: true,
+                error_stack: true,
+                json_event: true,
+                state_change: true,
+                keyword: true,
+            },
+            kind_colors: MarkerKindColors {
+                error_stack: "#f46d75".to_string(),
+                json_event: "#b693ff".to_string(),
+                state_change: "#f0c84b".to_string(),
+                keyword_error: "#f46d75".to_string(),
+                keyword_warning: "#f0c84b".to_string(),
+            },
+            keyword_rules: MarkerKeywordRule {
+                error: vec![
+                    "error".to_string(),
+                    "failed".to_string(),
+                    "not found".to_string(),
+                    "exception".to_string(),
+                ],
+                warning: vec![
+                    "warn".to_string(),
+                    "corrupt".to_string(),
+                    "currupted".to_string(),
+                ],
+            },
+            stack_trace_patterns: vec![
+                "(Filename:".to_string(),
+                "at ".to_string(),
+                "[C]:".to_string(),
+                "UnityEngine.".to_string(),
+                "System.".to_string(),
+                "SPGF.".to_string(),
+                "Assets/".to_string(),
+                ": in function ".to_string(),
+                ": in main chunk".to_string(),
+                ") [0x".to_string(),
+            ],
+        }
+    }
+}
+
 struct AppState {
     next_session_id: AtomicU64,
     sessions: Mutex<HashMap<u64, Arc<Mutex<LogSession>>>>,
     udp_discovery_active: Arc<AtomicBool>,
+    marker_config: Mutex<MarkerConfig>,
 }
 
 impl Default for AppState {
@@ -41,6 +120,7 @@ impl Default for AppState {
             next_session_id: AtomicU64::new(0),
             sessions: Mutex::new(HashMap::new()),
             udp_discovery_active: Arc::new(AtomicBool::new(false)),
+            marker_config: Mutex::new(MarkerConfig::default()),
         }
     }
 }
@@ -219,6 +299,7 @@ struct LogMarker {
     kind: String,
     title: String,
     color: String,
+    keyword_class: String,
     start_line: usize,
     end_line: usize,
     start_byte: u64,
@@ -353,8 +434,13 @@ async fn open_log_file(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<LogFileMetadata, String> {
+    let config = state
+        .marker_config
+        .lock()
+        .map_err(|_| "marker config lock poisoned".to_string())?
+        .clone();
     let path_buf = PathBuf::from(path);
-    let session = tauri::async_runtime::spawn_blocking(move || LogSession::open(path_buf))
+    let session = tauri::async_runtime::spawn_blocking(move || LogSession::open(path_buf, &config))
         .await
         .map_err(|err| format!("failed to join file indexing task: {err}"))?
         .map_err(|err| err.to_string())?;
@@ -443,7 +529,12 @@ possible causes: server is only listening on 127.0.0.1, the discovered port is s
     let path = socket_dir.join(format!("socket-{safe_host}-{port}-{suffix}.log"));
     File::create(&path).map_err(|err| format!("failed to create socket log file: {err}"))?;
 
-    let session = LogSession::open(path.clone()).map_err(|err| err.to_string())?;
+    let config = state
+        .marker_config
+        .lock()
+        .map_err(|_| "marker config lock poisoned".to_string())?
+        .clone();
+    let session = LogSession::open(path.clone(), &config).map_err(|err| err.to_string())?;
     let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed) + 1;
     {
         let mut sessions = state
@@ -822,6 +913,11 @@ async fn refresh_log_file(
     session_id: u64,
     state: tauri::State<'_, AppState>,
 ) -> Result<LogRefreshMetadata, String> {
+    let config = state
+        .marker_config
+        .lock()
+        .map_err(|_| "marker config lock poisoned".to_string())?
+        .clone();
     let session = {
         let sessions = state
             .sessions
@@ -838,10 +934,23 @@ async fn refresh_log_file(
         let mut session = session
             .lock()
             .map_err(|_| format!("log session {session_id} is unavailable"))?;
-        session.refresh(session_id).map_err(|err| err.to_string())
+        session.refresh(session_id, &config).map_err(|err| err.to_string())
     })
     .await
     .map_err(|err| format!("failed to join file refresh task: {err}"))?
+}
+
+#[tauri::command]
+fn update_marker_config(
+    config: MarkerConfig,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let mut stored = state
+        .marker_config
+        .lock()
+        .map_err(|_| "marker config lock poisoned".to_string())?;
+    *stored = config;
+    Ok(())
 }
 
 #[tauri::command]
@@ -902,12 +1011,12 @@ async fn search_log_text(
 }
 
 impl LogSession {
-    fn open(path: PathBuf) -> std::io::Result<Self> {
+    fn open(path: PathBuf, config: &MarkerConfig) -> std::io::Result<Self> {
         let started_at = Instant::now();
         let file = File::open(&path)?;
         let file_size = file.metadata()?.len();
         let (line_offsets, ended_with_newline) = build_line_index(file, file_size)?;
-        let (markers, marker_payloads) = scan_log_markers(&path, file_size)?;
+        let (markers, marker_payloads) = scan_log_markers(&path, file_size, config)?;
         let index_duration_ms = started_at.elapsed().as_millis();
 
         Ok(Self {
@@ -921,7 +1030,7 @@ impl LogSession {
         })
     }
 
-    fn refresh(&mut self, session_id: u64) -> std::io::Result<LogRefreshMetadata> {
+    fn refresh(&mut self, session_id: u64, config: &MarkerConfig) -> std::io::Result<LogRefreshMetadata> {
         let metadata = fs::metadata(&self.path)?;
         let new_file_size = metadata.len();
         let old_file_size = self.file_size;
@@ -933,7 +1042,7 @@ impl LogSession {
             self.file_size = new_file_size;
             self.line_offsets = line_offsets;
             self.ended_with_newline = ended_with_newline;
-            self.rebuild_markers()?;
+            self.rebuild_markers(config)?;
 
             return Ok(self.refresh_metadata(
                 session_id,
@@ -970,7 +1079,7 @@ impl LogSession {
 
         self.file_size = new_file_size;
         self.ended_with_newline = buffer.last().is_some_and(|byte| *byte == b'\n');
-        self.rebuild_markers()?;
+        self.rebuild_markers(config)?;
 
         Ok(self.refresh_metadata(
             session_id,
@@ -999,8 +1108,8 @@ impl LogSession {
         }
     }
 
-    fn rebuild_markers(&mut self) -> std::io::Result<()> {
-        let (markers, marker_payloads) = scan_log_markers(&self.path, self.file_size)?;
+    fn rebuild_markers(&mut self, config: &MarkerConfig) -> std::io::Result<()> {
+        let (markers, marker_payloads) = scan_log_markers(&self.path, self.file_size, config)?;
         self.markers = markers;
         self.marker_payloads = marker_payloads;
         Ok(())
@@ -1310,6 +1419,7 @@ fn preview_line(line: &str) -> String {
 fn scan_log_markers(
     path: &PathBuf,
     file_size: u64,
+    config: &MarkerConfig,
 ) -> std::io::Result<(Vec<LogMarker>, HashMap<String, MarkerPayload>)> {
     let file = File::open(path)?;
     let mut reader = BufReader::with_capacity(1024 * 1024, file);
@@ -1340,7 +1450,7 @@ fn scan_log_markers(
         if let Some(current) = open_stack.take() {
             if timestamp_content.is_some()
                 || parse_message_header(&line_text).is_some()
-                || !is_stack_trace_continuation(&line_text)
+                || !is_stack_trace_continuation(&line_text, &config.stack_trace_patterns)
             {
                 close_text_marker(
                     current,
@@ -1375,30 +1485,32 @@ fn scan_log_markers(
             continue;
         }
 
-        if let Some(header) = parse_message_header(&line_text) {
-            if let Some(current) = open_marker.take() {
-                close_message_marker(
-                    current,
-                    line_number.saturating_sub(1),
-                    line_start_byte,
-                    &mut markers,
-                    &mut payloads,
-                );
-            }
+        if config.rule_enabled.message_blocks {
+            if let Some(header) = parse_message_header(&line_text) {
+                if let Some(current) = open_marker.take() {
+                    close_message_marker(
+                        current,
+                        line_number.saturating_sub(1),
+                        line_start_byte,
+                        &mut markers,
+                        &mut payloads,
+                    );
+                }
 
-            let marker_id = format!("message-{next_marker_index}");
-            next_marker_index += 1;
-            open_marker = Some(OpenMarker {
-                header,
-                id: marker_id,
-                start_line: line_number,
-                start_byte: line_start_byte,
-                body_lines: Vec::new(),
-            });
-            continue;
+                let marker_id = format!("message-{next_marker_index}");
+                next_marker_index += 1;
+                open_marker = Some(OpenMarker {
+                    header,
+                    id: marker_id,
+                    start_line: line_number,
+                    start_byte: line_start_byte,
+                    body_lines: Vec::new(),
+                });
+                continue;
+            }
         }
 
-        if is_message_separator(&line_text) {
+        if config.rule_enabled.message_blocks && is_message_separator(&line_text) {
             if let Some(current) = open_marker.take() {
                 close_message_marker(
                     current,
@@ -1416,14 +1528,14 @@ fn scan_log_markers(
             continue;
         }
 
-        if line_text.trim() == "stack traceback:" {
+        if config.rule_enabled.error_stack && line_text.trim() == "stack traceback:" {
             let marker_id = format!("stack-{next_marker_index}");
             next_marker_index += 1;
             open_stack = Some(OpenTextBlock {
                 id: marker_id,
                 kind: "error_stack".to_string(),
                 title: "stack traceback".to_string(),
-                color: "#f46d75".to_string(),
+                color: config.kind_colors.error_stack.clone(),
                 line_time: String::new(),
                 start_line: line_number,
                 start_byte: line_start_byte,
@@ -1433,32 +1545,34 @@ fn scan_log_markers(
         }
 
         if let Some((line_time, content)) = timestamp_content {
-            if let Some(value) = parse_timestamped_json(content) {
-                let marker_id = format!("json-{next_marker_index}");
-                next_marker_index += 1;
-                let title = value
-                    .get("event_name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("JSON event")
-                    .to_string();
-                push_json_marker(
-                    marker_id,
-                    "json_event",
-                    title,
-                    "#b693ff",
-                    line_number,
-                    line_start_byte,
-                    line_end_byte,
-                    line_time,
-                    content.to_string(),
-                    value,
-                    &mut markers,
-                    &mut payloads,
-                );
-                continue;
+            if config.rule_enabled.json_event {
+                if let Some(value) = parse_timestamped_json(content) {
+                    let marker_id = format!("json-{next_marker_index}");
+                    next_marker_index += 1;
+                    let title = value
+                        .get("event_name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("JSON event")
+                        .to_string();
+                    push_json_marker(
+                        marker_id,
+                        "json_event",
+                        title,
+                        &config.kind_colors.json_event,
+                        line_number,
+                        line_start_byte,
+                        line_end_byte,
+                        line_time,
+                        content.to_string(),
+                        value,
+                        &mut markers,
+                        &mut payloads,
+                    );
+                    continue;
+                }
             }
 
-            if content.starts_with("ChangeState") {
+            if config.rule_enabled.state_change && content.starts_with("ChangeState") {
                 let marker_id = format!("state-{next_marker_index}");
                 next_marker_index += 1;
                 if content.contains('{') && !content.trim_end().ends_with('}') {
@@ -1466,7 +1580,7 @@ fn scan_log_markers(
                         id: marker_id,
                         kind: "state_change".to_string(),
                         title: content.trim_end_matches('{').trim().to_string(),
-                        color: "#f0c84b".to_string(),
+                        color: config.kind_colors.state_change.clone(),
                         line_time: line_time.to_string(),
                         start_line: line_number,
                         start_byte: line_start_byte,
@@ -1477,7 +1591,8 @@ fn scan_log_markers(
                         marker_id,
                         "state_change",
                         content.to_string(),
-                        "#f0c84b",
+                        &config.kind_colors.state_change,
+                        None,
                         line_number,
                         line_number,
                         line_start_byte,
@@ -1491,23 +1606,28 @@ fn scan_log_markers(
                 continue;
             }
 
-            if let Some((kind, title, color)) = keyword_marker(content) {
-                let marker_id = format!("keyword-{next_marker_index}");
-                next_marker_index += 1;
-                push_raw_marker(
-                    marker_id,
-                    kind,
-                    title,
-                    color,
-                    line_number,
-                    line_number,
-                    line_start_byte,
-                    line_end_byte,
-                    line_time,
-                    content.to_string(),
-                    &mut markers,
-                    &mut payloads,
-                );
+            if config.rule_enabled.keyword {
+                if let Some((kind, keyword_class, title, color)) =
+                    keyword_marker(content, &config.kind_colors, &config.keyword_rules)
+                {
+                    let marker_id = format!("keyword-{next_marker_index}");
+                    next_marker_index += 1;
+                    push_raw_marker(
+                        marker_id,
+                        kind,
+                        title,
+                        &color,
+                        Some(keyword_class),
+                        line_number,
+                        line_number,
+                        line_start_byte,
+                        line_end_byte,
+                        line_time,
+                        content.to_string(),
+                        &mut markers,
+                        &mut payloads,
+                    );
+                }
             }
         }
     }
@@ -1559,6 +1679,7 @@ fn close_message_marker(
             marker.header.message_id, marker.header.message_name
         ),
         color: color.to_string(),
+        keyword_class: String::new(),
         start_line: marker.start_line,
         end_line,
         start_byte: marker.start_byte,
@@ -1600,6 +1721,7 @@ fn close_text_marker(
         kind: marker.kind,
         title: marker.title,
         color: marker.color,
+        keyword_class: String::new(),
         start_line: marker.start_line,
         end_line,
         start_byte: marker.start_byte,
@@ -1645,6 +1767,7 @@ fn push_json_marker(
         kind: kind.to_string(),
         title,
         color: color.to_string(),
+        keyword_class: String::new(),
         start_line: line_number,
         end_line: line_number,
         start_byte,
@@ -1663,6 +1786,7 @@ fn push_raw_marker(
     kind: &str,
     title: String,
     color: &str,
+    keyword_class: Option<&str>,
     start_line: usize,
     end_line: usize,
     start_byte: u64,
@@ -1690,6 +1814,7 @@ fn push_raw_marker(
         kind: kind.to_string(),
         title,
         color: color.to_string(),
+        keyword_class: keyword_class.unwrap_or_default().to_string(),
         start_line,
         end_line,
         start_byte,
@@ -1814,22 +1939,19 @@ fn try_lenient_json_parse(raw: &str) -> Option<serde_json::Value> {
     None
 }
 
-fn is_stack_trace_continuation(line: &str) -> bool {
+fn is_stack_trace_continuation(line: &str, patterns: &[String]) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return true;
     }
 
-    trimmed.starts_with("(Filename:")
-        || trimmed.starts_with("at ")
-        || trimmed.starts_with("[C]:")
-        || trimmed.starts_with("UnityEngine.")
-        || trimmed.starts_with("System.")
-        || trimmed.starts_with("SPGF.")
-        || trimmed.starts_with("Assets/")
-        || trimmed.contains(": in function ")
-        || trimmed.contains(": in main chunk")
-        || trimmed.contains(") [0x")
+    patterns.iter().any(|pattern| {
+        if pattern.ends_with(' ') || pattern.ends_with(':') || pattern.starts_with(')') {
+            trimmed.contains(pattern.as_str())
+        } else {
+            trimmed.starts_with(pattern.as_str())
+        }
+    })
 }
 
 fn limit_marker_payload_for_ui(mut payload: MarkerPayload) -> MarkerPayload {
@@ -1939,17 +2061,27 @@ fn remove_outer_quotes_for_json_fields(raw: &str) -> Option<String> {
     }
 }
 
-fn keyword_marker(content: &str) -> Option<(&'static str, String, &'static str)> {
+fn keyword_marker<'a>(
+    content: &str,
+    colors: &MarkerKindColors,
+    rules: &MarkerKeywordRule,
+) -> Option<(&'static str, &'static str, String, String)> {
     let lower = content.to_ascii_lowercase();
-    if lower.contains("error")
-        || lower.contains("failed")
-        || lower.contains("not found")
-        || lower.contains("exception")
-    {
-        return Some(("keyword", content.to_string(), "#f46d75"));
+    if rules.error.iter().any(|kw| lower.contains(kw.as_str())) {
+        return Some((
+            "keyword",
+            "error",
+            content.to_string(),
+            colors.keyword_error.clone(),
+        ));
     }
-    if lower.contains("warn") || lower.contains("corrupt") || lower.contains("currupted") {
-        return Some(("keyword", content.to_string(), "#f0c84b"));
+    if rules.warning.iter().any(|kw| lower.contains(kw.as_str())) {
+        return Some((
+            "keyword",
+            "warning",
+            content.to_string(),
+            colors.keyword_warning.clone(),
+        ));
     }
     None
 }
@@ -2178,7 +2310,7 @@ fn fixture_line(profile: &str, line_count: usize) -> String {
 
 fn run_core_benchmark_sync(size_mb: u64, profile: &str) -> std::io::Result<CoreBenchmarkReport> {
     let fixture = generate_fixture(size_mb, profile)?;
-    let session = LogSession::open(PathBuf::from(&fixture.path))?;
+    let session = LogSession::open(PathBuf::from(&fixture.path), &MarkerConfig::default())?;
 
     let search = search_text_snapshot(
         1,
@@ -2880,7 +3012,8 @@ pub fn run() {
             get_marker_copy_text,
             copy_text_to_clipboard,
             refresh_log_file,
-            search_log_text
+            search_log_text,
+            update_marker_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running log_scope");
@@ -2899,7 +3032,7 @@ mod tests {
         let path = test_file_path("line-index.log");
         fs::write(&path, b"one\r\ntwo\nthree").unwrap();
 
-        let session = LogSession::open(path.clone()).unwrap();
+        let session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
 
         assert_eq!(session.line_offsets, vec![0, 5, 9]);
         assert_eq!(session.file_size, 14);
@@ -2910,7 +3043,7 @@ mod tests {
     fn reads_only_requested_line_range() {
         let path = test_file_path("line-range.log");
         fs::write(&path, b"alpha\nbeta\ngamma\ndelta\n").unwrap();
-        let session = LogSession::open(path.clone()).unwrap();
+        let session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
 
         let range = session.read_lines(7, 2, 2).unwrap();
 
@@ -2933,7 +3066,7 @@ mod tests {
         let path = test_file_path("empty.log");
         File::create(&path).unwrap();
 
-        let session = LogSession::open(path.clone()).unwrap();
+        let session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
 
         assert!(session.line_offsets.is_empty());
         assert_eq!(session.read_lines(1, 1, 20).unwrap().line_count, 0);
@@ -2944,10 +3077,10 @@ mod tests {
     fn refresh_indexes_appended_lines_without_rebuilding() {
         let path = test_file_path("append.log");
         fs::write(&path, b"one\n").unwrap();
-        let mut session = LogSession::open(path.clone()).unwrap();
+        let mut session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
 
         append_bytes(&path, b"two\nthree").unwrap();
-        let metadata = session.refresh(9).unwrap();
+        let metadata = session.refresh(9, &MarkerConfig::default()).unwrap();
         let range = session.read_lines(9, 1, 10).unwrap();
 
         assert_eq!(metadata.session_id, 9);
@@ -2969,10 +3102,10 @@ mod tests {
     fn refresh_rebuilds_after_truncation() {
         let path = test_file_path("truncate.log");
         fs::write(&path, b"one\ntwo\nthree\n").unwrap();
-        let mut session = LogSession::open(path.clone()).unwrap();
+        let mut session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
 
         fs::write(&path, b"fresh\n").unwrap();
-        let metadata = session.refresh(3).unwrap();
+        let metadata = session.refresh(3, &MarkerConfig::default()).unwrap();
         let range = session.read_lines(3, 1, 10).unwrap();
 
         assert!(metadata.was_truncated);
@@ -3002,7 +3135,7 @@ mod tests {
         )
         .unwrap();
 
-        let session = LogSession::open(path.clone()).unwrap();
+        let session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
 
         assert_eq!(session.markers.len(), 2);
         assert_eq!(session.markers[0].title, "[10] GETSERVER");
@@ -3041,7 +3174,7 @@ mod tests {
         )
         .unwrap();
 
-        let session = LogSession::open(path.clone()).unwrap();
+        let session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
         let login_markers = session
             .markers
             .iter()
@@ -3072,7 +3205,7 @@ mod tests {
         )
         .unwrap();
 
-        let session = LogSession::open(path.clone()).unwrap();
+        let session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
 
         assert!(session
             .markers
@@ -3098,6 +3231,41 @@ mod tests {
     }
 
     #[test]
+    fn respects_rule_enabled_switches() {
+        let path = test_file_path("mixed-markers-disabled.log");
+        fs::write(
+            &path,
+            concat!(
+                "13:04:34\t{\"event_name\":\"c_p_010_launch_game\",\"value\":1}\n",
+                "13:05:41\tChangeState\tInit\tframe\t1\t{\n",
+                "    \"n\": 0\n",
+                "}\n",
+                "13:05:41\t========= Send Message ([42] LOGIN) [05:05:41] =========\n",
+                "{}\n",
+                "============================================\n",
+                "stack traceback:\n",
+                "\tApplication.lua:28: in function <Application.lua:27>\n",
+                "13:05:42\tSaves/SaveFunc.lua:6: FuncUnlock not found: 149\n",
+            ),
+        )
+        .unwrap();
+
+        let mut config = MarkerConfig::default();
+        config.rule_enabled.json_event = false;
+        config.rule_enabled.state_change = false;
+        config.rule_enabled.message_blocks = false;
+
+        let session = LogSession::open(path.clone(), &config).unwrap();
+
+        assert!(!session.markers.iter().any(|marker| marker.kind == "json_event"));
+        assert!(!session.markers.iter().any(|marker| marker.kind == "state_change"));
+        assert!(!session.markers.iter().any(|marker| marker.kind == "message"));
+        assert!(session.markers.iter().any(|marker| marker.kind == "error_stack"));
+        assert!(session.markers.iter().any(|marker| marker.kind == "keyword"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn closes_stack_trace_before_next_plain_log_line() {
         let path = test_file_path("stack-end.log");
         fs::write(
@@ -3115,7 +3283,7 @@ mod tests {
         )
         .unwrap();
 
-        let session = LogSession::open(path.clone()).unwrap();
+        let session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
         let stack_marker = session
             .markers
             .iter()
@@ -3166,7 +3334,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let session = LogSession::open(path.clone()).unwrap();
+        let session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
 
         let next = search_text_snapshot(
             4,
@@ -3239,7 +3407,7 @@ mod tests {
             concat!("error err error42\n", "WARN warning\n", "fatal exception\n",),
         )
         .unwrap();
-        let session = LogSession::open(path.clone()).unwrap();
+        let session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
 
         let regex = search_text_snapshot(
             7,
@@ -3317,7 +3485,7 @@ mod tests {
         )
         .unwrap();
 
-        let session = LogSession::open(path.clone()).unwrap();
+        let session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
 
         assert_eq!(session.markers.len(), 1);
         assert_eq!(session.markers[0].message_id, 342);
@@ -3341,7 +3509,7 @@ mod tests {
             return;
         }
 
-        let session = LogSession::open(path).unwrap();
+        let session = LogSession::open(path, &MarkerConfig::default()).unwrap();
 
         assert!(session.markers.len() >= 100);
         assert!(session.markers.iter().any(
@@ -3367,7 +3535,7 @@ mod tests {
     #[test]
     fn generates_dense_marker_fixture_profile() {
         let fixture = generate_fixture(1, "dense-markers").unwrap();
-        let session = LogSession::open(PathBuf::from(&fixture.path)).unwrap();
+        let session = LogSession::open(PathBuf::from(&fixture.path), &MarkerConfig::default()).unwrap();
 
         assert_eq!(fixture.profile, "dense-markers");
         assert!(fixture.file_size >= 1024 * 1024);

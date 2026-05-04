@@ -1673,6 +1673,217 @@ button:disabled {
   min-width: 72px;
 }
 
+.marker-config-modal {
+  width: min(720px, calc(100vw - 32px));
+}
+
+.marker-config-body {
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.marker-config-section {
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  border: 1px solid #3a4a3e;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.marker-config-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0ebe2;
+  margin-bottom: 10px;
+}
+
+.marker-config-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.marker-config-section-header .marker-config-section-title {
+  margin-bottom: 0;
+}
+
+.marker-config-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #a8b8ac;
+  cursor: pointer;
+  user-select: none;
+}
+
+.marker-config-switch input {
+  margin: 0;
+}
+
+.marker-config-subsection {
+  padding: 8px 0;
+  border-bottom: 1px solid #2a3a2e;
+}
+
+.marker-config-subsection:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.marker-config-info {
+  font-size: 12px;
+  color: #8a9a8e;
+  line-height: 1.6;
+}
+
+.marker-config-info code {
+  background: #1a201b;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #a8b8ac;
+}
+
+.marker-config-color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.marker-config-color-row input[type="color"] {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #4a5a4e;
+  border-radius: 6px;
+  padding: 2px;
+  background: #2a302b;
+  cursor: pointer;
+}
+
+.marker-config-color-text {
+  width: 80px;
+  padding: 4px 8px;
+  border: 1px solid #4a5a4e;
+  border-radius: 6px;
+  background: #2a302b;
+  color: #e0ebe2;
+  font-size: 12px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  outline: none;
+}
+
+.marker-config-color-text:focus {
+  border-color: #3aa697;
+}
+
+.marker-config-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.marker-config-label {
+  font-size: 12px;
+  color: #a8b8ac;
+  white-space: nowrap;
+  min-width: 80px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.marker-config-keyword-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 10px;
+  border: 1px solid #4a5a4e;
+  border-radius: 6px;
+  background: #2a302b;
+  color: #e0ebe2;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.12s;
+}
+
+.marker-config-keyword-input:focus {
+  border-color: #3aa697;
+}
+
+.marker-config-textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #4a5a4e;
+  border-radius: 6px;
+  background: #2a302b;
+  color: #e0ebe2;
+  font-size: 12px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  outline: none;
+  resize: vertical;
+  margin-top: 6px;
+  transition: border-color 0.12s;
+}
+
+.marker-config-textarea:focus {
+  border-color: #3aa697;
+}
+
+.marker-config-severity-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.marker-config-severity-dot.severity-success { background: #40c057; }
+.marker-config-severity-dot.severity-error { background: #f46d75; }
+.marker-config-severity-dot.severity-warning { background: #f0c84b; }
+
+.marker-config-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #3a4a3e;
+}
+
+.marker-config-btn {
+  padding: 7px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.marker-config-btn.secondary {
+  background: transparent;
+  border-color: #4a5a4e;
+  color: #a8b8ac;
+}
+
+.marker-config-btn.secondary:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: #5a6a5e;
+}
+
+.marker-config-btn.primary {
+  background: #18706a;
+  color: #f2f7f3;
+}
+
+.marker-config-btn.primary:hover {
+  background: #1a7d76;
+}
+
 .server-filter-bar {
   display: flex;
   align-items: center;

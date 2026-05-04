@@ -203,6 +203,20 @@ Rust core 负责：
   - Marker 坐标系：右侧 Canvas 展示一个连续的 8 视口窗口。该窗口由当前 `firstVisibleLine` 和全文件滚动比例共同计算，使当前视口范围映射到矩形框内部；marker 只在落入该窗口时绘制，并按窗口内相对行号映射到纵向位置。
 - 右侧 minimap 的滑块位置、marker 窗口和 viewer 可见行都必须由同一个当前视口状态派生；拖动滑块时需要立即同步 viewer scrollTop/firstVisibleLine，使 marker 位置和矩形位置一起更新。矩形内点击不改变视口，矩形上/下方点击分别按一个当前视口高度向上/向下翻动。
 - 当前已补充轻量 extractor：单行 JSON 事件（优先用 `event_name` 作为标题）、`ChangeState ... { ... }` 块、Lua `stack traceback:` 块、基础关键字 marker（error/failed/not found/exception/warn/corrupt/currupted）。
+- marker 规则配置入口位于顶部工具栏尾部齿轮按钮；当前前后端共用同一份规则语义：Rust 扫描侧负责按配置生成 marker，前端只负责展示与文档导出，不能再根据硬编码颜色二次推断 keyword marker 属于错误或警告。
+- keyword marker 需要携带稳定的错误/警告子类型元数据；前端按该子类型映射当前配置颜色，使颜色修改可对已打开文件即时生效，而关键字集合本身仍需重新扫描后才更新。
+- 当前已实现第一版规则管理能力：`message_blocks`、`error_stack`、`json_event`、`state_change`、`keyword` 五类 extractor 支持启用/禁用；该开关属于提取规则配置，需重新扫描后生效。
+- marker 配置后续应扩展为“规则系统”而不只是颜色面板；第一优先级的扩展空间：
+  - 消息块规则：起始模式、结束策略、标题拼装、颜色策略可配置。
+  - JSON / ChangeState 规则：标题字段、起始关键字、结束条件、解析模式可配置。
+  - keyword 规则：支持 success/info/warning/error/critical 多级分类、优先级、大小写敏感、整词/包含/正则匹配、排除词。
+  - stack trace 规则：起始行模式、续行模式、最大续行数、按 Lua/C#/Unity 模板分组开关。
+  - 规则管理：启用/禁用、顺序调整、导入/导出、全局默认规则与按数据源覆盖。
+  - 展示配置：marker 形状、列表默认过滤、文档导出格式可配置。
+- 规则生效语义：
+  - 只影响展示层的配置（颜色、形状、列表过滤）应即时生效，不要求重新扫描。
+  - 影响提取结果的配置（关键字集合、起始/结束规则、JSON 标题字段等）必须在重新扫描后生效。
+  - 前端 UI 必须明确区分这两类配置，避免用户误以为所有修改都会即时改变 marker 集合。
 - `stack traceback:` 多行 marker 不能仅靠时间戳结束；需要按续行特征（Lua/C# 栈帧、`(Filename: ...)`、空行等）收口，遇到普通日志行时立即结束，避免错误吞并到文件末尾。
 - 当前 marker 索引在打开文件后构建；文件追加或截断刷新后会重建 marker 索引。该方案先保证正确性，后续高频 tail 压测如暴露成本，再改为增量 marker 扫描。
 

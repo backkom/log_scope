@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(npx vite *)",
+      "Bash(cargo test *)",
+      "Bash(cargo build *)"
+    ]
+  }
+}

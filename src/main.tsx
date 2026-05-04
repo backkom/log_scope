@@ -89,6 +89,7 @@ type LogMarker = {
   kind: string;
   title: string;
   color: string;
+  keywordClass: string;
   startLine: number;
   endLine: number;
   startByte: number;
@@ -166,6 +167,34 @@ type SelectedWordRange = {
   end: number;
 };
 
+type MarkerRuleConfig = {
+  version: number;
+  ruleEnabled: {
+    message_blocks: boolean;
+    error_stack: boolean;
+    json_event: boolean;
+    state_change: boolean;
+    keyword: boolean;
+  };
+  kindColors: {
+    error_stack: string;
+    json_event: string;
+    state_change: string;
+    keyword_error: string;
+    keyword_warning: string;
+  };
+  keywordRules: {
+    error: string[];
+    warning: string[];
+  };
+  severityRules: {
+    success: string[];
+    error: string[];
+    warning: string[];
+  };
+  stackTracePatterns: string[];
+};
+
 type PersistedFileSource = {
   path: string;
   displayName: string;
@@ -237,6 +266,37 @@ const TAIL_REFRESH_INTERVAL_MS = 1_000;
 const MINIMAP_WIDTH = 72;
 const GLOBAL_MINIMAP_HEIGHT = 44;
 const RIGHT_MINIMAP_FRAME_RATIO = 1 / 8;
+
+const DEFAULT_MARKER_RULE_CONFIG: MarkerRuleConfig = {
+  version: 2,
+  ruleEnabled: {
+    message_blocks: true,
+    error_stack: true,
+    json_event: true,
+    state_change: true,
+    keyword: true,
+  },
+  kindColors: {
+    error_stack: "#f46d75",
+    json_event: "#b693ff",
+    state_change: "#f0c84b",
+    keyword_error: "#f46d75",
+    keyword_warning: "#f0c84b",
+  },
+  keywordRules: {
+    error: ["error", "failed", "not found", "exception"],
+    warning: ["warn", "corrupt", "currupted"],
+  },
+  severityRules: {
+    success: ["success", "succeed", "without error", "no error"],
+    error: ["error", "exception", "fail", "fatal", "crash", "violat"],
+    warning: ["warn", "critical", "conflict", "invalid", "not ready", "not found", "out of date"],
+  },
+  stackTracePatterns: [
+    "(Filename:", "at ", "[C]:", "UnityEngine.", "System.", "SPGF.", "Assets/",
+    ": in function ", ": in main chunk", ") [0x",
+  ],
+};
 const MAX_TOKENIZED_CHARS = 4_096;
 const LARGE_FILE_DEGRADE_BYTES = 100 * 1024 * 1024;
 const HUGE_FILE_DEGRADE_BYTES = 300 * 1024 * 1024;
@@ -387,6 +447,15 @@ function CopyIcon() {
   );
 }
 
+function SettingsIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
 function App() {
   const [health, setHealth] = React.useState<HealthCheck | null>(null);
   const [placeholder, setPlaceholder] = React.useState<FileOpenPlaceholder | null>(null);
@@ -409,6 +478,9 @@ function App() {
   const [showFavoriteDialog, setShowFavoriteDialog] = React.useState(false);
   const [favoriteDialogName, setFavoriteDialogName] = React.useState("");
   const [favoriteDialogPath, setFavoriteDialogPath] = React.useState("");
+  const [showMarkerConfigModal, setShowMarkerConfigModal] = React.useState(false);
+  const [markerRuleConfig, setMarkerRuleConfig] = React.useState<MarkerRuleConfig>(DEFAULT_MARKER_RULE_CONFIG);
+  const saveMarkerConfigTimerRef = React.useRef<number | null>(null);
   const [isDisconnected, setIsDisconnected] = React.useState(false);
   const [showSourcePanel, setShowSourcePanel] = React.useState(false);
   const [sourcePanelWidth, setSourcePanelWidth] = React.useState(280);
@@ -479,6 +551,31 @@ function App() {
     invoke<HealthCheck>("health_check")
       .then(setHealth)
       .catch((err: unknown) => setError(String(err)));
+  }, []);
+
+  React.useEffect(() => {
+    try {
+      const stored = localStorage.getItem("logscope-marker-rules");
+      if (stored) {
+        const parsed = JSON.parse(stored) as Partial<MarkerRuleConfig>;
+        const d = DEFAULT_MARKER_RULE_CONFIG;
+        setMarkerRuleConfig({
+          version: parsed.version ?? d.version,
+          ruleEnabled: { ...d.ruleEnabled, ...parsed.ruleEnabled },
+          kindColors: { ...d.kindColors, ...parsed.kindColors },
+          keywordRules: {
+            error: parsed.keywordRules?.error ?? d.keywordRules.error,
+            warning: parsed.keywordRules?.warning ?? d.keywordRules.warning,
+          },
+          severityRules: {
+            success: parsed.severityRules?.success ?? d.severityRules.success,
+            error: parsed.severityRules?.error ?? d.severityRules.error,
+            warning: parsed.severityRules?.warning ?? d.severityRules.warning,
+          },
+          stackTracePatterns: parsed.stackTracePatterns ?? d.stackTracePatterns,
+        });
+      }
+    } catch { /* ignore */ }
   }, []);
 
   // UDP discovery lifecycle: start/stop when socket modal opens/closes
@@ -604,6 +701,48 @@ function App() {
     searchWrapAround,
     searchFindAll,
   ]);
+
+  React.useEffect(() => {
+    if (saveMarkerConfigTimerRef.current !== null) {
+      window.clearTimeout(saveMarkerConfigTimerRef.current);
+    }
+    saveMarkerConfigTimerRef.current = window.setTimeout(() => {
+      try {
+        localStorage.setItem("logscope-marker-rules", JSON.stringify(markerRuleConfig));
+      } catch { /* ignore */ }
+    }, 400);
+    return () => {
+      if (saveMarkerConfigTimerRef.current !== null) {
+        window.clearTimeout(saveMarkerConfigTimerRef.current);
+      }
+    };
+  }, [markerRuleConfig]);
+
+  React.useEffect(() => {
+    invoke("update_marker_config", {
+      config: {
+        rule_enabled: {
+          message_blocks: markerRuleConfig.ruleEnabled.message_blocks,
+          error_stack: markerRuleConfig.ruleEnabled.error_stack,
+          json_event: markerRuleConfig.ruleEnabled.json_event,
+          state_change: markerRuleConfig.ruleEnabled.state_change,
+          keyword: markerRuleConfig.ruleEnabled.keyword,
+        },
+        kind_colors: {
+          error_stack: markerRuleConfig.kindColors.error_stack,
+          json_event: markerRuleConfig.kindColors.json_event,
+          state_change: markerRuleConfig.kindColors.state_change,
+          keyword_error: markerRuleConfig.kindColors.keyword_error,
+          keyword_warning: markerRuleConfig.kindColors.keyword_warning,
+        },
+        keyword_rules: {
+          error: markerRuleConfig.keywordRules.error,
+          warning: markerRuleConfig.keywordRules.warning,
+        },
+        stack_trace_patterns: markerRuleConfig.stackTracePatterns,
+      },
+    }).catch((err: unknown) => console.warn("Unable to sync marker config to backend", err));
+  }, [markerRuleConfig]);
 
   React.useEffect(() => {
     const title = logFile?.path ? `${logFile.path} - Log Scope` : "Log Scope";
@@ -1836,7 +1975,7 @@ function App() {
     for (const marker of markers) {
       const point = markerGlobalMinimapPoint(marker, logFile.lineCount, width, GLOBAL_MINIMAP_HEIGHT);
       const isSelected = selectedMarker?.id === marker.id;
-      context.fillStyle = marker.color;
+      context.fillStyle = getMarkerDisplayColor(marker, markerRuleConfig);
       if (marker.kind === "message") {
         drawMessageTriangle(context, point.x, point.y, isSelected ? 5 : 4, marker.direction);
       } else {
@@ -1850,7 +1989,7 @@ function App() {
     }
     const drawDurationMs = performance.now() - drawStartedAt;
     setPerfSnapshot((current) => ({ ...current, globalMinimapMs: drawDurationMs }));
-  }, [firstVisibleLine, globalMinimapWidth, logFile, markers, selectedMarker?.id, viewportLineCount]);
+  }, [firstVisibleLine, globalMinimapWidth, logFile, markers, markerRuleConfig, selectedMarker?.id, viewportLineCount]);
 
   React.useEffect(() => {
     const canvas = localMinimapRef.current;
@@ -1884,7 +2023,7 @@ function App() {
 
       const point = markerRightMinimapPoint(marker, rightMinimapRange.startLine, rightMinimapRange.lineCount, height);
       const isSelected = selectedMarker?.id === marker.id;
-      context.fillStyle = marker.color;
+      context.fillStyle = getMarkerDisplayColor(marker, markerRuleConfig);
       if (marker.kind === "message") {
         drawMessageTriangle(context, point.x, point.y, isSelected ? 6 : 5, marker.direction);
       } else {
@@ -1898,7 +2037,7 @@ function App() {
     }
     const drawDurationMs = performance.now() - drawStartedAt;
     setPerfSnapshot((current) => ({ ...current, localMinimapMs: drawDurationMs }));
-  }, [firstVisibleLine, logFile, markers, rightMinimapRange, selectedMarker?.id, viewportHeight, viewportLineCount]);
+  }, [firstVisibleLine, logFile, markers, markerRuleConfig, rightMinimapRange, selectedMarker?.id, viewportHeight, viewportLineCount]);
 
   const handleGlobalMinimapClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!logFile) {
@@ -2068,6 +2207,15 @@ function App() {
           >
             <RightPanelIcon />
           </button>
+          <span className="toolbar-separator" />
+          <button
+            type="button"
+            className="toolbar-icon-button"
+            onClick={() => setShowMarkerConfigModal(true)}
+            title="标记规则配置"
+          >
+            <SettingsIcon />
+          </button>
         </div>
       </header>
 
@@ -2142,7 +2290,7 @@ function App() {
                           onClick={() => void selectMarker(marker)}
                           title={`${marker.title}\n${marker.kind}${marker.direction ? ` · ${marker.direction}` : ""}${marker.messageName ? ` · ${marker.messageName}` : ""}\nL${marker.startLine}–L${marker.endLine} · ${marker.parseStatus}${marker.lineTime ? `\n${marker.lineTime}` : ""}`}
                         >
-                          <span className="marker-list-item-dot" style={{ background: marker.color }} />
+                          <span className="marker-list-item-dot" style={{ background: getMarkerDisplayColor(marker, markerRuleConfig) }} />
                           <span className="marker-list-item-title">{marker.title}</span>
                           <span className="marker-list-item-time">{marker.lineTime || ""}</span>
                           <span className="marker-list-item-line">L{marker.startLine}</span>
@@ -2196,7 +2344,7 @@ function App() {
                 <>
                   <div className="marker-summary-row">
                     <button type="button" className="marker-summary" onClick={() => scrollToLine(selectedMarker.startLine)}>
-                      <span className="marker-dot" style={{ background: selectedMarker.color }} />
+                      <span className="marker-dot" style={{ background: getMarkerDisplayColor(selectedMarker, markerRuleConfig) }} />
                       <strong>{selectedMarker.title}</strong>
                       <small>
                         {selectedMarker.kind} {selectedMarker.direction ? `· ${selectedMarker.direction}` : ""} · L
@@ -2304,7 +2452,7 @@ function App() {
                           className={`log-row${line.text === undefined ? " is-loading" : ""}${visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
                             }${isSelectedMarkerLine ? " has-selected-marker" : ""
                             }${activeSearchLine === line.lineNumber ? " has-active-search" : ""}${selectedLine === line.lineNumber ? " has-selected-line" : ""
-                            } ${getSeverityClass(line.text, logColorMode)}`}
+                            } ${getSeverityClass(line.text, logColorMode, markerRuleConfig.severityRules)}`}
                           key={line.lineNumber}
                           data-line-number={line.lineNumber}
                         >
@@ -2831,6 +2979,351 @@ function App() {
                 onClick={() => void handleFavoriteDialogConfirm()}
               >
                 确定
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showMarkerConfigModal && createPortal(
+        <div
+          className="modal-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowMarkerConfigModal(false);
+            }
+          }}
+        >
+          <div
+            className="modal-content marker-config-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div className="modal-header-left">
+                <svg className="modal-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                </svg>
+                <h2>标记规则配置</h2>
+              </div>
+              <button
+                type="button"
+                className="modal-close-button"
+                onClick={() => setShowMarkerConfigModal(false)}
+                title="关闭"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="marker-config-body">
+              {/* Message Blocks */}
+              <div className="marker-config-section">
+                <div className="marker-config-section-header">
+                  <div className="marker-config-section-title">消息块 (Message Blocks)</div>
+                  <label className="marker-config-switch">
+                    <input
+                      type="checkbox"
+                      checked={markerRuleConfig.ruleEnabled.message_blocks}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c,
+                        ruleEnabled: { ...c.ruleEnabled, message_blocks: e.target.checked },
+                      }))}
+                    />
+                    <span>{markerRuleConfig.ruleEnabled.message_blocks ? "启用" : "禁用"}</span>
+                  </label>
+                </div>
+                <div className="marker-config-info">
+                  检测模式: <code>HH:MM:SS&#9;=== Send/Receive Message ([id]) name ===</code><br />
+                  颜色: 根据 message_id 哈希自动计算 HSL 颜色，不可手动配置。<br />
+                  多行: 消息体持续到分隔线 (<code>====...</code>) 或下一个消息头。
+                </div>
+              </div>
+
+              {/* Stack Trace */}
+              <div className="marker-config-section">
+                <div className="marker-config-section-header">
+                  <div className="marker-config-section-title">堆栈跟踪 (Stack Trace)</div>
+                  <label className="marker-config-switch">
+                    <input
+                      type="checkbox"
+                      checked={markerRuleConfig.ruleEnabled.error_stack}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c,
+                        ruleEnabled: { ...c.ruleEnabled, error_stack: e.target.checked },
+                      }))}
+                    />
+                    <span>{markerRuleConfig.ruleEnabled.error_stack ? "启用" : "禁用"}</span>
+                  </label>
+                </div>
+                <div className="marker-config-color-row">
+                  <span className="marker-config-label">颜色:</span>
+                  <input
+                    type="color"
+                    value={markerRuleConfig.kindColors.error_stack}
+                    onChange={(e) => setMarkerRuleConfig((c) => ({
+                      ...c, kindColors: { ...c.kindColors, error_stack: e.target.value },
+                    }))}
+                  />
+                  <input
+                    className="marker-config-color-text"
+                    type="text"
+                    value={markerRuleConfig.kindColors.error_stack}
+                    onChange={(e) => setMarkerRuleConfig((c) => ({
+                      ...c, kindColors: { ...c.kindColors, error_stack: e.target.value },
+                    }))}
+                  />
+                </div>
+                <div className="marker-config-info">
+                  检测模式: 行内容为 <code>stack traceback:</code><br />
+                  延续模式 (每行一个):
+                </div>
+                <textarea
+                  className="marker-config-textarea"
+                  value={markerRuleConfig.stackTracePatterns.join("\n")}
+                  onChange={(e) => setMarkerRuleConfig((c) => ({
+                    ...c, stackTracePatterns: e.target.value.split("\n").filter((s) => s.length > 0),
+                  }))}
+                  rows={5}
+                />
+              </div>
+
+              {/* JSON Events */}
+              <div className="marker-config-section">
+                <div className="marker-config-section-header">
+                  <div className="marker-config-section-title">JSON 事件 (JSON Events)</div>
+                  <label className="marker-config-switch">
+                    <input
+                      type="checkbox"
+                      checked={markerRuleConfig.ruleEnabled.json_event}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c,
+                        ruleEnabled: { ...c.ruleEnabled, json_event: e.target.checked },
+                      }))}
+                    />
+                    <span>{markerRuleConfig.ruleEnabled.json_event ? "启用" : "禁用"}</span>
+                  </label>
+                </div>
+                <div className="marker-config-color-row">
+                  <span className="marker-config-label">颜色:</span>
+                  <input
+                    type="color"
+                    value={markerRuleConfig.kindColors.json_event}
+                    onChange={(e) => setMarkerRuleConfig((c) => ({
+                      ...c, kindColors: { ...c.kindColors, json_event: e.target.value },
+                    }))}
+                  />
+                  <input
+                    className="marker-config-color-text"
+                    type="text"
+                    value={markerRuleConfig.kindColors.json_event}
+                    onChange={(e) => setMarkerRuleConfig((c) => ({
+                      ...c, kindColors: { ...c.kindColors, json_event: e.target.value },
+                    }))}
+                  />
+                </div>
+                <div className="marker-config-info">
+                  检测模式: <code>HH:MM:SS&#9;{"{...}"}</code>，内容为有效 JSON。<br />
+                  标题: 从 JSON 的 <code>event_name</code> 字段提取。
+                </div>
+              </div>
+
+              {/* State Change */}
+              <div className="marker-config-section">
+                <div className="marker-config-section-header">
+                  <div className="marker-config-section-title">状态变更 (ChangeState)</div>
+                  <label className="marker-config-switch">
+                    <input
+                      type="checkbox"
+                      checked={markerRuleConfig.ruleEnabled.state_change}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c,
+                        ruleEnabled: { ...c.ruleEnabled, state_change: e.target.checked },
+                      }))}
+                    />
+                    <span>{markerRuleConfig.ruleEnabled.state_change ? "启用" : "禁用"}</span>
+                  </label>
+                </div>
+                <div className="marker-config-color-row">
+                  <span className="marker-config-label">颜色:</span>
+                  <input
+                    type="color"
+                    value={markerRuleConfig.kindColors.state_change}
+                    onChange={(e) => setMarkerRuleConfig((c) => ({
+                      ...c, kindColors: { ...c.kindColors, state_change: e.target.value },
+                    }))}
+                  />
+                  <input
+                    className="marker-config-color-text"
+                    type="text"
+                    value={markerRuleConfig.kindColors.state_change}
+                    onChange={(e) => setMarkerRuleConfig((c) => ({
+                      ...c, kindColors: { ...c.kindColors, state_change: e.target.value },
+                    }))}
+                  />
+                </div>
+                <div className="marker-config-info">
+                  检测模式: 时间戳行内容以 <code>ChangeState</code> 开头。<br />
+                  多行: 若包含 <code>{"{"}</code> 但不以 <code>{"}"}</code> 结尾，持续收集到 <code>{"}"}</code>。
+                </div>
+              </div>
+
+              {/* Keyword Markers */}
+              <div className="marker-config-section">
+                <div className="marker-config-section-header">
+                  <div className="marker-config-section-title">关键字标记 (Keyword Markers)</div>
+                  <label className="marker-config-switch">
+                    <input
+                      type="checkbox"
+                      checked={markerRuleConfig.ruleEnabled.keyword}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c,
+                        ruleEnabled: { ...c.ruleEnabled, keyword: e.target.checked },
+                      }))}
+                    />
+                    <span>{markerRuleConfig.ruleEnabled.keyword ? "启用" : "禁用"}</span>
+                  </label>
+                </div>
+                <div className="marker-config-subsection">
+                  <div className="marker-config-color-row">
+                    <span className="marker-config-label">错误类颜色:</span>
+                    <input
+                      type="color"
+                      value={markerRuleConfig.kindColors.keyword_error}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c, kindColors: { ...c.kindColors, keyword_error: e.target.value },
+                      }))}
+                    />
+                    <input
+                      className="marker-config-color-text"
+                      type="text"
+                      value={markerRuleConfig.kindColors.keyword_error}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c, kindColors: { ...c.kindColors, keyword_error: e.target.value },
+                      }))}
+                    />
+                  </div>
+                  <div className="marker-config-row">
+                    <span className="marker-config-label">错误关键字:</span>
+                    <input
+                      className="marker-config-keyword-input"
+                      type="text"
+                      value={markerRuleConfig.keywordRules.error.join(", ")}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c, keywordRules: { ...c.keywordRules, error: e.target.value.split(",").map((s) => s.trim()).filter((s) => s.length > 0) },
+                      }))}
+                      placeholder="逗号分隔"
+                    />
+                  </div>
+                </div>
+                <div className="marker-config-subsection">
+                  <div className="marker-config-color-row">
+                    <span className="marker-config-label">警告类颜色:</span>
+                    <input
+                      type="color"
+                      value={markerRuleConfig.kindColors.keyword_warning}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c, kindColors: { ...c.kindColors, keyword_warning: e.target.value },
+                      }))}
+                    />
+                    <input
+                      className="marker-config-color-text"
+                      type="text"
+                      value={markerRuleConfig.kindColors.keyword_warning}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c, kindColors: { ...c.kindColors, keyword_warning: e.target.value },
+                      }))}
+                    />
+                  </div>
+                  <div className="marker-config-row">
+                    <span className="marker-config-label">警告关键字:</span>
+                    <input
+                      className="marker-config-keyword-input"
+                      type="text"
+                      value={markerRuleConfig.keywordRules.warning.join(", ")}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c, keywordRules: { ...c.keywordRules, warning: e.target.value.split(",").map((s) => s.trim()).filter((s) => s.length > 0) },
+                      }))}
+                      placeholder="逗号分隔"
+                    />
+                  </div>
+                </div>
+                <div className="marker-config-info">
+                  仅对带时间戳的行生效，每行只匹配一次（按优先级：错误类 &gt; 警告类）。
+                </div>
+              </div>
+
+              {/* Severity Coloring */}
+              <div className="marker-config-section">
+                <div className="marker-config-section-title">行严重级别着色 (Severity Coloring)</div>
+                <div className="marker-config-info" style={{ marginBottom: 8 }}>
+                  用于日志行的背景着色，独立于标记系统。
+                </div>
+                {(["success", "error", "warning"] as const).map((level) => (
+                  <div className="marker-config-row" key={level}>
+                    <span className="marker-config-label">
+                      <span className={`marker-config-severity-dot severity-${level}`} />
+                      {level === "success" ? "成功" : level === "error" ? "错误" : "警告"}:
+                    </span>
+                    <input
+                      className="marker-config-keyword-input"
+                      type="text"
+                      value={markerRuleConfig.severityRules[level].join(", ")}
+                      onChange={(e) => setMarkerRuleConfig((c) => ({
+                        ...c, severityRules: {
+                          ...c.severityRules,
+                          [level]: e.target.value.split(",").map((s) => s.trim()).filter((s) => s.length > 0),
+                        },
+                      }))}
+                      placeholder="逗号分隔"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="marker-config-info" style={{ marginTop: 8, marginBottom: 4 }}>
+              颜色类配置会即时生效；规则启用状态、关键字集合和堆栈延续模式需要重新打开文件或点击「重新扫描」后生效。
+            </div>
+
+            <div className="marker-config-actions">
+              <button
+                type="button"
+                className="marker-config-btn secondary"
+                onClick={() => {
+                  const doc = generateMarkerRuleDoc(markerRuleConfig);
+                  navigator.clipboard.writeText(doc).catch(() => {});
+                }}
+              >
+                复制文档
+              </button>
+              <div style={{ flex: 1 }} />
+              {filePath && (
+                <button
+                  type="button"
+                  className="marker-config-btn secondary"
+                  onClick={() => {
+                    setShowMarkerConfigModal(false);
+                    openPath(filePath);
+                  }}
+                >
+                  重新扫描
+                </button>
+              )}
+              <button
+                type="button"
+                className="marker-config-btn secondary"
+                onClick={() => setMarkerRuleConfig(DEFAULT_MARKER_RULE_CONFIG)}
+              >
+                恢复默认
+              </button>
+              <button
+                type="button"
+                className="marker-config-btn primary"
+                onClick={() => setShowMarkerConfigModal(false)}
+              >
+                关闭
               </button>
             </div>
           </div>
@@ -3430,39 +3923,94 @@ function getContainingRangeEdge(
   return edge === "start" ? range.start : range.end;
 }
 
-function getSeverityClass(text: string | undefined, colorMode: "full" | "severity" | "off") {
+function generateMarkerRuleDoc(config: MarkerRuleConfig): string {
+  const lines: string[] = [
+    "# Log Scope 标记规则文档",
+    "",
+    "## 1. 消息块 (Message Blocks)",
+    `- 启用: ${config.ruleEnabled.message_blocks ? "是" : "否"}`,
+    "- Kind: `message`",
+    "- 检测: `HH:MM:SS\\t=== Send/Receive Message ([id]) name ===`",
+    "- 颜色: 根据 message_id 哈希自动计算 HSL",
+    "- 多行: 持续到 `====...` 分隔线或下一个消息头",
+    "",
+    "## 2. 堆栈跟踪 (Stack Trace)",
+    `- 启用: ${config.ruleEnabled.error_stack ? "是" : "否"}`,
+    "- Kind: `error_stack`",
+    `- 颜色: \`${config.kindColors.error_stack}\``,
+    "- 检测: 行内容为 `stack traceback:`",
+    "- 延续模式:",
+    ...config.stackTracePatterns.map((p) => `  - \`${p}\``),
+    "",
+    "## 3. JSON 事件 (JSON Events)",
+    `- 启用: ${config.ruleEnabled.json_event ? "是" : "否"}`,
+    "- Kind: `json_event`",
+    `- 颜色: \`${config.kindColors.json_event}\``,
+    "- 检测: `HH:MM:SS\\t{...}` 有效 JSON",
+    "- 标题: 从 `event_name` 字段提取",
+    "",
+    "## 4. 状态变更 (ChangeState)",
+    `- 启用: ${config.ruleEnabled.state_change ? "是" : "否"}`,
+    "- Kind: `state_change`",
+    `- 颜色: \`${config.kindColors.state_change}\``,
+    "- 检测: 时间戳行以 `ChangeState` 开头",
+    "- 多行: 若含 `{` 但不以 `}` 结尾，持续到 `}`",
+    "",
+    "## 5. 关键字标记 (Keyword Markers)",
+    `- 启用: ${config.ruleEnabled.keyword ? "是" : "否"}`,
+    "- Kind: `keyword`",
+    `- 错误类 (${config.kindColors.keyword_error}): ${config.keywordRules.error.map((k) => `\`${k}\``).join(", ")}`,
+    `- 警告类 (${config.kindColors.keyword_warning}): ${config.keywordRules.warning.map((k) => `\`${k}\``).join(", ")}`,
+    "- 仅对带时间戳的行生效",
+    "",
+    "## 6. 行严重级别着色 (Severity Coloring)",
+    `- 成功: ${config.severityRules.success.map((k) => `\`${k}\``).join(", ")}`,
+    `- 错误: ${config.severityRules.error.map((k) => `\`${k}\``).join(", ")}`,
+    `- 警告: ${config.severityRules.warning.map((k) => `\`${k}\``).join(", ")}`,
+    "",
+    "## 扫描优先级",
+    "1. 堆栈跟踪延续",
+    "2. ChangeState 延续",
+    "3. 消息头 (Send/Receive)",
+    "4. 消息分隔线",
+    "5. 消息体累积",
+    "6. `stack traceback:` 开始",
+    "7. JSON 事件",
+    "8. `ChangeState` 开始",
+    "9. 关键字匹配",
+  ];
+  return lines.join("\n");
+}
+
+function getMarkerDisplayColor(marker: LogMarker, config: MarkerRuleConfig): string {
+  if (marker.kind === "error_stack") return config.kindColors.error_stack;
+  if (marker.kind === "json_event") return config.kindColors.json_event;
+  if (marker.kind === "state_change") return config.kindColors.state_change;
+  if (marker.kind === "keyword") {
+    if (marker.keywordClass === "error") {
+      return config.kindColors.keyword_error;
+    }
+    if (marker.keywordClass === "warning") {
+      return config.kindColors.keyword_warning;
+    }
+  }
+  return marker.color;
+}
+
+function getSeverityClass(text: string | undefined, colorMode: "full" | "severity" | "off", severityRules?: MarkerRuleConfig["severityRules"]) {
   if (!text || colorMode === "off") {
     return "";
   }
 
+  const rules = severityRules ?? DEFAULT_MARKER_RULE_CONFIG.severityRules;
   const lower = text.toLocaleLowerCase();
-  if (
-    lower.includes("success") ||
-    lower.includes("succeed") ||
-    lower.includes("without error") ||
-    lower.includes("no error")
-  ) {
+  if (rules.success.some((kw) => lower.includes(kw))) {
     return "severity-success";
   }
-  if (
-    lower.includes("error") ||
-    lower.includes("exception") ||
-    lower.includes("fail") ||
-    lower.includes("fatal") ||
-    lower.includes("crash") ||
-    lower.includes("violat")
-  ) {
+  if (rules.error.some((kw) => lower.includes(kw))) {
     return "severity-error";
   }
-  if (
-    lower.includes("warn") ||
-    lower.includes("critical") ||
-    lower.includes("conflict") ||
-    lower.includes("invalid") ||
-    lower.includes("not ready") ||
-    lower.includes("not found") ||
-    lower.includes("out of date")
-  ) {
+  if (rules.warning.some((kw) => lower.includes(kw))) {
     return "severity-warning";
   }
   return "";
