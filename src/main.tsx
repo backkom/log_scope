@@ -1460,12 +1460,14 @@ function App() {
   }, [showSourcePanel, markerSplitRatio]);
 
   const selectMarker = React.useCallback(
-    async (marker: LogMarker) => {
+    async (marker: LogMarker, options?: { keepPanelState?: boolean }) => {
       if (!logFile) {
         return;
       }
       setSelectedMarker(marker);
-      setShowSourcePanel(true);
+      if (!options?.keepPanelState) {
+        setShowSourcePanel(true);
+      }
       setSelectedPayload(null);
       setCopiedMarkerId(null);
       if (!isMarkerInViewport(marker)) {
@@ -1783,7 +1785,6 @@ function App() {
         }
       }
       if (
-        showSourcePanel &&
         (event.key === "ArrowDown" || event.key === "ArrowUp") &&
         !findBarOpen &&
         !gotoBarOpen &&
@@ -1832,7 +1833,7 @@ function App() {
         }
         if (nextIdx !== currentIdx) {
           event.preventDefault();
-          void selectMarker(filteredMarkers[nextIdx]);
+          void selectMarker(filteredMarkers[nextIdx], { keepPanelState: true });
         }
       }
       if (event.key === "F3" && (findBarOpen || searchQuery)) {
