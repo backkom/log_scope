@@ -266,6 +266,81 @@ const TAIL_REFRESH_INTERVAL_MS = 1_000;
 const MINIMAP_WIDTH = 72;
 const GLOBAL_MINIMAP_HEIGHT = 44;
 const RIGHT_MINIMAP_FRAME_RATIO = 1 / 8;
+// Browser DOM max scrollHeight is ~16,777,216px (2^24). We cap well below that
+// to avoid floating-point precision issues at the boundary.
+const MAX_SCROLL_HEIGHT = 10_000_000;
+
+/**
+ * Returns the DOM scroll-space height for the given total line count.
+ * When the natural height (totalLines * ROW_HEIGHT) exceeds MAX_SCROLL_HEIGHT,
+ * we clamp to MAX_SCROLL_HEIGHT so the browser scrollbar still works.
+ */
+function getScrollSpaceHeight(totalLines: number, viewportHeight: number): number {
+  const naturalHeight = totalLines * ROW_HEIGHT + BOTTOM_PADDING_ROWS * ROW_HEIGHT;
+  const cappedHeight = Math.min(naturalHeight, MAX_SCROLL_HEIGHT);
+  return Math.max(cappedHeight, viewportHeight);
+}
+
+/**
+ * Returns true when the file is large enough that DOM scroll coordinates
+ * cannot represent every line at full ROW_HEIGHT resolution.
+ */
+function needsVirtualScroll(totalLines: number): boolean {
+  return totalLines * ROW_HEIGHT > MAX_SCROLL_HEIGHT;
+}
+
+/**
+ * Convert a DOM scrollTop value to the corresponding first-visible line number (1-based).
+ * For small files this is a trivial division; for huge files it uses ratio mapping.
+ */
+function scrollTopToLine(domScrollTop: number, totalLines: number, viewportHeight: number): number {
+  if (totalLines <= 0) return 1;
+  if (!needsVirtualScroll(totalLines)) {
+    return Math.min(Math.floor(domScrollTop / ROW_HEIGHT) + 1, Math.max(totalLines, 1));
+  }
+  // Ratio-based: domScrollTop / maxDomScroll = (line - 1) / (maxLine - 1)
+  const viewportLines = Math.max(1, Math.ceil(viewportHeight / ROW_HEIGHT));
+  const maxLine = Math.max(1, totalLines - viewportLines + 1 + BOTTOM_PADDING_ROWS);
+  const scrollSpaceH = getScrollSpaceHeight(totalLines, viewportHeight);
+  const maxDomScroll = Math.max(1, scrollSpaceH - viewportHeight);
+  const ratio = Math.min(1, Math.max(0, domScrollTop / maxDomScroll));
+  return Math.min(Math.max(1, Math.round(1 + ratio * (maxLine - 1))), totalLines);
+}
+
+/**
+ * Convert a logical line number (1-based) to the corresponding DOM scrollTop value.
+ * Inverse of scrollTopToLine.
+ */
+function lineToScrollTop(line: number, totalLines: number, viewportHeight: number): number {
+  if (totalLines <= 0) return 0;
+  const safeLine = Math.min(Math.max(1, line), totalLines);
+  if (!needsVirtualScroll(totalLines)) {
+    return (safeLine - 1) * ROW_HEIGHT;
+  }
+  const viewportLines = Math.max(1, Math.ceil(viewportHeight / ROW_HEIGHT));
+  const maxLine = Math.max(1, totalLines - viewportLines + 1 + BOTTOM_PADDING_ROWS);
+  const scrollSpaceH = getScrollSpaceHeight(totalLines, viewportHeight);
+  const maxDomScroll = Math.max(1, scrollSpaceH - viewportHeight);
+  const ratio = maxLine > 1 ? (safeLine - 1) / (maxLine - 1) : 0;
+  return Math.max(0, Math.min(maxDomScroll, Math.round(ratio * maxDomScroll)));
+}
+
+/**
+ * Convert a logical line number to the CSS translateY offset (in px) for the
+ * visible-lines container, relative to the current DOM scrollTop.
+ * This always uses real ROW_HEIGHT positioning regardless of virtual scroll.
+ */
+function lineToVisibleOffset(startLine: number, domScrollTop: number, totalLines: number, viewportHeight: number): number {
+  if (!needsVirtualScroll(totalLines)) {
+    return (startLine - 1) * ROW_HEIGHT - domScrollTop;
+  }
+  // In virtual scroll mode, the rendered lines are positioned relative to
+  // the logical first-visible line derived from domScrollTop.
+  const firstLine = scrollTopToLine(domScrollTop, totalLines, viewportHeight);
+  // Offset the rendered block so that `firstLine` appears at the top of the viewport
+  // (minus the overscan rows above it).
+  return (startLine - firstLine) * ROW_HEIGHT;
+}
 
 const DEFAULT_MARKER_RULE_CONFIG: MarkerRuleConfig = {
   version: 2,
@@ -917,7 +992,7 @@ function App() {
   }, []);
 
   const firstVisibleLine = logFile
-    ? Math.min(Math.floor(scrollTop / ROW_HEIGHT) + 1, Math.max(logFile.lineCount, 1))
+    ? scrollTopToLine(scrollTop, logFile.lineCount, viewportHeight)
     : 1;
   const requestedStartLine = Math.max(1, firstVisibleLine - OVERSCAN_ROWS);
   const requestedLineCount =
@@ -996,7 +1071,7 @@ function App() {
           if (followTail) {
             requestAnimationFrame(() => {
               if (viewportRef.current) {
-                viewportRef.current.scrollTop = metadata.lineCount * ROW_HEIGHT;
+                viewportRef.current.scrollTop = lineToScrollTop(metadata.lineCount, metadata.lineCount, viewportHeight);
               }
             });
           } else {
@@ -1259,7 +1334,7 @@ function App() {
       return;
     }
     const safeLine = Math.min(Math.max(1, line), Math.max(logFile.lineCount, 1));
-    viewportRef.current.scrollTop = (safeLine - 1) * ROW_HEIGHT;
+    viewportRef.current.scrollTop = lineToScrollTop(safeLine, logFile.lineCount, viewportHeight);
     setPendingTailLines(0);
   };
 
@@ -1269,8 +1344,10 @@ function App() {
         return;
       }
       const safeLine = Math.min(Math.max(1, line), Math.max(logFile.lineCount, 1));
-      const centeredScrollTop = (safeLine - 1) * ROW_HEIGHT - Math.max(0, viewportHeight - ROW_HEIGHT) / 2;
-      viewportRef.current.scrollTop = Math.max(0, centeredScrollTop);
+      // Compute which line should be at the top of the viewport to center the target line
+      const halfViewportLines = Math.floor(Math.max(0, viewportHeight - ROW_HEIGHT) / (2 * ROW_HEIGHT));
+      const topLine = Math.max(1, safeLine - halfViewportLines);
+      viewportRef.current.scrollTop = lineToScrollTop(topLine, logFile.lineCount, viewportHeight);
       if (options?.markLine) {
         setSelectedLine(safeLine);
       }
@@ -1281,32 +1358,23 @@ function App() {
 
   const isLineInViewport = React.useCallback(
     (line: number) => {
-      const viewport = viewportRef.current;
-      if (!logFile || !viewport) {
+      if (!logFile) {
         return false;
       }
-      const lineTop = (line - 1) * ROW_HEIGHT;
-      const lineBottom = lineTop + ROW_HEIGHT;
-      const viewportTop = viewport.scrollTop;
-      const viewportBottom = viewportTop + viewport.clientHeight;
-      return lineBottom > viewportTop && lineTop < viewportBottom;
+      return line >= firstVisibleLine && line < firstVisibleLine + Math.ceil(viewportHeight / ROW_HEIGHT);
     },
-    [logFile],
+    [logFile, firstVisibleLine, viewportHeight],
   );
 
   const isMarkerInViewport = React.useCallback(
     (marker: LogMarker) => {
-      const viewport = viewportRef.current;
-      if (!logFile || !viewport) {
+      if (!logFile) {
         return false;
       }
-      const markerTop = (Math.max(1, marker.startLine) - 1) * ROW_HEIGHT;
-      const markerBottom = Math.max(markerTop + ROW_HEIGHT, marker.endLine * ROW_HEIGHT);
-      const viewportTop = viewport.scrollTop;
-      const viewportBottom = viewportTop + viewport.clientHeight;
-      return markerBottom > viewportTop && markerTop < viewportBottom;
+      const lastVisibleLine = firstVisibleLine + Math.ceil(viewportHeight / ROW_HEIGHT) - 1;
+      return marker.endLine >= firstVisibleLine && marker.startLine <= lastVisibleLine;
     },
-    [logFile],
+    [logFile, firstVisibleLine, viewportHeight],
   );
 
   const revealSearchMatchIfNeeded = React.useCallback(
@@ -1537,13 +1605,13 @@ function App() {
   const openGotoLineBar = React.useCallback(() => {
     const viewportCenterLine = logFile
       ? Math.min(
-        Math.max(1, Math.floor(scrollTop / ROW_HEIGHT) + Math.floor(Math.max(1, viewportHeight / ROW_HEIGHT) / 2) + 1),
+        Math.max(1, firstVisibleLine + Math.floor(Math.max(1, viewportHeight / ROW_HEIGHT) / 2)),
         Math.max(logFile.lineCount, 1),
       )
       : firstVisibleLine;
     setGotoBarOpen(true);
     setJumpLine(String(viewportCenterLine));
-  }, [firstVisibleLine, logFile, scrollTop, viewportHeight]);
+  }, [firstVisibleLine, logFile, viewportHeight]);
 
   const jumpToLineFromText = React.useCallback(
     (text: string) => {
@@ -1820,10 +1888,8 @@ function App() {
             const viewport = viewportRef.current;
             let viewportBottomLine = 1;
             if (viewport && logFile) {
-              viewportBottomLine = Math.min(
-                Math.floor((viewport.scrollTop + viewport.clientHeight) / ROW_HEIGHT) + 1,
-                logFile.lineCount,
-              );
+              const viewLines = Math.ceil(viewport.clientHeight / ROW_HEIGHT);
+              viewportBottomLine = Math.min(firstVisibleLine + viewLines - 1, logFile.lineCount);
             }
             nextIdx = findLastIndex(filteredMarkers, (m) => m.startLine <= viewportBottomLine);
             if (nextIdx < 0) nextIdx = filteredMarkers.length - 1;
@@ -1865,14 +1931,15 @@ function App() {
     selectMarker,
   ]);
 
-  const totalHeight = logFile ? logFile.lineCount * ROW_HEIGHT : 0;
   const scrollSpaceHeight = logFile
-    ? Math.max(totalHeight + BOTTOM_PADDING_ROWS * ROW_HEIGHT, viewportHeight)
+    ? getScrollSpaceHeight(logFile.lineCount, viewportHeight)
     : 0;
   const isNearBottom = logFile
-    ? scrollTop + viewportHeight >= Math.max(0, totalHeight - ROW_HEIGHT * 2)
+    ? firstVisibleLine + Math.ceil(viewportHeight / ROW_HEIGHT) >= logFile.lineCount - 2
     : false;
-  const visibleOffset = (requestedStartLine - 1) * ROW_HEIGHT - scrollTop;
+  const visibleOffset = logFile
+    ? lineToVisibleOffset(requestedStartLine, scrollTop, logFile.lineCount, viewportHeight)
+    : (requestedStartLine - 1) * ROW_HEIGHT - scrollTop;
   const renderedLineCount = logFile
     ? Math.min(requestedLineCount, Math.max(logFile.lineCount - requestedStartLine + 1, 0))
     : 0;
@@ -2430,12 +2497,12 @@ function App() {
             onScroll={(event) => {
               const nextScrollTop = event.currentTarget.scrollTop;
               setScrollTop(nextScrollTop);
-              if (
-                logFile &&
-                nextScrollTop + event.currentTarget.clientHeight >=
-                Math.max(0, logFile.lineCount * ROW_HEIGHT - ROW_HEIGHT * 2)
-              ) {
-                setPendingTailLines(0);
+              if (logFile) {
+                const line = scrollTopToLine(nextScrollTop, logFile.lineCount, event.currentTarget.clientHeight);
+                const viewLines = Math.ceil(event.currentTarget.clientHeight / ROW_HEIGHT);
+                if (line + viewLines >= logFile.lineCount - 2) {
+                  setPendingTailLines(0);
+                }
               }
             }}
           >

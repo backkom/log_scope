@@ -359,6 +359,7 @@ viewer 应该：
 - 搜索匹配高亮与 marker 行背景应覆盖或叠加在日志着色之上，避免被基础 token 颜色吞掉。
 - 追加新数据时，不应打断用户当前阅读位置；只有用户处于 follow tail 模式时才自动跟随末尾。
 - 阶段 2 前端已加入 follow tail 开关。开启时追加行会滚动到末尾；关闭时只更新总行数并显示新增行提示，不强制改变当前阅读位置。
+- 浏览器 DOM 对 `scrollHeight` 有上限约束（Chromium 约 16,777,216 px，即 2²⁴ px）。当文件行数导致自然高度（`lineCount × ROW_HEIGHT`）超过此限制时，前端启用虚拟滚动坐标映射：DOM 滚动空间高度上限为 `MAX_SCROLL_HEIGHT`（10,000,000 px），通过比率换算在 DOM `scrollTop` 和逻辑行号之间双向转换。所有 `scrollTop → line` 和 `line → scrollTop` 的转换统一通过 `scrollTopToLine()` 和 `lineToScrollTop()` 辅助函数完成；可见行容器的 CSS `translateY` 偏移通过 `lineToVisibleOffset()` 计算。对于小文件（自然高度未超限），这些函数退化为原始的 `scrollTop / ROW_HEIGHT` 直接换算，无额外开销。
 
 可选前端实现：
 
