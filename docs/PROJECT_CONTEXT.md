@@ -191,7 +191,7 @@ Rust core 负责：
 阶段 3 第一版当前实现：
 
 - Rust command `get_log_markers(sessionId, startLine?, endLine?)` 返回当前 session 的 marker 摘要，可按行范围过滤。
-- Rust command `get_marker_payload(sessionId, markerId)` 按需返回 marker body；前端不在 marker 摘要中持有完整 payload。为避免超大 marker 详情卡死 UI，当前返回给前端的 payload 预览限制为 64 KiB；超限时标记为截断预览，不返回 JSON tree。
+- Rust command `get_marker_payload(sessionId, markerId)` 按需返回 marker body；前端不在 marker 摘要中持有完整 payload。为避免超大 marker 详情卡死 UI，当前返回给前端的 payload 预览限制为 1 MiB；超限时标记为截断预览，不返回 JSON tree。
 - 当前已实现 `Send Message` / `Receive Message` 网络消息块提取，字段包括 `direction`、`message_id`、`message_name`、起止行号、起止字节偏移、颜色和 JSON 解析状态。
 - 消息块结束规则：优先遇到 `============================================` 分隔线结束；若缺少分隔线，则遇到下一条消息 header 前结束；文件结尾仍会关闭当前块。
 - 消息 body 尝试按严格 JSON 解析；解析失败时保留 raw text 并标记 `parse_status = raw`，不影响 marker 生成。

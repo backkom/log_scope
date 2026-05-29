@@ -206,7 +206,7 @@ struct DiscoveredServer {
 
 /// UDP broadcast discovery port (same as Python server).
 const DISCOVERY_PORT: u16 = 9876;
-const MAX_MARKER_PAYLOAD_BYTES: usize = 64 * 1024;
+const MAX_MARKER_PAYLOAD_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", default)]
