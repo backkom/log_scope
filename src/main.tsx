@@ -105,6 +105,7 @@ type LogMarker = {
 type LogMarkerRange = {
   sessionId: number;
   totalMarkers: number;
+  shaderVariantMissingCount: number;
   markers: LogMarker[];
 };
 
@@ -570,6 +571,8 @@ function App() {
   const [selectedMarker, setSelectedMarker] = React.useState<LogMarker | null>(null);
   const [selectedPayload, setSelectedPayload] = React.useState<MarkerPayload | null>(null);
   const [copiedMarkerId, setCopiedMarkerId] = React.useState<string | null>(null);
+  const [shaderVariantMissingCount, setShaderVariantMissingCount] = React.useState(0);
+  const [shaderVariantMissingCopied, setShaderVariantMissingCopied] = React.useState(false);
   const [markerFilterText, setMarkerFilterText] = React.useState("");
   const [markerFilterKinds, setMarkerFilterKinds] = React.useState<Set<string>>(() => new Set());
   const [markerListScrollTop, setMarkerListScrollTop] = React.useState(0);
@@ -666,12 +669,11 @@ function App() {
     const unlisten = listen<DiscoveredServer>("udp-server-discovered", (event) => {
       const server = event.payload;
       setDiscoveredServers((prev) => {
-        const identity = (server.hostname || server.host).trim().toLowerCase();
+        const normalizedHost = server.host.trim().toLowerCase();
         const next = [...prev];
-        const index = next.findIndex((item) => {
-          const itemIdentity = (item.hostname || item.host).trim().toLowerCase();
-          return itemIdentity === identity || item.host === server.host;
-        });
+        const index = next.findIndex(
+          (item) => item.host.trim().toLowerCase() === normalizedHost && item.port === server.port,
+        );
         if (index >= 0) {
           next[index] = server;
         } else {
@@ -871,6 +873,7 @@ function App() {
   const loadMarkers = React.useCallback(async (sessionId: number) => {
     const range = await invoke<LogMarkerRange>("get_log_markers", { sessionId });
     setMarkers(range.markers);
+    setShaderVariantMissingCount(range.shaderVariantMissingCount);
   }, []);
 
   React.useEffect(() => {
@@ -1135,6 +1138,8 @@ function App() {
       setPlaceholder(null);
       setLineCache(new Map());
       setMarkers([]);
+      setShaderVariantMissingCount(0);
+      setShaderVariantMissingCopied(false);
       setSelectedMarker(null);
       setSelectedPayload(null);
       setCopiedMarkerId(null);
@@ -1186,6 +1191,8 @@ function App() {
       setPlaceholder(null);
       setLineCache(new Map());
       setMarkers([]);
+      setShaderVariantMissingCount(0);
+      setShaderVariantMissingCopied(false);
       setSelectedMarker(null);
       setSelectedPayload(null);
       setCopiedMarkerId(null);
@@ -1576,6 +1583,28 @@ function App() {
       setError(`复制 Marker 文本失败: ${String(err)}`);
     }
   }, [logFile, selectedMarker]);
+
+  const copyShaderVariantMissingLogs = React.useCallback(async () => {
+    if (!logFile || shaderVariantMissingCount === 0) {
+      return;
+    }
+    try {
+      const text = await invoke<string>("get_shader_variant_missing_logs", {
+        sessionId: logFile.sessionId,
+      });
+      await invoke("copy_text_to_clipboard", { text });
+      const tip = `已复制 ${shaderVariantMissingCount} 条 Shader 变体缺失日志`;
+      setTailNotice(tip);
+      window.setTimeout(() => {
+        setTailNotice((current) => (current === tip ? null : current));
+      }, 2000);
+      setShaderVariantMissingCopied(true);
+      window.setTimeout(() => setShaderVariantMissingCopied(false), 1500);
+      setError(null);
+    } catch (err) {
+      setError(`复制 Shader 变体缺失日志失败: ${String(err)}`);
+    }
+  }, [logFile, shaderVariantMissingCount]);
 
   const focusViewer = React.useCallback(() => {
     requestAnimationFrame(() => {
@@ -2291,14 +2320,28 @@ function App() {
         <aside className="source-panel" style={{ display: showSourcePanel ? 'flex' : 'none' }}>
 
           <section className="panel-section marker-panel" style={{ flex: 1, minHeight: 0 }}>
-            <input
-              className="marker-filter-input"
-              value={markerFilterText}
-              onChange={(e) => setMarkerFilterText(e.target.value)}
-              placeholder={`搜索 Marker (${markers.length})`}
-              aria-label="过滤 Marker"
-              onKeyDown={(e) => e.stopPropagation()}
-            />
+            <div className="marker-filter-row">
+              <input
+                className="marker-filter-input"
+                value={markerFilterText}
+                onChange={(e) => setMarkerFilterText(e.target.value)}
+                placeholder={`搜索 Marker (${markers.length})`}
+                aria-label="过滤 Marker"
+                onKeyDown={(e) => e.stopPropagation()}
+              />
+              <button
+                type="button"
+                className={`shader-missing-copy-button${shaderVariantMissingCopied ? " is-copied" : ""}`}
+                onClick={() => void copyShaderVariantMissingLogs()}
+                disabled={!logFile || shaderVariantMissingCount === 0}
+                title={shaderVariantMissingCount > 0
+                  ? `复制 ${shaderVariantMissingCount} 条去重后的 Shader 变体缺失日志`
+                  : "没有 Shader 变体缺失日志"}
+                aria-label={`复制 Shader 变体缺失日志，共 ${shaderVariantMissingCount} 条`}
+              >
+                Shader 缺失 {shaderVariantMissingCount}
+              </button>
+            </div>
 
             {markerKinds.length > 1 && (
               <div className="marker-kind-filters">

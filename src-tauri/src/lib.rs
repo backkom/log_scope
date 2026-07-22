@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, File},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     net::{TcpStream, UdpSocket},
@@ -131,6 +131,7 @@ struct LogSession {
     line_offsets: Vec<u64>,
     markers: Vec<LogMarker>,
     marker_payloads: HashMap<String, MarkerPayload>,
+    shader_variant_missing_entries: Vec<String>,
     index_duration_ms: u128,
     ended_with_newline: bool,
 }
@@ -329,6 +330,7 @@ struct MarkerPayload {
 struct LogMarkerRange {
     session_id: u64,
     total_markers: usize,
+    shader_variant_missing_count: usize,
     markers: Vec<LogMarker>,
 }
 
@@ -833,8 +835,32 @@ fn get_log_markers(
     Ok(LogMarkerRange {
         session_id,
         total_markers: session.markers.len(),
+        shader_variant_missing_count: session.shader_variant_missing_entries.len(),
         markers,
     })
+}
+
+#[tauri::command]
+fn get_shader_variant_missing_logs(
+    session_id: u64,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let session = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "log session state is unavailable".to_string())?;
+        Arc::clone(
+            sessions
+                .get(&session_id)
+                .ok_or_else(|| format!("log session {session_id} was not found"))?,
+        )
+    };
+
+    let session = session
+        .lock()
+        .map_err(|_| format!("log session {session_id} is unavailable"))?;
+    Ok(session.shader_variant_missing_entries.join("\n"))
 }
 
 #[tauri::command]
@@ -1016,7 +1042,8 @@ impl LogSession {
         let file = File::open(&path)?;
         let file_size = file.metadata()?.len();
         let (line_offsets, ended_with_newline) = build_line_index(file, file_size)?;
-        let (markers, marker_payloads) = scan_log_markers(&path, file_size, config)?;
+        let (markers, marker_payloads, shader_variant_missing_entries) =
+            scan_log_markers(&path, file_size, config)?;
         let index_duration_ms = started_at.elapsed().as_millis();
 
         Ok(Self {
@@ -1025,6 +1052,7 @@ impl LogSession {
             line_offsets,
             markers,
             marker_payloads,
+            shader_variant_missing_entries,
             index_duration_ms,
             ended_with_newline,
         })
@@ -1109,9 +1137,11 @@ impl LogSession {
     }
 
     fn rebuild_markers(&mut self, config: &MarkerConfig) -> std::io::Result<()> {
-        let (markers, marker_payloads) = scan_log_markers(&self.path, self.file_size, config)?;
+        let (markers, marker_payloads, shader_variant_missing_entries) =
+            scan_log_markers(&self.path, self.file_size, config)?;
         self.markers = markers;
         self.marker_payloads = marker_payloads;
+        self.shader_variant_missing_entries = shader_variant_missing_entries;
         Ok(())
     }
 
@@ -1420,7 +1450,7 @@ fn scan_log_markers(
     path: &PathBuf,
     file_size: u64,
     config: &MarkerConfig,
-) -> std::io::Result<(Vec<LogMarker>, HashMap<String, MarkerPayload>)> {
+) -> std::io::Result<(Vec<LogMarker>, HashMap<String, MarkerPayload>, Vec<String>)> {
     let file = File::open(path)?;
     let mut reader = BufReader::with_capacity(1024 * 1024, file);
     let mut raw_line = Vec::new();
@@ -1432,6 +1462,8 @@ fn scan_log_markers(
     let mut open_change_state: Option<OpenTextBlock> = None;
     let mut markers = Vec::new();
     let mut payloads = HashMap::new();
+    let mut shader_variant_missing_entries = Vec::new();
+    let mut seen_shader_variant_missing_entries = HashSet::new();
 
     loop {
         raw_line.clear();
@@ -1446,6 +1478,14 @@ fn scan_log_markers(
         byte_offset = line_end_byte;
         let line_text = decode_log_line(&raw_line);
         let timestamp_content = split_timestamped_line(&line_text);
+        let shader_variant_content = timestamp_content
+            .map(|(_, content)| content)
+            .unwrap_or(line_text.as_str());
+        if is_shader_variant_missing_log(shader_variant_content)
+            && seen_shader_variant_missing_entries.insert(shader_variant_content.to_string())
+        {
+            shader_variant_missing_entries.push(line_text.clone());
+        }
 
         if let Some(current) = open_stack.take() {
             if timestamp_content.is_some()
@@ -1644,7 +1684,15 @@ fn scan_log_markers(
 
     apply_message_lanes(&mut markers);
 
-    Ok((markers, payloads))
+    Ok((markers, payloads, shader_variant_missing_entries))
+}
+
+fn is_shader_variant_missing_log(line: &str) -> bool {
+    line.contains("Shader")
+        && line.contains("subshader")
+        && line.contains("pass")
+        && line.contains("stage all:")
+        && line.contains("not found.")
 }
 
 fn close_message_marker(
@@ -3008,6 +3056,7 @@ pub fn run() {
             remove_favorite,
             get_log_lines,
             get_log_markers,
+            get_shader_variant_missing_logs,
             get_marker_payload,
             get_marker_copy_text,
             copy_text_to_clipboard,
@@ -3070,6 +3119,28 @@ mod tests {
 
         assert!(session.line_offsets.is_empty());
         assert_eq!(session.read_lines(1, 1, 20).unwrap().line_count, 0);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn collects_unique_shader_variant_missing_logs_in_source_order() {
+        let path = test_file_path("shader-variant-missing.log");
+        let first = "Shader SPGF/Scenes/Scene_City01_water_PC, subshader 0, pass 0, stage all: variant FOG_LINEAR _SHADOWS_SOFT not found.";
+        let second = "Shader SPGF/Characters/Hero, subshader 1, pass 2, stage all: variant SKIN_ON not found.";
+        fs::write(
+            &path,
+            format!(
+                "16:31:55\t{first}\nUnityEngine.Rendering.RenderPipelineManager:DoRenderLoop_Internal(RenderPipelineAsset, IntPtr, Object)\n16:31:56\t{first}\nnot a shader variant\n16:31:57\t{second}\n"
+            ),
+        )
+        .unwrap();
+
+        let session = LogSession::open(path.clone(), &MarkerConfig::default()).unwrap();
+
+        assert_eq!(
+            session.shader_variant_missing_entries,
+            vec![format!("16:31:55\t{first}"), format!("16:31:57\t{second}")]
+        );
         fs::remove_file(path).unwrap();
     }
 

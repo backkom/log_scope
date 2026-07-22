@@ -937,7 +937,16 @@ button:disabled {
 
 /* ---- Marker List (left panel) ---- */
 
+.marker-filter-row {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
 .marker-filter-input {
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 30px;
   border: 1px solid #4e5649;
   border-radius: 5px;
@@ -946,7 +955,6 @@ button:disabled {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
   padding: 0 8px;
-  flex-shrink: 0;
 }
 
 .marker-filter-input::placeholder {
@@ -957,6 +965,35 @@ button:disabled {
   outline: none;
   border-color: #18706a;
   box-shadow: 0 0 0 1px #18706a;
+}
+
+.shader-missing-copy-button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  border: 1px solid #4e5649;
+  border-radius: 5px;
+  background: #30342b;
+  color: #c8cec7;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 7px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.shader-missing-copy-button:hover:not(:disabled) {
+  border-color: #18706a;
+  background: #35443d;
+}
+
+.shader-missing-copy-button.is-copied {
+  border-color: #3a927c;
+  color: #9ee0ca;
+}
+
+.shader-missing-copy-button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .marker-kind-filters {
