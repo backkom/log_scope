@@ -1691,7 +1691,8 @@ fn is_shader_variant_missing_log(line: &str) -> bool {
     line.contains("Shader")
         && line.contains("subshader")
         && line.contains("pass")
-        && line.contains("stage all:")
+        && line.contains("stage ")
+        && line.contains(": variant ")
         && line.contains("not found.")
 }
 
@@ -3127,10 +3128,11 @@ mod tests {
         let path = test_file_path("shader-variant-missing.log");
         let first = "Shader SPGF/Scenes/Scene_City01_water_PC, subshader 0, pass 0, stage all: variant FOG_LINEAR _SHADOWS_SOFT not found.";
         let second = "Shader SPGF/Characters/Hero, subshader 1, pass 2, stage all: variant SKIN_ON not found.";
+        let pixel = "Shader SPGF/Cartoon/Toon, subshader 0, pass 0, stage pixel: variant FOG_LINEAR _ADDITIONAL_LIGHTS _ADDITIONAL_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _SCREEN_SPACE_OCCLUSION _SHADOWS_SOFT not found.";
         fs::write(
             &path,
             format!(
-                "16:31:55\t{first}\nUnityEngine.Rendering.RenderPipelineManager:DoRenderLoop_Internal(RenderPipelineAsset, IntPtr, Object)\n16:31:56\t{first}\nnot a shader variant\n16:31:57\t{second}\n"
+                "16:31:55\t{first}\nUnityEngine.Rendering.RenderPipelineManager:DoRenderLoop_Internal(RenderPipelineAsset, IntPtr, Object)\n16:31:56\t{first}\nnot a shader variant\n16:31:57\t{second}\n16:31:58\t{pixel}\n"
             ),
         )
         .unwrap();
@@ -3139,7 +3141,11 @@ mod tests {
 
         assert_eq!(
             session.shader_variant_missing_entries,
-            vec![format!("16:31:55\t{first}"), format!("16:31:57\t{second}")]
+            vec![
+                format!("16:31:55\t{first}"),
+                format!("16:31:57\t{second}"),
+                format!("16:31:58\t{pixel}"),
+            ]
         );
         fs::remove_file(path).unwrap();
     }

@@ -1,6 +1,6 @@
 # 项目上下文
 
-最后更新：2026-07-22
+最后更新：2026-07-23
 
 本文档是 `log_scope` 的长期项目记忆。后续 AI agent 和开发者在做项目决策前应先阅读本文档；当需求、架构、取舍或实现细节发生变化时，必须同步更新本文档。
 
@@ -58,7 +58,7 @@
 - 内部专注于 Marker 浏览与导航，从上到下依次为：
   1. 搜索输入框：对 marker 的 title、messageName、kind 做大小写不敏感子串过滤。
      - 搜索框右侧显示当前 session 中去重后的 Shader 变体缺失日志数；点击后使用既有 Rust 原生剪贴板 command 复制全部条目，并显示短时成功提示。
-     - Shader 变体缺失日志按单行同时包含 `Shader`、`subshader`、`pass`、`stage all:`、`not found.` 识别；去重键使用移除 `HH:MM:SS\t` 前缀后的正文，因此只有时间戳不同的日志视为同一条。复制时保留首次出现的原始行，按首次出现顺序用换行符连接。
+     - Shader 变体缺失日志按单行同时包含 `Shader`、`subshader`、`pass`、`stage <类型>: variant`、`not found.` 识别；阶段类型不限定为 `all`，例如 `pixel` 也应支持。去重键使用移除 `HH:MM:SS\t` 前缀后的正文，因此只有时间戳不同的日志视为同一条。复制时保留首次出现的原始行，按首次出现顺序用换行符连接。
   2. 类型过滤器：按 marker kind 多选过滤（按钮组，kind 仅一种时不显示）。
   3. Marker 列表：按 startLine 升序排列（越新越靠下），可滚动；点击条目触发右侧 viewer 跳转并加载 payload 详情。过滤只影响列表本身，不影响 minimap。
   4. Marker 详情区：选中 marker 后展示其类型、方向、行号、解析状态；如 payload 为合法 JSON，则通过 JSON Tree View 折叠展示，否则显示原始载荷。
