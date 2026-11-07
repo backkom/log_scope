@@ -8,41 +8,12 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 import "./styles.css";
 
-type HealthCheck = {
-  status: string;
-  appName: string;
-  version: string;
-};
-
-type FileOpenPlaceholder = {
-  path: string;
-  message: string;
-};
-
 type LogFileMetadata = {
   sessionId: number;
   path: string;
   fileSize: number;
   lineCount: number;
   indexDurationMs: number;
-};
-
-type FixtureMetadata = {
-  path: string;
-  fileSize: number;
-  lineCount: number;
-  profile: FixtureProfile;
-  generationDurationMs: number;
-};
-
-type CoreBenchmarkReport = {
-  fixture: FixtureMetadata;
-  indexDurationMs: number;
-  markerCount: number;
-  searchDurationMs: number;
-  searchTotalMatches: number;
-  readVisibleDurationMs: number;
-  readVisibleLineCount: number;
 };
 
 type SocketConnectMetadata = {
@@ -225,7 +196,23 @@ type PersistedFavorite = {
   port: number | null;
   hostname?: string | null;
   displayName: string;
+  color?: string;
 };
+
+/// Built-in palette for favorite color tags.
+/// Must stay in sync with `FAVORITE_COLORS` in `src-tauri/src/lib.rs`.
+const FAVORITE_COLORS = [
+  { value: "#60a5fa", label: "蓝" },
+  { value: "#34d399", label: "绿" },
+  { value: "#fbbf24", label: "黄" },
+  { value: "#f87171", label: "红" },
+  { value: "#a78bfa", label: "紫" },
+  { value: "#f472b6", label: "粉" },
+  { value: "#22d3ee", label: "青" },
+  { value: "#94a3b8", label: "灰" },
+] as const;
+
+const DEFAULT_FAVORITE_COLOR = FAVORITE_COLORS[0].value;
 
 type PersistedUiState = {
   followTail: boolean;
@@ -249,8 +236,6 @@ type PersistedStore = {
   lastSource: PersistedDataSource | null;
   uiState: PersistedUiState;
 };
-
-type FixtureProfile = "mixed" | "short-lines" | "long-lines" | "dense-markers" | "append-stream";
 
 type FrontendPerfSnapshot = {
   renderedRows: number;
@@ -533,8 +518,6 @@ function SettingsIcon() {
 }
 
 function App() {
-  const [health, setHealth] = React.useState<HealthCheck | null>(null);
-  const [placeholder, setPlaceholder] = React.useState<FileOpenPlaceholder | null>(null);
   const [filePath, setFilePath] = React.useState("");
   const [logFile, setLogFile] = React.useState<LogFileMetadata | null>(null);
   const [lineCache, setLineCache] = React.useState<Map<number, string>>(() => new Map());
@@ -554,6 +537,7 @@ function App() {
   const [showFavoriteDialog, setShowFavoriteDialog] = React.useState(false);
   const [favoriteDialogName, setFavoriteDialogName] = React.useState("");
   const [favoriteDialogPath, setFavoriteDialogPath] = React.useState("");
+  const [favoriteDialogColor, setFavoriteDialogColor] = React.useState<string>(DEFAULT_FAVORITE_COLOR);
   const [showMarkerConfigModal, setShowMarkerConfigModal] = React.useState(false);
   const [markerRuleConfig, setMarkerRuleConfig] = React.useState<MarkerRuleConfig>(DEFAULT_MARKER_RULE_CONFIG);
   const saveMarkerConfigTimerRef = React.useRef<number | null>(null);
@@ -561,8 +545,6 @@ function App() {
   const [showSourcePanel, setShowSourcePanel] = React.useState(false);
   const [sourcePanelWidth, setSourcePanelWidth] = React.useState(280);
 
-  const [lastFixture, setLastFixture] = React.useState<FixtureMetadata | null>(null);
-  const [lastBenchmark, setLastBenchmark] = React.useState<CoreBenchmarkReport | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [followTail, setFollowTail] = React.useState(true);
   const [pendingTailLines, setPendingTailLines] = React.useState(0);
@@ -624,12 +606,6 @@ function App() {
   const initialLoadDoneRef = React.useRef(false);
   const knownMarkerKindsRef = React.useRef<Set<string>>(new Set());
   const pendingHorizontalRevealRef = React.useRef<string | null>(null);
-
-  React.useEffect(() => {
-    invoke<HealthCheck>("health_check")
-      .then(setHealth)
-      .catch((err: unknown) => setError(String(err)));
-  }, []);
 
   React.useEffect(() => {
     try {
@@ -894,8 +870,6 @@ function App() {
       } else if (payload.action === "connect_socket") {
         setShowSocketModal(true);
         setServerFilterText("");
-      } else if (payload.action === "health_check") {
-        runPlaceholder();
       } else if (payload.action === "open_recent_file") {
         setFilePath(payload.path);
         openPath(payload.path);
@@ -914,23 +888,8 @@ function App() {
           : current.path;
         setFavoriteDialogPath(displayPath);
         setFavoriteDialogName("");
+        setFavoriteDialogColor(DEFAULT_FAVORITE_COLOR);
         setShowFavoriteDialog(true);
-      } else if (payload.action === "gen_fixture") {
-        invoke<FixtureMetadata>("generate_log_fixture", { sizeMb: 50, profile: payload.profile })
-          .then((fixture) => {
-            setLastFixture(fixture);
-            setFilePath(fixture.path);
-            openPath(fixture.path);
-          })
-          .catch((err) => setError(String(err)));
-      } else if (payload.action === "benchmark") {
-        invoke<CoreBenchmarkReport>("run_core_benchmark", { sizeMb: 50, profile: payload.profile })
-          .then((report) => {
-            setLastBenchmark(report);
-            setLastFixture(report.fixture);
-            setFilePath(report.fixture.path);
-          })
-          .catch((err) => setError(String(err)));
       }
     }).then((unlistenFn) => {
       unlisten = unlistenFn;
@@ -1111,18 +1070,6 @@ function App() {
     };
   }, [followTail, loadMarkers, logFile?.sessionId, isDisconnected]);
 
-  const runPlaceholder = async () => {
-    setError(null);
-    try {
-      const result = await invoke<FileOpenPlaceholder>("open_file_placeholder", {
-        path: "/path/to/example.log",
-      });
-      setPlaceholder(result);
-    } catch (err) {
-      setError(String(err));
-    }
-  };
-
   const openPath = async (targetPath: string) => {
     const normalizedPath = targetPath.trim();
     if (!normalizedPath) {
@@ -1135,7 +1082,6 @@ function App() {
     try {
       const metadata = await invoke<LogFileMetadata>("open_log_file", { path: normalizedPath });
       setLogFile(metadata);
-      setPlaceholder(null);
       setLineCache(new Map());
       setMarkers([]);
       setShaderVariantMissingCount(0);
@@ -1188,7 +1134,6 @@ function App() {
         lineCount: metadata.lineCount,
         indexDurationMs: 0,
       });
-      setPlaceholder(null);
       setLineCache(new Map());
       setMarkers([]);
       setShaderVariantMissingCount(0);
@@ -1246,6 +1191,7 @@ function App() {
     const current = logFileRef.current;
     if (!current) return;
     const name = favoriteDialogName.trim() || undefined;
+    const color = favoriteDialogColor;
     try {
       if (current.path.startsWith("logscope-frame-v1://")) {
         const afterProto = current.path.slice("logscope-frame-v1://".length);
@@ -1254,18 +1200,18 @@ function App() {
           const host = afterProto.slice(0, sepIdx);
           const port = Number.parseInt(afterProto.slice(sepIdx + 1), 10);
           if (host && Number.isInteger(port)) {
-            await invoke<PersistedStore>("add_favorite_socket", { host, port, hostname: null, customName: name });
+            await invoke<PersistedStore>("add_favorite_socket", { host, port, hostname: null, customName: name, color });
           }
         }
       } else {
-        await invoke<PersistedStore>("add_favorite_file", { path: current.path, customName: name });
+        await invoke<PersistedStore>("add_favorite_file", { path: current.path, customName: name, color });
       }
       await refreshPersistedState();
     } catch (err) {
       setError(`收藏失败: ${String(err)}`);
     }
     setShowFavoriteDialog(false);
-  }, [favoriteDialogName, refreshPersistedState]);
+  }, [favoriteDialogColor, favoriteDialogName, refreshPersistedState]);
 
   const handleDiscoveredServerPick = React.useCallback((server: DiscoveredServer) => {
     setSocketHostInput(server.host);
@@ -1990,8 +1936,8 @@ function App() {
       cachedLines: lineCache.size,
     }));
   }, [lineCache.size, renderedLineCount]);
-  const activePath = logFile?.path ?? placeholder?.path ?? "尚未打开文件";
-  const activeStatus = placeholder?.message ?? "Ready";
+  const activePath = logFile?.path ?? "尚未打开文件";
+  const activeStatus = isDisconnected ? "已断开" : "Ready";
   const statusItems = logFile
     ? [
       `大小 ${formatBytes(logFile.fileSize)}`,
@@ -3056,6 +3002,28 @@ function App() {
             </div>
             <div className="favorite-dialog-path" title={favoriteDialogPath}>
               {favoriteDialogPath}
+            </div>
+            <div className="favorite-dialog-field">
+              <div className="favorite-dialog-label">颜色</div>
+              <div className="favorite-color-picker" role="radiogroup" aria-label="颜色标签">
+                {FAVORITE_COLORS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={favoriteDialogColor === option.value}
+                    aria-label={option.label}
+                    title={option.label}
+                    className={
+                      favoriteDialogColor === option.value
+                        ? "favorite-color-swatch is-selected"
+                        : "favorite-color-swatch"
+                    }
+                    style={{ backgroundColor: option.value }}
+                    onClick={() => setFavoriteDialogColor(option.value)}
+                  />
+                ))}
+              </div>
             </div>
             <div className="favorite-dialog-field">
               <label className="modal-field-inline" htmlFor="favorite-name-input">

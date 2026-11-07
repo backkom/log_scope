@@ -185,7 +185,6 @@ Rust core 负责：
 - Rust command `open_log_file(path)` 打开 UTF-8/UTF-8 lossy 文本文件，建立当前文件 session，并返回 `sessionId`、路径、文件大小和行数。
 - Rust command `get_log_lines(sessionId, startLine, lineCount)` 只读取指定行范围，返回 1-based 行号和文本。
 - Rust command `refresh_log_file(sessionId)` 检查当前文件大小；文件变大时只读取新增字节并增量更新行偏移索引，文件变小时按截断/轮转处理并重新建立当前文件索引。
-- Rust command `generate_log_fixture(sizeMb)` 可在系统临时目录生成指定大小的合成 log fixture；前端提供 50MB fixture 一键生成并打开入口，用于阶段 1 手工性能验证。
 - 当前行索引只保存 `line_number -> byte_offset`，原始文件内容仍保留在磁盘；读取可见行时通过 seek + byte range 读取；追加刷新同样不把完整文件读入内存。
 - 当前文件索引在 Tauri async blocking 线程池中构建，并返回索引耗时；后续 100 MB 以上体验优化应继续补充进度状态和取消。
 - 阶段 2 第一版使用前端定时调用 `refresh_log_file` 的轮询模型，而不是直接引入平台文件 watcher；该方案优先保证 Windows/macOS 行为一致，后续如轮询成本或延迟不可接受再替换为 watcher。
@@ -294,6 +293,7 @@ Frame 格式：
 - 最近打开文件：路径、显示名、最近打开时间，最多保留 12 条。
 - 最近连接 socket：host、port、显示名、最近打开时间，最多保留 12 条。
 - 最近数据源：用于记录上一次打开的是文件还是 socket endpoint，不自动打开。
+- 收藏（Favorites）：文件路径或 socket endpoint、自定义显示名、颜色标签，最多保留 50 条；收藏只出现在原生应用菜单，不在页面内渲染列表。
 - 低风险 UI 状态：follow tail、顶部全局 marker 条显示状态、右侧 minimap 显示状态、日志着色模式、最近搜索词和查找选项。
 
 Rust command：
@@ -305,6 +305,13 @@ Rust command：
 
 前端启动后会加载持久化状态并恢复 UI 偏好；最近文件和最近 socket 会显示在数据源面板，可一键重新打开/连接。状态损坏不阻塞应用启动。
 
+收藏颜色标签：
+
+- 内置调色板固定为 8 色（`#60a5fa` 蓝、`#34d399` 绿、`#fbbf24` 黄、`#f87171` 红、`#a78bfa` 紫、`#f472b6` 粉、`#22d3ee` 青、`#94a3b8` 灰），默认 `#60a5fa`。
+- 调色板在 `src-tauri/src/lib.rs` 的 `FAVORITE_COLORS` 与 `src/main.tsx` 的 `FAVORITE_COLORS` 中成对维护，修改时必须同步。
+- 存储的 `color` 在读取时由 `normalize_favorite_color` 归一化：不在调色板内或为空的旧数据回退为默认色，因此 `state-v1.json` 兼容旧版本。
+- 颜色标签通过原生菜单图标呈现：`favorite_color_icon` 生成 36x36 RGBA 抗锯齿实心圆，macOS 由 muda 缩放到 18pt 高，Windows 下采样到 16x16，因此收藏项使用 `IconMenuItem` 而非普通 `MenuItem`。
+
 当前限制：
 
 - 暂未提供删除单条历史记录、清空历史记录和迁移 UI。
@@ -312,17 +319,16 @@ Rust command：
 
 ## 性能基准与降级策略
 
-阶段 7 第一版已实现可重复的本地性能样本与轻量观测入口：
+阶段 7 第一版保留轻量观测入口，但不再内置 fixture 生成与 benchmark command：
 
-- Rust command `generate_log_fixture(sizeMb, profile?)` 支持 `mixed`、`short-lines`、`long-lines`、`dense-markers`、`append-stream` 五类 fixture；`sizeMb` 当前限制在 1-512 MB。
-- Rust command `run_core_benchmark(sizeMb, profile?)` 会生成 fixture，执行打开/索引与 marker 扫描、搜索 `error`、读取前 240 行，并返回索引耗时、marker 数、搜索耗时、匹配数和可见行读取耗时。
-- 前端数据源面板可选择 fixture profile，生成 50 MB fixture 或运行 50 MB core benchmark；benchmark 生成的文件会保留在临时目录，便于后续手工打开复查。
+- 应用菜单只保留 File 和 Favorites；原先的 Debug 菜单（fixture 生成、core benchmark、command 自检）已移除，`generate_log_fixture`、`run_core_benchmark`、`health_check`、`open_file_placeholder` 等 command 及对应前端入口一并删除。
+- 性能验证改为人工准备 log 样本后直接打开；需要基准数据时在开发环境临时添加测试代码，不再作为产品内菜单暴露。
 - 状态栏展示当前虚拟化 DOM 行数/缓存行数，以及顶部全局 marker 条和右侧 minimap 最近一次 Canvas 绘制总耗时。
 - 打开 100 MB 及以上文件时，前端自动降级为仅 severity 着色；打开 300 MB 及以上文件时，还会默认隐藏右侧 minimap。用户仍可通过状态栏手动恢复显示模式。
 
 当前限制：
 
-- core benchmark 是应用内 smoke benchmark，不替代后续独立 Criterion/系统级峰值内存基准。
+- 暂无应用内 smoke benchmark，性能回归需依赖独立 Criterion/系统级峰值内存基准。
 - 暂未记录跨平台 app data、真实 100 MB/300 MB 样本和 socket burst 的长期数据表。
 - Rust 索引仍是一次性构建；阶段 7 只实现了显示侧降级，渐进式索引和搜索取消仍留待后续切片。
 
@@ -345,6 +351,15 @@ GitHub Actions 自动构建：
 - `.github/workflows/release.yml` 在推送 `v*` 标签时，使用 `tauri-apps/tauri-action` 构建 macOS universal（`aarch64` + `x86_64`）`.dmg` 与 Windows `nsis`/`msi` 安装包，并上传到对应 GitHub Release；手动触发工作流时只构建并上传 artifact，不创建 Release。
 - CI 产物默认未签名；Apple 签名/公证需在仓库 Secrets 配置证书后取消 `release.yml` 中签名相关注释。
 - `README.md` 面向 GitHub 访客介绍背景、功能和发布流程；架构与决策细节仍以本文档为准。
+
+未签名产物的分发约束（README「安装与首次运行」一节的依据）：
+
+- macOS 未签名 + 未公证的 app 会被 Gatekeeper 拦截，首次打开需右键「打开」、执行 `xattr -dr com.apple.quarantine <app>` 或走系统设置「仍要打开」，三条路径需在 README 中同时给出。
+- Windows 未签名安装包会触发 SmartScreen「更多信息 → 仍要运行」，并可能被 Defender 隔离；说明需包含还原路径。
+- 每个 GitHub Release 自动附带的 `Source code (zip)` / `Source code (tar.gz)` 不是可执行程序，README 必须显式澄清，否则用户会误以为下载即可运行。
+- 运行时不要求用户安装 Node.js 或 Rust；Windows 依赖系统 WebView2。
+- 持久化文件为 Tauri app data 目录下的 `state-v1.json`，macOS 位于 `~/Library/Application Support/com.logscope.viewer/`，Windows 位于 `%APPDATA%\com.logscope.viewer\`；卸载说明应包含该目录以支持彻底清理。
+- 局域网自动发现监听 UDP `9876`，首次运行可能触发系统防火墙授权弹窗。
 
 ## 虚拟化 Viewer 要求
 
@@ -526,8 +541,7 @@ marker 规则应设计成可配置的“分层事件提取器”，而不是只�
 - 阶段 0 已采用 Tauri 2 + Vite + React + TypeScript 骨架；前端通过 `@tauri-apps/api/core` 调用 Rust command。
 - 前端包管理器使用 Yarn 1.x；Tauri dev/build 前置命令使用 `yarn dev` 和 `yarn build`。
 - VS Code 调试入口为 `.vscode/launch.json` 中的 `Tauri Dev: log_scope`，本质是在工作区根目录执行 `yarn tauri:dev`。
-- 当前 Rust command 包含 `health_check`、`open_file_placeholder`、`open_log_file`、`get_log_lines`；文件查看主链路应优先使用后两个接口。
-- 尽早加入 benchmark fixture 生成器。
+- 文件查看主链路以 `open_log_file`、`get_log_lines` 为准；不要让调试用占位 command 回到产品菜单。
 - 尽早加入可重复的性能测试路径。
 - Rust core 与前端之间的 API 要清晰、显式、可版本化。
 - 解析事件 metadata 应独立于视觉组件。

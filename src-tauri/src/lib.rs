@@ -13,21 +13,7 @@ use std::{
 
 use regex::Regex;
 use tauri::{Emitter, Manager};
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HealthCheck {
-    status: &'static str,
-    app_name: &'static str,
-    version: &'static str,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FileOpenPlaceholder {
-    path: String,
-    message: &'static str,
-}
+use tauri::menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 #[derive(Clone, Debug, serde::Deserialize)]
 struct MarkerKeywordRule {
@@ -166,28 +152,6 @@ struct LogRefreshMetadata {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FixtureMetadata {
-    path: String,
-    file_size: u64,
-    line_count: usize,
-    profile: String,
-    generation_duration_ms: u128,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CoreBenchmarkReport {
-    fixture: FixtureMetadata,
-    index_duration_ms: u128,
-    marker_count: usize,
-    search_duration_ms: u128,
-    search_total_matches: usize,
-    read_visible_duration_ms: u128,
-    read_visible_line_count: usize,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 struct SocketConnectMetadata {
     session_id: u64,
     host: String,
@@ -208,6 +172,65 @@ struct DiscoveredServer {
 /// UDP broadcast discovery port (same as Python server).
 const DISCOVERY_PORT: u16 = 9876;
 const MAX_MARKER_PAYLOAD_BYTES: usize = 1024 * 1024;
+
+/// Built-in palette for favorite color tags.
+///
+/// Must stay in sync with `FAVORITE_COLORS` in `src/main.tsx`.
+const FAVORITE_COLORS: [&str; 8] = [
+    "#60a5fa", "#34d399", "#fbbf24", "#f87171", "#a78bfa", "#f472b6", "#22d3ee", "#94a3b8",
+];
+const DEFAULT_FAVORITE_COLOR: &str = "#60a5fa";
+
+fn default_favorite_color() -> String {
+    DEFAULT_FAVORITE_COLOR.to_string()
+}
+
+/// Clamp any stored color back to the built-in palette so the menu icon renderer
+/// never has to deal with arbitrary values.
+fn normalize_favorite_color(color: &str) -> String {
+    let normalized = color.trim().to_ascii_lowercase();
+    FAVORITE_COLORS
+        .iter()
+        .find(|candidate| **candidate == normalized)
+        .map(|candidate| candidate.to_string())
+        .unwrap_or_else(default_favorite_color)
+}
+
+fn parse_hex_color(color: &str) -> Option<(u8, u8, u8)> {
+    let hex = color.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
+/// Render a filled, anti-aliased circle used as the color tag in front of a
+/// favorite menu item. macOS scales the icon to 18pt height, Windows downsamples
+/// it to 16x16, so a 36x36 source keeps the disc crisp on both.
+fn favorite_color_icon(color: &str) -> Option<tauri::image::Image<'static>> {
+    const SIZE: u32 = 36;
+    let (r, g, b) = parse_hex_color(color)?;
+    let center = (SIZE as f32 - 1.0) / 2.0;
+    let radius = center - 1.0;
+    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 - center;
+            let dy = y as f32 - center;
+            let distance = (dx * dx + dy * dy).sqrt();
+            // Smooth one-pixel falloff so the disc does not look pixelated.
+            let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
+            rgba.push(r);
+            rgba.push(g);
+            rgba.push(b);
+            rgba.push((coverage * 255.0).round() as u8);
+        }
+    }
+    Some(tauri::image::Image::new_owned(rgba, SIZE, SIZE))
+}
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -230,6 +253,8 @@ struct PersistedFavorite {
     port: Option<u16>,
     hostname: Option<String>,
     display_name: String,
+    #[serde(default = "default_favorite_color")]
+    color: String,
 }
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
@@ -414,23 +439,6 @@ struct SocketRecord {
 }
 
 #[tauri::command]
-fn health_check() -> HealthCheck {
-    HealthCheck {
-        status: "ok",
-        app_name: "LogScope",
-        version: env!("CARGO_PKG_VERSION"),
-    }
-}
-
-#[tauri::command]
-fn open_file_placeholder(path: String) -> FileOpenPlaceholder {
-    FileOpenPlaceholder {
-        path,
-        message: "file open command placeholder ready",
-    }
-}
-
-#[tauri::command]
 async fn open_log_file(
     path: String,
     app: tauri::AppHandle,
@@ -463,32 +471,6 @@ async fn open_log_file(
     remember_recent_file(&app, metadata.path.clone())?;
 
     Ok(metadata)
-}
-
-#[tauri::command]
-async fn generate_log_fixture(
-    size_mb: u64,
-    profile: Option<String>,
-) -> Result<FixtureMetadata, String> {
-    let safe_size_mb = size_mb.clamp(1, 512);
-    let profile = normalize_fixture_profile(profile);
-    tauri::async_runtime::spawn_blocking(move || generate_fixture(safe_size_mb, &profile))
-        .await
-        .map_err(|err| format!("failed to join fixture generation task: {err}"))?
-        .map_err(|err| err.to_string())
-}
-
-#[tauri::command]
-async fn run_core_benchmark(
-    size_mb: u64,
-    profile: Option<String>,
-) -> Result<CoreBenchmarkReport, String> {
-    let safe_size_mb = size_mb.clamp(1, 512);
-    let profile = normalize_fixture_profile(profile);
-    tauri::async_runtime::spawn_blocking(move || run_core_benchmark_sync(safe_size_mb, &profile))
-        .await
-        .map_err(|err| format!("failed to join core benchmark task: {err}"))?
-        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -703,7 +685,12 @@ fn remove_recent_socket(
 }
 
 #[tauri::command]
-fn add_favorite_file(path: String, custom_name: Option<String>, app: tauri::AppHandle) -> Result<PersistedStore, String> {
+fn add_favorite_file(
+    path: String,
+    custom_name: Option<String>,
+    color: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<PersistedStore, String> {
     let mut store = load_persisted_store(&app).map_err(|err| err.to_string())?;
     store.favorites.retain(|fav| !(fav.kind == "file" && fav.path.as_deref() == Some(path.as_str())));
     let display_name = custom_name
@@ -716,6 +703,7 @@ fn add_favorite_file(path: String, custom_name: Option<String>, app: tauri::AppH
         port: None,
         hostname: None,
         display_name,
+        color: normalize_favorite_color(color.as_deref().unwrap_or_default()),
     });
     save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
     deferred_update_app_menu(&app);
@@ -728,6 +716,7 @@ fn add_favorite_socket(
     port: u16,
     hostname: Option<String>,
     custom_name: Option<String>,
+    color: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<PersistedStore, String> {
     let mut store = load_persisted_store(&app).map_err(|err| err.to_string())?;
@@ -743,6 +732,7 @@ fn add_favorite_socket(
         port: Some(port),
         hostname,
         display_name,
+        color: normalize_favorite_color(color.as_deref().unwrap_or_default()),
     });
     save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
     deferred_update_app_menu(&app);
@@ -2242,154 +2232,6 @@ fn split_lines(buffer: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn normalize_fixture_profile(profile: Option<String>) -> String {
-    match profile
-        .unwrap_or_else(|| "mixed".to_string())
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "short-lines" | "short_lines" => "short-lines".to_string(),
-        "long-lines" | "long_lines" => "long-lines".to_string(),
-        "dense-markers" | "dense_markers" => "dense-markers".to_string(),
-        "append-stream" | "append_stream" => "append-stream".to_string(),
-        _ => "mixed".to_string(),
-    }
-}
-
-fn generate_fixture(size_mb: u64, profile: &str) -> std::io::Result<FixtureMetadata> {
-    let target_bytes = size_mb * 1024 * 1024;
-    let fixture_dir = std::env::temp_dir().join("log_scope").join("fixtures");
-    fs::create_dir_all(&fixture_dir)?;
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let safe_profile = safe_socket_filename_part(profile);
-    let path = fixture_dir.join(format!(
-        "logscope-fixture-{safe_profile}-{size_mb}mb-{suffix}.log"
-    ));
-
-    let started_at = Instant::now();
-    let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, File::create(&path)?);
-    let mut written = 0_u64;
-    let mut line_count = 0_usize;
-
-    while written < target_bytes {
-        line_count += 1;
-        let line = fixture_line(profile, line_count);
-        writer.write_all(line.as_bytes())?;
-        written += line.len() as u64;
-    }
-
-    writer.flush()?;
-    let file_size = fs::metadata(&path)?.len();
-
-    Ok(FixtureMetadata {
-        path: path.to_string_lossy().into_owned(),
-        file_size,
-        line_count,
-        profile: profile.to_string(),
-        generation_duration_ms: started_at.elapsed().as_millis(),
-    })
-}
-
-fn fixture_line(profile: &str, line_count: usize) -> String {
-    match profile {
-        "short-lines" => {
-            let severity = match line_count % 7 {
-                0 => "ERROR",
-                1 | 2 => "WARN",
-                _ => "INFO",
-            };
-            format!(
-                "{:02}:{:02}:{:02}\t{severity} id={} v={}\n",
-                (line_count / 3600) % 24,
-                (line_count / 60) % 60,
-                line_count % 60,
-                line_count,
-                line_count % 997
-            )
-        }
-        "long-lines" => {
-            let repeated = " payload_key=value trace_segment=abcdefghijklmnopqrstuvwxyz0123456789".repeat(64);
-            format!(
-                "2026-04-25T12:{:02}:{:02}.{:03}Z INFO worker={} request_id=req-{:08} long_line=true{repeated}\n",
-                (line_count / 60) % 60,
-                line_count % 60,
-                line_count % 1000,
-                line_count % 16,
-                line_count,
-            )
-        }
-        "dense-markers" if line_count % 3 == 0 => format!(
-            "13:{:02}:{:02}\t{{\"event_name\":\"fixture_marker\",\"line\":{},\"severity\":\"{}\",\"payload\":{{\"value\":{}}}}}\n",
-            (line_count / 60) % 60,
-            line_count % 60,
-            line_count,
-            if line_count % 12 == 0 { "error" } else { "info" },
-            line_count % 997
-        ),
-        "append-stream" => format!(
-            "13:{:02}:{:02}\t{} append fixture stream_id={} batch={} message=\"tail pressure sample\"\n",
-            (line_count / 60) % 60,
-            line_count % 60,
-            if line_count % 11 == 0 { "WARN" } else { "INFO" },
-            line_count % 32,
-            line_count / 128,
-        ),
-        _ => {
-            let severity = match line_count % 5 {
-                0 => "ERROR",
-                1 | 2 => "INFO",
-                _ => "WARN",
-            };
-            format!(
-                "2026-04-25T12:{:02}:{:02}.{:03}Z {severity} worker={} request_id=req-{:08} stage=fixture message=\"synthetic log row for virtualization and indexing validation\" value={}\n",
-                (line_count / 60) % 60,
-                line_count % 60,
-                line_count % 1000,
-                line_count % 16,
-                line_count,
-                line_count % 997
-            )
-        }
-    }
-}
-
-fn run_core_benchmark_sync(size_mb: u64, profile: &str) -> std::io::Result<CoreBenchmarkReport> {
-    let fixture = generate_fixture(size_mb, profile)?;
-    let session = LogSession::open(PathBuf::from(&fixture.path), &MarkerConfig::default())?;
-
-    let search = search_text_snapshot(
-        1,
-        session.search_snapshot(),
-        "error".to_string(),
-        1,
-        0,
-        "next".to_string(),
-        false,
-        false,
-        false,
-        true,
-        true,
-    )?;
-
-    let read_started_at = Instant::now();
-    let visible = session.read_lines(1, 1, 240)?;
-    let read_visible_duration_ms = read_started_at.elapsed().as_millis();
-
-    Ok(CoreBenchmarkReport {
-        fixture,
-        index_duration_ms: session.index_duration_ms,
-        marker_count: session.markers.len(),
-        search_duration_ms: search.duration_ms,
-        search_total_matches: search.total_matches,
-        read_visible_duration_ms,
-        read_visible_line_count: visible.lines.len(),
-    })
-}
-
 fn read_socket_frames_to_file(mut stream: TcpStream, path: PathBuf) -> std::io::Result<()> {
     const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
@@ -2696,6 +2538,9 @@ fn sanitize_store(mut store: PersistedStore) -> PersistedStore {
             false
         }
     });
+    for fav in &mut store.favorites {
+        fav.color = normalize_favorite_color(&fav.color);
+    }
     store.favorites.truncate(50);
     store.ui_state = sanitize_ui_state(store.ui_state);
     store
@@ -2809,21 +2654,22 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
     )?;
 
     // ---- Favorites submenu ----
-    let mut fav_open_items: Vec<MenuItem<tauri::Wry>> = Vec::new();
-    let mut fav_remove_items: Vec<MenuItem<tauri::Wry>> = Vec::new();
+    let mut fav_open_items: Vec<IconMenuItem<tauri::Wry>> = Vec::new();
+    let mut fav_remove_items: Vec<IconMenuItem<tauri::Wry>> = Vec::new();
 
     if let Ok(store) = load_persisted_store(app_handle) {
         for fav in &store.favorites {
+            let icon = favorite_color_icon(&fav.color);
             if fav.kind == "file" {
                 if let Some(ref path) = fav.path {
-                    fav_open_items.push(MenuItem::with_id(app_handle, format!("open_favorite_file_{path}"), &fav.display_name, true, None::<&str>)?);
-                    fav_remove_items.push(MenuItem::with_id(app_handle, format!("remove_favorite_file_{path}"), &fav.display_name, true, None::<&str>)?);
+                    fav_open_items.push(IconMenuItem::with_id(app_handle, format!("open_favorite_file_{path}"), &fav.display_name, true, icon.clone(), None::<&str>)?);
+                    fav_remove_items.push(IconMenuItem::with_id(app_handle, format!("remove_favorite_file_{path}"), &fav.display_name, true, icon, None::<&str>)?);
                 }
             } else if fav.kind == "socket" {
                 if let (Some(ref host), Some(port)) = (&fav.host, fav.port) {
                     let id_key = format!("{host}:{port}");
-                    fav_open_items.push(MenuItem::with_id(app_handle, format!("open_favorite_socket_{id_key}"), &fav.display_name, true, None::<&str>)?);
-                    fav_remove_items.push(MenuItem::with_id(app_handle, format!("remove_favorite_socket_{id_key}"), &fav.display_name, true, None::<&str>)?);
+                    fav_open_items.push(IconMenuItem::with_id(app_handle, format!("open_favorite_socket_{id_key}"), &fav.display_name, true, icon.clone(), None::<&str>)?);
+                    fav_remove_items.push(IconMenuItem::with_id(app_handle, format!("remove_favorite_socket_{id_key}"), &fav.display_name, true, icon, None::<&str>)?);
                 }
             }
         }
@@ -2869,24 +2715,6 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
         ],
     )?;
 
-    let fixture_mixed = MenuItem::with_id(app_handle, "gen_fixture_mixed", "Mixed", true, None::<&str>)?;
-    let fixture_short = MenuItem::with_id(app_handle, "gen_fixture_short-lines", "短行 (Short Lines)", true, None::<&str>)?;
-    let fixture_long = MenuItem::with_id(app_handle, "gen_fixture_long-lines", "超长行 (Long Lines)", true, None::<&str>)?;
-    let fixture_dense = MenuItem::with_id(app_handle, "gen_fixture_dense-markers", "高密度 Marker (Dense Markers)", true, None::<&str>)?;
-    let fixture_append = MenuItem::with_id(app_handle, "gen_fixture_append-stream", "Append", true, None::<&str>)?;
-    let fixture_submenu = Submenu::with_items(app_handle, "Generate 50MB Fixture", true, &[&fixture_mixed, &fixture_short, &fixture_long, &fixture_dense, &fixture_append])?;
-
-    let bench_mixed = MenuItem::with_id(app_handle, "benchmark_mixed", "Mixed", true, None::<&str>)?;
-    let bench_short = MenuItem::with_id(app_handle, "benchmark_short-lines", "短行 (Short Lines)", true, None::<&str>)?;
-    let bench_long = MenuItem::with_id(app_handle, "benchmark_long-lines", "超长行 (Long Lines)", true, None::<&str>)?;
-    let bench_dense = MenuItem::with_id(app_handle, "benchmark_dense-markers", "高密度 Marker (Dense Markers)", true, None::<&str>)?;
-    let bench_append = MenuItem::with_id(app_handle, "benchmark_append-stream", "Append", true, None::<&str>)?;
-    let bench_submenu = Submenu::with_items(app_handle, "Core Benchmark", true, &[&bench_mixed, &bench_short, &bench_long, &bench_dense, &bench_append])?;
-
-    let health_check_item = MenuItem::with_id(app_handle, "health_check", "Command 自检", true, None::<&str>)?;
-
-    let debug_submenu = Submenu::with_items(app_handle, "Debug", true, &[&fixture_submenu, &bench_submenu, &health_check_item])?;
-
     #[cfg(target_os = "macos")]
     {
         let app_menu = Submenu::with_items(
@@ -2912,13 +2740,13 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
                 &PredefinedMenuItem::quit(app_handle, None)?,
             ],
         )?;
-        let menu = Menu::with_items(app_handle, &[&app_menu, &file_submenu, &favorites_submenu, &debug_submenu])?;
+        let menu = Menu::with_items(app_handle, &[&app_menu, &file_submenu, &favorites_submenu])?;
         app_handle.set_menu(menu)?;
     }
     
     #[cfg(not(target_os = "macos"))]
     {
-        let menu = Menu::with_items(app_handle, &[&file_submenu, &favorites_submenu, &debug_submenu])?;
+        let menu = Menu::with_items(app_handle, &[&file_submenu, &favorites_submenu])?;
         app_handle.set_menu(menu)?;
     }
 
@@ -2937,7 +2765,7 @@ pub fn run() {
 
             app.on_menu_event(move |app_handle, event| {
                 let id = event.id().0.as_str();
-                if id == "open_file" || id == "connect_socket" || id == "health_check" {
+                if id == "open_file" || id == "connect_socket" {
                     let _ = app_handle.emit(
                         "menu-event",
                         serde_json::json!({ "action": id }),
@@ -3025,26 +2853,12 @@ pub fn run() {
                             deferred_update_app_menu(app_handle);
                         }
                     }
-                } else if let Some(profile) = id.strip_prefix("gen_fixture_") {
-                    let _ = app_handle.emit(
-                        "menu-event",
-                        serde_json::json!({ "action": "gen_fixture", "profile": profile }),
-                    );
-                } else if let Some(profile) = id.strip_prefix("benchmark_") {
-                    let _ = app_handle.emit(
-                        "menu-event",
-                        serde_json::json!({ "action": "benchmark", "profile": profile }),
-                    );
                 }
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            health_check,
-            open_file_placeholder,
             open_log_file,
-            generate_log_fixture,
-            run_core_benchmark,
             connect_log_socket,
             start_udp_discovery,
             stop_udp_discovery,
@@ -3599,38 +3413,23 @@ mod tests {
     }
 
     #[test]
-    fn generates_fixture_at_requested_size_floor() {
-        let fixture = generate_fixture(1, "mixed").unwrap();
-
-        assert!(fixture.file_size >= 1024 * 1024);
-        assert!(fixture.line_count > 0);
-        assert_eq!(fixture.profile, "mixed");
-        assert!(PathBuf::from(&fixture.path).exists());
-        fs::remove_file(fixture.path).unwrap();
+    fn normalizes_favorite_colors_to_palette() {
+        assert_eq!(normalize_favorite_color("#34d399"), "#34d399");
+        assert_eq!(normalize_favorite_color("  #34D399 "), "#34d399");
+        assert_eq!(normalize_favorite_color(""), DEFAULT_FAVORITE_COLOR);
+        assert_eq!(normalize_favorite_color("#123456"), DEFAULT_FAVORITE_COLOR);
     }
 
     #[test]
-    fn generates_dense_marker_fixture_profile() {
-        let fixture = generate_fixture(1, "dense-markers").unwrap();
-        let session = LogSession::open(PathBuf::from(&fixture.path), &MarkerConfig::default()).unwrap();
-
-        assert_eq!(fixture.profile, "dense-markers");
-        assert!(fixture.file_size >= 1024 * 1024);
-        assert!(session.markers.len() > 100);
-        assert!(PathBuf::from(&fixture.path).exists());
-        fs::remove_file(fixture.path).unwrap();
-    }
-
-    #[test]
-    fn core_benchmark_reports_reproducible_metrics() {
-        let report = run_core_benchmark_sync(1, "short-lines").unwrap();
-
-        assert_eq!(report.fixture.profile, "short-lines");
-        assert!(report.fixture.file_size >= 1024 * 1024);
-        assert!(report.fixture.line_count > 0);
-        assert!(report.read_visible_line_count > 0);
-        assert!(PathBuf::from(&report.fixture.path).exists());
-        fs::remove_file(report.fixture.path).unwrap();
+    fn renders_favorite_color_icon_as_rgba_disc() {
+        let image = favorite_color_icon("#f87171").unwrap();
+        assert_eq!(image.width(), 36);
+        assert_eq!(image.height(), 36);
+        let rgba = image.rgba();
+        assert_eq!(rgba.len(), 36 * 36 * 4);
+        // Center pixel is opaque, corner pixel is fully transparent.
+        assert_eq!(&rgba[(18 * 36 + 18) * 4..(18 * 36 + 18) * 4 + 4], &[248, 113, 113, 255]);
+        assert_eq!(rgba[3], 0);
     }
 
     fn test_file_path(name: &str) -> PathBuf {

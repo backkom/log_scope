@@ -64,7 +64,8 @@
 | 日志着色 | 三态：完整着色 / 仅 severity / 关闭；单行最多处理前 4 KB，纯装饰、不影响主链路 |
 | 规则配置 | 五类 extractor 可启停、可配色；区分「即时生效」与「需重新扫描」两类配置 |
 | 本地持久化 | `state-v1.json` 保存最近文件 / 最近 socket / 收藏夹 / 低风险 UI 状态 |
-| 性能自测 | 一键生成 5 种 profile 的 fixture，运行核心 benchmark，状态栏展示渲染耗时 |
+| 收藏夹 | 文件 / socket 可收藏到原生应用菜单，支持自定义名称与 8 色颜色标签，跨会话保留 |
+| 性能观测 | 状态栏展示虚拟化 DOM 行数、缓存行数，以及顶部 marker 条与右侧 minimap 的 Canvas 绘制耗时 |
 | 大文件降级 | ≥100 MB 自动降为仅 severity 着色，≥300 MB 默认隐藏右侧 minimap，均可手动恢复 |
 
 ## 界面结构
@@ -237,10 +238,56 @@ yarn run package:windows
 
 也可以不建 Release、只验证编译：在 **Actions** 里手动运行 `release.yml`，构建产物会以 artifact 形式保留。
 
-> **关于签名**：默认产物未签名。macOS 首次打开会被 Gatekeeper 拦截，可右键「打开」，或执行
-> `xattr -dr com.apple.quarantine /Applications/LogScope.app`。Windows 会触发 SmartScreen 提示，选择「仍要运行」。
+> **关于签名**：默认产物未签名，安装时的系统拦截与绕过方法见下方「安装与首次运行」。
 > 如需正式签名，在仓库 Secrets 中配置 Apple 证书（`APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` /
 > `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`），并取消 `release.yml` 中签名相关注释。
+
+## 安装与首次运行
+
+发布产物均为**未签名**构建，操作系统会主动拦截，这是预期行为，不是文件损坏。下面按平台说明。
+
+### 下载哪个文件
+
+| 平台 | 文件 | 说明 |
+| --- | --- | --- |
+| macOS（Apple Silicon / Intel 通用） | `LogScope_<版本>_universal.dmg` | 双击挂载，把 `LogScope.app` 拖进「应用程序」 |
+| Windows | `LogScope_<版本>_x64_en-US.msi` | 推荐，标准安装流程 |
+| Windows | `LogScope_<版本>_x64-setup.exe` | NSIS 安装包，与 MSI 二选一即可 |
+
+> Release 页面里的 `Source code (zip)` / `Source code (tar.gz)` 是 GitHub 为每个 Release 自动附带的源码归档，**不是可执行程序**，无需下载。
+
+### macOS
+
+首次打开会提示「无法打开，因为 Apple 无法检查其是否包含恶意软件」。任选一种方式放行：
+
+1. **右键打开**（推荐，只需一次）：在 Finder 里右键点 `LogScope.app` →「打开」→ 弹窗中再点一次「打开」。
+2. **命令行移除隔离属性**：
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/LogScope.app
+   ```
+
+3. **系统设置**：「系统设置 → 隐私与安全性」，滚到底部点「仍要打开」。
+
+若提示「已损坏，无法打开」，通常是 App 被移动或解压过程破坏了签名缓存：重新挂载 DMG 再把 `LogScope.app` 拖进「应用程序」，必要时先执行 `xattr -cr /Applications/LogScope.app`。Apple Silicon 机器运行的是 universal 二进制，无需 Rosetta。
+
+### Windows
+
+首次运行会出现「Windows 已保护你的电脑」（SmartScreen），点击「更多信息」→「仍要运行」。若被 Defender 隔离，需要在「Windows 安全中心 → 病毒和威胁防护 → 保护历史记录」中还原并允许。
+
+### 运行环境
+
+- **不需要**安装 Node.js、Rust 或任何运行时：Rust 核心已静态编译进应用，前端产物已内嵌。
+- 需要系统具备 WebView2（Windows 10/11 通常已预装；缺失时系统会提示下载）。
+- 应用会在 Tauri app data 目录写入 `state-v1.json` 保存最近文件、最近 socket、收藏夹和 UI 偏好。
+  - macOS：`~/Library/Application Support/com.logscope.viewer/state-v1.json`
+  - Windows：`%APPDATA%\com.logscope.viewer\state-v1.json`
+- Socket 局域网自动发现会监听 UDP `9876`；若系统防火墙首次弹窗询问，需允许才能列出可用服务端。
+- 应用为**只读**查看器，不会修改被打开的日志文件；socket 会话会写入系统临时目录下的 `log_scope/socket`。
+
+### 卸载
+
+macOS 把 `LogScope.app` 拖进废纸篓；Windows 在「应用和功能」中卸载。需要彻底清理时一并删除上面的 app data 目录。
 
 ## 性能与降级
 
@@ -252,7 +299,7 @@ yarn run package:windows
 | 快速滚动 | 先渲染行号与占位行，Rust 返回后逐行回填，不缓存完整文件 |
 | 持续 append | 未开启跟随 Tail 时只更新总行数并提示新增行，不改变阅读位置 |
 
-自测入口：数据源面板可生成 5 种 profile 的 fixture（`mixed` / `short-lines` / `long-lines` / `dense-markers` / `append-stream`），并运行核心 benchmark 得到索引、marker 扫描、搜索与可见行读取耗时。
+性能验证方式：应用内不再提供 fixture 生成与 benchmark 命令（早期 Debug 菜单已移除）。需要基准数据时，自行准备 log 样本直接打开，在状态栏观察索引耗时与渲染耗时；需要可重复的基准时在开发环境临时添加测试代码。
 
 ## 项目结构
 

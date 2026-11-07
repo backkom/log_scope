@@ -170,12 +170,12 @@
 
 目标：用可重复测试约束性能优化。
 
-状态：已完成第一版编码。当前 `generate_log_fixture(sizeMb, profile?)` 支持 mixed、短行、超长行、高密度 marker、append stream 五类 fixture，前端可选择 profile 生成 50 MB 样本；新增 `run_core_benchmark(sizeMb, profile?)`，会生成 fixture 后测量打开/索引与 marker 扫描、搜索 `error`、读取前 240 行的耗时和结果规模。前端状态栏展示虚拟化 DOM 行数/缓存行数，以及 minimap Canvas 最近绘制耗时；打开 100 MB+ 文件自动降级为仅 severity 着色，打开 300 MB+ 文件同时默认隐藏右侧 minimap。仍需补充独立 benchmark harness、峰值内存记录、真实 100/300 MB 文件数据表、socket burst 压测、搜索取消和渐进式索引。
+状态：降级策略已实现，应用内 fixture/benchmark 入口已移除。原先的 Debug 菜单（fixture 生成、core benchmark、command 自检）连同 `generate_log_fixture`、`run_core_benchmark`、`health_check`、`open_file_placeholder` 及前端入口一并删除，避免调试代码留在产品菜单；性能回归改由独立 harness 承担。前端状态栏展示虚拟化 DOM 行数/缓存行数，以及 minimap Canvas 最近绘制耗时；打开 100 MB+ 文件自动降级为仅 severity 着色，打开 300 MB+ 文件同时默认隐藏右侧 minimap。仍需补充独立 benchmark harness、峰值内存记录、真实 100/300 MB 文件数据表、socket burst 压测、搜索取消和渐进式索引。
 
 任务：
 
-- 增加 fixture 生成器：50 MB、100 MB、300 MB、大量短行、超长行、高密度 marker、持续 append、socket burst。
-- 增加 Rust core benchmark：索引速度、marker 扫描、搜索吞吐、内存峰值。
+- 在开发侧（不进产品菜单）准备 fixture 样本：50 MB、100 MB、300 MB、大量短行、超长行、高密度 marker、持续 append、socket burst。
+- 增加独立 Rust core benchmark：索引速度、marker 扫描、搜索吞吐、内存峰值。
 - 增加前端性能检查：滚动流畅度、DOM 行数、minimap 渲染耗时。
 - 实现大文件降级策略：关闭自动换行、限制高成本高亮、渐进式索引和摘要。
 
