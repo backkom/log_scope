@@ -14,8 +14,7 @@
     "icons:sync": "tauri icon src-tauri/icons/icon.png --output src-tauri/icons",
     "checktsc": "tsc --noEmit",
     "package:macos": "bash scripts/package-macos.sh",
-    "package:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1",
-    "publish": "node scripts/publish.mjs"
+    "package:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check (${{ matrix.name }})
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            platform: macos-latest
+          - name: Windows
+            platform: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+
+      - name: Setup Yarn
+        run: npm install --global yarn@1.22.22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ci-${{ matrix.platform }}
+
+      - name: Install frontend dependencies
+        run: yarn install --frozen-lockfile --network-timeout 600000
+
+      - name: Type check frontend
+        run: yarn checktsc
+
+      - name: Build frontend
+        run: yarn build
+
+      - name: Check Rust core
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml

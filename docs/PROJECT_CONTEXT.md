@@ -1,6 +1,6 @@
 # 项目上下文
 
-最后更新：2026-07-23
+最后更新：2026-11-07
 
 本文档是 `log_scope` 的长期项目记忆。后续 AI agent 和开发者在做项目决策前应先阅读本文档；当需求、架构、取舍或实现细节发生变化时，必须同步更新本文档。
 
@@ -335,7 +335,16 @@ Rust command：
 - macOS：`yarn run package:macos`，内部执行 `scripts/package-macos.sh`，默认生成未签名 `.app` 和 `.dmg`。本机 macOS 已验证可产出 `src-tauri/target/release/bundle/macos/LogScope.app` 和 `src-tauri/target/release/bundle/dmg/LogScope_0.1.0_aarch64.dmg`。如需签名/公证，配置 Tauri 所需证书环境后使用 `LOGSCOPE_SIGN=1` 或脚本 `--sign`。
 - Windows：`yarn run package:windows`，内部执行 `scripts/package-windows.ps1`，默认请求 Tauri 生成 `nsis,msi` 安装包；该脚本必须在 Windows 主机执行，macOS 当前只维护脚本内容，实际安装包待 Windows 验证。
 
+仓库不提供手动把安装包复制到共享目录的发布脚本：原 `scripts/publish.mjs` 与 `yarn run publish`（依赖 `LOGSCOPE_PUBLISH_DIR`）已移除。后续的分发与升级改由应用内自动更新承担，不再依赖手工搬运产物。
+
 图标资源由 `src-tauri/icons/icon.png` 生成，并已补齐 Tauri 打包需要的 `.icns`、`.ico` 和 PNG 尺寸资源。后续更换图标时统一执行 `yarn run icons:sync` 更新全部派生图标；该脚本内部等价于 `tauri icon src-tauri/icons/icon.png --output src-tauri/icons`。图标更新后需重新跑至少 macOS 打包 smoke test。
+
+GitHub Actions 自动构建：
+
+- `.github/workflows/ci.yml` 在 `main`/`master` push 和 pull request 上，对 macOS 与 Windows 双平台执行 `yarn checktsc`、`yarn build` 和 `cargo check --locked`。
+- `.github/workflows/release.yml` 在推送 `v*` 标签时，使用 `tauri-apps/tauri-action` 构建 macOS universal（`aarch64` + `x86_64`）`.dmg` 与 Windows `nsis`/`msi` 安装包，并上传到对应 GitHub Release；手动触发工作流时只构建并上传 artifact，不创建 Release。
+- CI 产物默认未签名；Apple 签名/公证需在仓库 Secrets 配置证书后取消 `release.yml` 中签名相关注释。
+- `README.md` 面向 GitHub 访客介绍背景、功能和发布流程；架构与决策细节仍以本文档为准。
 
 ## 虚拟化 Viewer 要求
 
