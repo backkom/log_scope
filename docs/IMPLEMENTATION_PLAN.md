@@ -203,6 +203,10 @@
 - macOS 和 Windows 均可安装/运行基础功能。
 - 常见错误路径有清晰提示。
 
+## 阶段 9：应用内自动更新
+
+状态：已完成第一版编码。采用 `tauri-plugin-updater`，启动时静默检查 GitHub Releases 的 `latest.json`，有新版本时在菜单栏显示红点并把菜单项标注为新版本号，但不弹窗、不下载；用户点击 `Help → Check for Updates...` 后才下载、覆盖安装并自动重启。更新包使用 minisign 签名，私钥仅保存在本机和 GitHub Actions Secrets，不进入仓库；发布工作流负责生成带签名的 updater 产物和 `latest.json`。
+
 ## 建议的首个开发切片
 
 首个实际实现切片建议控制在阶段 0 + 阶段 1 的最小闭环：

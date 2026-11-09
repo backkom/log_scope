@@ -9,6 +9,11 @@ dist/
 src-tauri/gen/schemas/
 src-tauri/target/
 
+# Updater signing keys (never commit)
+*.key
+*.key.pub
+*.key.password
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

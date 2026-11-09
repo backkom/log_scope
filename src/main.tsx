@@ -115,6 +115,23 @@ type LogSearchResult = {
   matches: LogSearchMatch[];
 };
 
+type UpdateStage =
+  | "checking"
+  | "available"
+  | "downloading"
+  | "installing"
+  | "up-to-date"
+  | "error";
+
+type UpdateStatus = {
+  stage: UpdateStage;
+  currentVersion: string;
+  version: string | null;
+  downloaded: number;
+  contentLength: number | null;
+  message: string | null;
+};
+
 type SearchCache = {
   sessionId: number;
   fileSize: number;
@@ -540,6 +557,8 @@ function App() {
   const [favoriteDialogColor, setFavoriteDialogColor] = React.useState<string>(DEFAULT_FAVORITE_COLOR);
   const [showMarkerConfigModal, setShowMarkerConfigModal] = React.useState(false);
   const [markerRuleConfig, setMarkerRuleConfig] = React.useState<MarkerRuleConfig>(DEFAULT_MARKER_RULE_CONFIG);
+  const [showUpdateDialog, setShowUpdateDialog] = React.useState(false);
+  const [updateStatus, setUpdateStatus] = React.useState<UpdateStatus | null>(null);
   const saveMarkerConfigTimerRef = React.useRef<number | null>(null);
   const [isDisconnected, setIsDisconnected] = React.useState(false);
   const [showSourcePanel, setShowSourcePanel] = React.useState(false);
@@ -891,6 +910,22 @@ function App() {
         setFavoriteDialogColor(DEFAULT_FAVORITE_COLOR);
         setShowFavoriteDialog(true);
       }
+    }).then((unlistenFn) => {
+      unlisten = unlistenFn;
+    });
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<UpdateStatus>("update-status", (event) => {
+      setUpdateStatus(event.payload);
+      setShowUpdateDialog(true);
     }).then((unlistenFn) => {
       unlisten = unlistenFn;
     });
@@ -1938,6 +1973,12 @@ function App() {
   }, [lineCache.size, renderedLineCount]);
   const activePath = logFile?.path ?? "尚未打开文件";
   const activeStatus = isDisconnected ? "已断开" : "Ready";
+  const updateDialogClosable =
+    !updateStatus || updateStatus.stage === "up-to-date" || updateStatus.stage === "error";
+  const updateProgressPercent =
+    updateStatus && updateStatus.contentLength && updateStatus.contentLength > 0
+      ? Math.min(100, Math.round((updateStatus.downloaded / updateStatus.contentLength) * 100))
+      : null;
   const statusItems = logFile
     ? [
       `大小 ${formatBytes(logFile.fileSize)}`,
@@ -3405,6 +3446,123 @@ function App() {
                 关闭
               </button>
             </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showUpdateDialog && updateStatus && createPortal(
+        <div
+          className="modal-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && updateDialogClosable) {
+              setShowUpdateDialog(false);
+            }
+          }}
+        >
+          <div
+            className="modal-content update-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div className="modal-header-left">
+                <svg className="modal-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12a9 9 0 1 1-3.64-7.28" />
+                  <polyline points="21 3 21 9 15 9" />
+                </svg>
+                <h2>软件更新</h2>
+              </div>
+              {updateDialogClosable ? (
+                <button
+                  type="button"
+                  className="modal-close-button"
+                  onClick={() => setShowUpdateDialog(false)}
+                  title="关闭"
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
+
+            <div className="update-dialog-body" role="status" aria-live="polite">
+              {updateStatus.stage === "checking" ? (
+                <div className="update-dialog-row">
+                  <span className="update-spinner" aria-hidden="true" />
+                  <div>
+                    <div className="update-dialog-title">正在检查最新版本…</div>
+                    <div className="update-dialog-hint">当前版本 v{updateStatus.currentVersion}</div>
+                  </div>
+                </div>
+              ) : null}
+
+              {updateStatus.stage === "up-to-date" ? (
+                <div className="update-dialog-row">
+                  <span className="update-dialog-icon update-dialog-icon-ok" aria-hidden="true">✓</span>
+                  <div>
+                    <div className="update-dialog-title">当前已是最新版本</div>
+                    <div className="update-dialog-hint">版本 v{updateStatus.currentVersion}</div>
+                  </div>
+                </div>
+              ) : null}
+
+              {updateStatus.stage === "available" ? (
+                <div>
+                  <div className="update-dialog-title">发现新版本 v{updateStatus.version}</div>
+                  <div className="update-dialog-hint">当前版本 v{updateStatus.currentVersion}，即将开始下载。</div>
+                </div>
+              ) : null}
+
+              {updateStatus.stage === "downloading" ? (
+                <div>
+                  <div className="update-dialog-title">正在下载 v{updateStatus.version}</div>
+                  <div className="update-progress-track">
+                    <div
+                      className={
+                        updateProgressPercent === null
+                          ? "update-progress-fill is-indeterminate"
+                          : "update-progress-fill"
+                      }
+                      style={updateProgressPercent === null ? undefined : { width: `${updateProgressPercent}%` }}
+                    />
+                  </div>
+                  <div className="update-dialog-hint">
+                    {updateProgressPercent !== null ? `${updateProgressPercent}% · ` : ""}
+                    {formatBytes(updateStatus.downloaded)}
+                    {updateStatus.contentLength ? ` / ${formatBytes(updateStatus.contentLength)}` : ""}
+                  </div>
+                  <div className="update-dialog-hint">下载完成后会自动覆盖安装并重新启动，请保持应用打开。</div>
+                </div>
+              ) : null}
+
+              {updateStatus.stage === "installing" ? (
+                <div>
+                  <div className="update-dialog-title">正在安装 v{updateStatus.version}</div>
+                  <div className="update-dialog-hint">安装完成后应用会自动重新启动，Windows 上可能会弹出安装程序窗口。</div>
+                </div>
+              ) : null}
+
+              {updateStatus.stage === "error" ? (
+                <div>
+                  <div className="update-dialog-title update-dialog-title-error">检查更新失败</div>
+                  <div className="update-dialog-hint">请检查网络连接后重试；若问题持续，可从 GitHub Releases 手动下载安装包。</div>
+                  {updateStatus.message ? (
+                    <pre className="update-dialog-error">{updateStatus.message}</pre>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
+            {updateDialogClosable ? (
+              <div className="update-dialog-actions">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => setShowUpdateDialog(false)}
+                >
+                  关闭
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>,
         document.body

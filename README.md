@@ -65,6 +65,7 @@
 | 规则配置 | 五类 extractor 可启停、可配色；区分「即时生效」与「需重新扫描」两类配置 |
 | 本地持久化 | `state-v1.json` 保存最近文件 / 最近 socket / 收藏夹 / 低风险 UI 状态 |
 | 收藏夹 | 文件 / socket 可收藏到原生应用菜单，支持自定义名称与 8 色颜色标签，跨会话保留 |
+| 应用内更新 | 启动时静默检查 GitHub Releases，有新版本时在菜单栏显示红点；用户点击 **Help → Check for Updates...** 后才下载、覆盖安装并自动重启，不弹窗打扰、不强制更新 |
 | 性能观测 | 状态栏展示虚拟化 DOM 行数、缓存行数，以及顶部 marker 条与右侧 minimap 的 Canvas 绘制耗时 |
 | 大文件降级 | ≥100 MB 自动降为仅 severity 着色，≥300 MB 默认隐藏右侧 minimap，均可手动恢复 |
 
@@ -196,6 +197,8 @@ yarn run package:windows
 
 产物位于 `src-tauri/target/release/bundle/`。需要 Apple 签名 / 公证时，先配置 Tauri 所需证书环境变量，再执行 `LOGSCOPE_SIGN=1 yarn run package:macos`。
 
+打包会同时生成自动更新所需的 `.sig` 签名与 `.app.tar.gz`（macOS）产物。Tauri bundler 从 `TAURI_SIGNING_PRIVATE_KEY` 读取密钥内容；脚本也接受 `TAURI_SIGNING_PRIVATE_KEY_PATH`（自动读取文件内容），未设置时使用 `~/.tauri/logscope.key` 及同目录 `.password` 文件。缺少密钥时脚本会直接报错。密钥配置方式见下方「应用内自动更新」。
+
 ## GitHub Actions：跨平台自动构建与发布
 
 仓库内置两个工作流，推送后即可在 GitHub 上编译各平台产物。
@@ -213,9 +216,9 @@ yarn run package:windows
 
 推送 `v*` 标签（或手动触发工作流）后，自动：
 
-- macOS 上构建 **universal**（`aarch64` + `x86_64`）的 `.app` 与 `.dmg`
+- macOS 上构建 **universal**（`aarch64` + `x86_64`）的 `.app`、`.dmg` 和 updater 用的 `.app.tar.gz`
 - Windows 上构建 `NSIS` `.exe` 与 `.msi` 安装包
-- 把安装包上传到对应的 GitHub Release
+- 为 updater 产物生成 `.sig` 签名与 `latest.json`，并连同安装包一起上传到对应的 GitHub Release
 
 ### 启用步骤
 
@@ -227,14 +230,19 @@ yarn run package:windows
    ```
 
 2. 打开 **Settings → Actions → General → Workflow permissions**，选择 **Read and write permissions**（发布 Release 需要）。
-3. 打标签并推送，触发发布：
+3. 配置自动更新签名 Secrets（发布工作流必需，否则构建会因缺少签名密钥失败）：
+   - `TAURI_SIGNING_PRIVATE_KEY`：`~/.tauri/logscope.key` 文件的完整内容；
+   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：生成该密钥时设置的密码。
+
+   这两个值与 `src-tauri/tauri.conf.json` 中的 updater 公钥一一对应；更换密钥后必须同步更新公钥，否则客户端会拒绝更新包。
+4. 打标签并推送，触发发布（标签版本应与三处版本号一致）：
 
    ```bash
-   git tag v0.1.0
-   git push github v0.1.0
+   git tag v0.1.1
+   git push github v0.1.1
    ```
 
-4. 在 **Actions** 页面观察构建，完成后在 **Releases** 下载各平台安装包。
+5. 在 **Actions** 页面观察构建，完成后在 **Releases** 下载各平台安装包；`latest.json` 会作为 Release 资产自动上传，供应用内更新读取。
 
 也可以不建 Release、只验证编译：在 **Actions** 里手动运行 `release.yml`，构建产物会以 artifact 形式保留。
 
@@ -289,6 +297,49 @@ yarn run package:windows
 
 macOS 把 `LogScope.app` 拖进废纸篓；Windows 在「应用和功能」中卸载。需要彻底清理时一并删除上面的 app data 目录。
 
+## 应用内自动更新
+
+应用启动时会静默检查一次版本，但不会下载或安装任何东西，也不会弹窗：
+
+- 发现新版本：菜单栏显示 `Help 🔴`，菜单项变为 **Check for Updates (vX.Y.Z)** 并带红色圆点图标；不打扰当前使用。
+- 没有新版本或检查失败：不显示红点，也不提示。
+
+只有用户点击该菜单项后才会进入安装流程：
+
+1. 重新请求 `https://github.com/backkom/log_scope/releases/latest/download/latest.json`，比较其中的版本与当前应用版本。
+2. 没有新版本：弹窗提示「当前已是最新版本」，并清除菜单红点。
+3. 有新版本：显示下载进度，下载完成后自动覆盖安装并重启。
+   - Windows：以 passive 模式运行 NSIS 或 MSI 安装器；若安装目录需要管理员权限，会出现 UAC 提示。
+   - macOS：原地替换 `/Applications` 中的 `LogScope.app`；无写权限时会弹出管理员授权。
+4. 失败时弹窗展示原因，并提示从 GitHub Releases 手动下载；此时保留已有红点。
+
+说明与限制：
+
+- Windows 会使用与当前安装方式匹配的更新包：NSIS 安装的用 `-setup.exe`，MSI 安装的用 `.msi`。
+- 更新包必须通过 minisign 公钥校验（公钥位于 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`），且签名内版本必须与 `latest.json` 一致（`requireSignedVersion`）；任何校验失败都会拒绝安装。
+- 本功能从 **0.1.1** 开始提供；0.1.0 及更早版本需要手动安装一次 0.1.1，之后才能自动升级。
+- 暂不支持 beta 通道、增量更新和版本回滚。
+
+### 维护者：签名密钥与发布
+
+自动更新依赖一对 minisign 密钥。私钥不能提交仓库，公钥写在配置里。
+
+1. 生成密钥（已有密钥时跳过）：
+
+   ```bash
+   yarn tauri signer generate -w ~/.tauri/logscope.key
+   ```
+
+   如果设置了密码，把密码保存在 `~/.tauri/logscope.key.password`，本地打包脚本会自动读取。
+
+2. 把输出中的公钥填入 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`。
+3. 在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 添加：
+   - `TAURI_SIGNING_PRIVATE_KEY`：`~/.tauri/logscope.key` 文件全文；
+   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：密钥密码（无密码时留空）。
+4. 同步提升 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 的版本号，再推送 `v*` 标签。发布工作流会生成带签名的更新包和 `latest.json`。
+
+> 密钥丢失或更换后，旧版本客户端将无法验证新的更新包，只能手动安装一次新版本。请妥善备份私钥与密码。
+
 ## 性能与降级
 
 | 场景 | 行为 |
@@ -310,6 +361,7 @@ log_scope/
 │   └── styles.css
 ├── src-tauri/                 # Tauri 2 应用外壳与 Rust core
 │   ├── src/lib.rs             # 全部 Tauri command 与日志处理核心
+│   ├── src/update.rs          # 应用内自动更新（GitHub Releases + minisign）
 │   ├── tauri.conf.json
 │   └── icons/
 ├── scripts/
@@ -336,6 +388,7 @@ log_scope/
 
 ## 路线图
 
+- [x] 应用内自动更新：菜单主动检查 GitHub Releases，带签名校验、覆盖安装与自动重启
 - [ ] Marker 索引增量扫描（高频 tail 场景不再全量重建）
 - [ ] 搜索任务取消与流式分批返回，替代单次 command
 - [ ] 渐进式索引与进度 / 取消 UI，覆盖 300 MB 以上文件

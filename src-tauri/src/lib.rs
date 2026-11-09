@@ -15,6 +15,8 @@ use regex::Regex;
 use tauri::{Emitter, Manager};
 use tauri::menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
+mod update;
+
 #[derive(Clone, Debug, serde::Deserialize)]
 struct MarkerKeywordRule {
     error: Vec<String>,
@@ -230,6 +232,12 @@ fn favorite_color_icon(color: &str) -> Option<tauri::image::Image<'static>> {
         }
     }
     Some(tauri::image::Image::new_owned(rgba, SIZE, SIZE))
+}
+
+/// Red notification dot shown in front of the update menu item. Reuses the
+/// anti-aliased disc renderer so it stays crisp on macOS and Windows.
+fn update_badge_icon() -> Option<tauri::image::Image<'static>> {
+    favorite_color_icon("#ef4444")
 }
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
@@ -2601,7 +2609,6 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
     let mut socket_items = Vec::new();
     let mut separator1 = None;
     let mut separator2 = None;
-    let mut clear_item = None;
 
     if let Ok(store) = load_persisted_store(app_handle) {
         let has_files = !store.recent_files.is_empty();
@@ -2627,7 +2634,7 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
         }
     }
 
-    clear_item = Some(MenuItem::with_id(app_handle, "clear_all_recent", "Clear All", true, None::<&str>)?);
+    let clear_item = MenuItem::with_id(app_handle, "clear_all_recent", "Clear All", true, None::<&str>)?;
 
     let mut recent_items_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
     for item in &file_items {
@@ -2642,9 +2649,7 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(sep) = &separator2 {
         recent_items_refs.push(sep);
     }
-    if let Some(clear) = &clear_item {
-        recent_items_refs.push(clear);
-    }
+    recent_items_refs.push(&clear_item);
 
     let open_recent_submenu = Submenu::with_items(
         app_handle,
@@ -2702,6 +2707,39 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
     let open_file_item = MenuItem::with_id(app_handle, "open_file", "Open...", true, Some("CmdOrCtrl+O"))?;
     let connect_socket_item = MenuItem::with_id(app_handle, "connect_socket", "Connect Socket", true, Some("CmdOrCtrl+Shift+O"))?;
 
+    // The startup check records a newer version here. When present, the menu bar
+    // shows a red dot and the update item carries a matching red icon.
+    let available_update = update::available_version();
+    let check_updates_label = match &available_update {
+        Some(version) => format!("Check for Updates (v{version})"),
+        None => "Check for Updates...".to_string(),
+    };
+    let help_title = if available_update.is_some() {
+        "Help 🔴"
+    } else {
+        "Help"
+    };
+    let help_submenu = if available_update.is_some() {
+        let check_updates_item = IconMenuItem::with_id(
+            app_handle,
+            "check_for_updates",
+            &check_updates_label,
+            true,
+            update_badge_icon(),
+            None::<&str>,
+        )?;
+        Submenu::with_items(app_handle, help_title, true, &[&check_updates_item])?
+    } else {
+        let check_updates_item = MenuItem::with_id(
+            app_handle,
+            "check_for_updates",
+            &check_updates_label,
+            true,
+            None::<&str>,
+        )?;
+        Submenu::with_items(app_handle, help_title, true, &[&check_updates_item])?
+    };
+
     let file_submenu = Submenu::with_items(
         app_handle,
         "File",
@@ -2740,13 +2778,19 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
                 &PredefinedMenuItem::quit(app_handle, None)?,
             ],
         )?;
-        let menu = Menu::with_items(app_handle, &[&app_menu, &file_submenu, &favorites_submenu])?;
+        let menu = Menu::with_items(
+            app_handle,
+            &[&app_menu, &file_submenu, &favorites_submenu, &help_submenu],
+        )?;
         app_handle.set_menu(menu)?;
     }
     
     #[cfg(not(target_os = "macos"))]
     {
-        let menu = Menu::with_items(app_handle, &[&file_submenu, &favorites_submenu])?;
+        let menu = Menu::with_items(
+            app_handle,
+            &[&file_submenu, &favorites_submenu, &help_submenu],
+        )?;
         app_handle.set_menu(menu)?;
     }
 
@@ -2757,15 +2801,19 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
         .setup(|app| {
             let app_handle = app.handle();
             let _ = update_app_menu(app_handle);
-            
+            update::check_for_updates_on_startup(app_handle.clone());
+
 
             app.on_menu_event(move |app_handle, event| {
                 let id = event.id().0.as_str();
-                if id == "open_file" || id == "connect_socket" {
+                if id == "check_for_updates" {
+                    update::check_for_updates(app_handle.clone());
+                } else if id == "open_file" || id == "connect_socket" {
                     let _ = app_handle.emit(
                         "menu-event",
                         serde_json::json!({ "action": id }),
@@ -3430,6 +3478,18 @@ mod tests {
         // Center pixel is opaque, corner pixel is fully transparent.
         assert_eq!(&rgba[(18 * 36 + 18) * 4..(18 * 36 + 18) * 4 + 4], &[248, 113, 113, 255]);
         assert_eq!(rgba[3], 0);
+    }
+
+    #[test]
+    fn renders_update_badge_as_red_disc() {
+        let image = update_badge_icon().unwrap();
+        assert_eq!(image.width(), 36);
+        assert_eq!(image.height(), 36);
+        let rgba = image.rgba();
+        assert_eq!(
+            &rgba[(18 * 36 + 18) * 4..(18 * 36 + 18) * 4 + 4],
+            &[239, 68, 68, 255]
+        );
     }
 
     fn test_file_path(name: &str) -> PathBuf {

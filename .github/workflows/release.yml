@@ -70,6 +70,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: LogScope ${{ github.ref_name }}
@@ -79,15 +81,21 @@ jobs:
             - macOS：universal（Apple Silicon + Intel）`.dmg`，未签名。首次打开若被 Gatekeeper 拦截：
               右键「打开」，或执行 `xattr -dr com.apple.quarantine /Applications/LogScope.app`。
             - Windows：`.msi` 与 NSIS `.exe`，未签名，SmartScreen 提示时选择「仍要运行」。
+            - 本版本起支持应用内自动更新：菜单 **Help → Check for Updates...**。
 
             变更说明见提交历史；详细设计见 docs/PROJECT_CONTEXT.md。
           releaseDraft: false
           prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
 
       - name: Build installers without publishing
         if: github.event_name == 'workflow_dispatch'
         uses: tauri-apps/tauri-action@v0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: ${{ matrix.args }}
 

@@ -69,6 +69,22 @@ for icon_path in src-tauri/icons/icon.icns src-tauri/icons/128x128.png src-tauri
   fi
 done
 
+# Updater artifacts are signed with a minisign key. Tauri's bundler reads the key
+# content from TAURI_SIGNING_PRIVATE_KEY; local builds fall back to ~/.tauri/logscope.key.
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  key_path="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.tauri/logscope.key}"
+  if [[ -f "$key_path" ]]; then
+    export TAURI_SIGNING_PRIVATE_KEY="$(cat "$key_path")"
+    if [[ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" && -f "$key_path.password" ]]; then
+      export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$key_path.password")"
+    fi
+    echo "Updater signing key: $key_path"
+  else
+    echo "Missing updater signing key. Set TAURI_SIGNING_PRIVATE_KEY (key file content) or TAURI_SIGNING_PRIVATE_KEY_PATH, or put the key at $key_path." >&2
+    exit 1
+  fi
+fi
+
 build_args=(tauri build --ci --bundles "$BUNDLES")
 if [[ -n "$TARGET" ]]; then
   build_args+=(--target "$TARGET")
@@ -90,4 +106,4 @@ yarn "${build_args[@]}"
 
 echo
 echo "Generated bundle artifacts:"
-find src-tauri/target -maxdepth 6 -path '*/release/bundle/*' \( -name '*.app' -o -name '*.dmg' \) -print | sort
+find src-tauri/target -maxdepth 6 -path '*/release/bundle/*' \( -name '*.app' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.sig' \) -print | sort

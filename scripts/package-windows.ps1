@@ -25,6 +25,26 @@ foreach ($IconPath in @("src-tauri/icons/icon.ico", "src-tauri/icons/128x128.png
   }
 }
 
+# Updater artifacts are signed with a minisign key. Tauri's bundler reads the key
+# content from TAURI_SIGNING_PRIVATE_KEY; local builds fall back to ~/.tauri/logscope.key.
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+  $KeyPath = $env:TAURI_SIGNING_PRIVATE_KEY_PATH
+  if (-not $KeyPath) {
+    $KeyPath = Join-Path $env:USERPROFILE ".tauri\logscope.key"
+  }
+
+  if (Test-Path $KeyPath) {
+    $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -Path $KeyPath -Raw).Trim()
+    $KeyPasswordPath = "$KeyPath.password"
+    if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -and (Test-Path $KeyPasswordPath)) {
+      $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content -Path $KeyPasswordPath -Raw).Trim()
+    }
+    Write-Host "Updater signing key: $KeyPath"
+  } else {
+    throw "Missing updater signing key. Set TAURI_SIGNING_PRIVATE_KEY (key file content) or TAURI_SIGNING_PRIVATE_KEY_PATH, or put the key at $KeyPath."
+  }
+}
+
 $BuildArgs = @("tauri", "build", "--ci", "--bundles", $Bundles)
 if ($Target -ne "") {
   $BuildArgs += @("--target", $Target)
@@ -46,7 +66,7 @@ Write-Host "Generated bundle artifacts:"
 Get-ChildItem -Path "src-tauri/target" -Recurse -File |
   Where-Object {
     $_.FullName -match "\\release\\bundle\\" -and
-    ($_.Extension -in @(".msi", ".exe"))
+    ($_.Extension -in @(".msi", ".exe", ".sig"))
   } |
   Sort-Object FullName |
   ForEach-Object { $_.FullName }

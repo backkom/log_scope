@@ -1,6 +1,6 @@
 # 项目上下文
 
-最后更新：2026-11-07
+最后更新：2026-11-09
 
 本文档是 `log_scope` 的长期项目记忆。后续 AI agent 和开发者在做项目决策前应先阅读本文档；当需求、架构、取舍或实现细节发生变化时，必须同步更新本文档。
 
@@ -341,7 +341,7 @@ Rust command：
 - macOS：`yarn run package:macos`，内部执行 `scripts/package-macos.sh`，默认生成未签名 `.app` 和 `.dmg`。本机 macOS 已验证可产出 `src-tauri/target/release/bundle/macos/LogScope.app` 和 `src-tauri/target/release/bundle/dmg/LogScope_0.1.0_aarch64.dmg`。如需签名/公证，配置 Tauri 所需证书环境后使用 `LOGSCOPE_SIGN=1` 或脚本 `--sign`。
 - Windows：`yarn run package:windows`，内部执行 `scripts/package-windows.ps1`，默认请求 Tauri 生成 `nsis,msi` 安装包；该脚本必须在 Windows 主机执行，macOS 当前只维护脚本内容，实际安装包待 Windows 验证。
 
-仓库不提供手动把安装包复制到共享目录的发布脚本：原 `scripts/publish.mjs` 与 `yarn run publish`（依赖 `LOGSCOPE_PUBLISH_DIR`）已移除。后续的分发与升级改由应用内自动更新承担，不再依赖手工搬运产物。
+仓库不提供手动把安装包复制到共享目录的发布脚本：原 `scripts/publish.mjs` 与 `yarn run publish`（依赖 `LOGSCOPE_PUBLISH_DIR`）已移除。分发与升级由应用内自动更新承担（见下），不再依赖手工搬运产物。
 
 图标资源由 `src-tauri/icons/icon.png` 生成，并已补齐 Tauri 打包需要的 `.icns`、`.ico` 和 PNG 尺寸资源。后续更换图标时统一执行 `yarn run icons:sync` 更新全部派生图标；该脚本内部等价于 `tauri icon src-tauri/icons/icon.png --output src-tauri/icons`。图标更新后需重新跑至少 macOS 打包 smoke test。
 
@@ -351,6 +351,19 @@ GitHub Actions 自动构建：
 - `.github/workflows/release.yml` 在推送 `v*` 标签时，使用 `tauri-apps/tauri-action` 构建 macOS universal（`aarch64` + `x86_64`）`.dmg` 与 Windows `nsis`/`msi` 安装包，并上传到对应 GitHub Release；手动触发工作流时只构建并上传 artifact，不创建 Release。
 - CI 产物默认未签名；Apple 签名/公证需在仓库 Secrets 配置证书后取消 `release.yml` 中签名相关注释。
 - `README.md` 面向 GitHub 访客介绍背景、功能和发布流程；架构与决策细节仍以本文档为准。
+
+### 应用内自动更新
+
+- 采用 Tauri 官方 `tauri-plugin-updater`。应用启动时静默检查一次：发现新版本时只在菜单栏显示更新提示红点（`Help 🔴`），并把菜单项标注为 `Check for Updates (vX.Y.Z)`；不弹窗、不下载、不强制更新。用户点击菜单项后才进入下载与安装流程。除此之外不做后台轮询。实现位于 `src-tauri/src/update.rs`，菜单项注册与插件初始化在 `src-tauri/src/lib.rs`。
+- 更新清单固定指向 `https://github.com/backkom/log_scope/releases/latest/download/latest.json`；`release.yml` 在推送 `v*` 标签时由 `tauri-action` 生成并上传该文件，其中同时包含 macOS universal 与 Windows NSIS / MSI 的下载地址和 minisign 签名。
+- 检查到版本号高于当前应用版本后，下载更新包并覆盖安装：Windows 以 passive 模式运行 NSIS / MSI 安装器（NSIS 传 `/UPDATE` 与 `/R`），由安装器重启应用；macOS 原子替换 `.app` bundle（必要时弹出管理员授权），随后由 `app.restart()` 重启。
+- 更新包必须通过 `src-tauri/tauri.conf.json` 中 `plugins.updater.pubkey` 对应的 minisign 公钥校验，并启用 `requireSignedVersion`：签名中的版本必须与 `latest.json` 声明一致，防止被篡改的清单把旧包当作新版本下发。私钥只保存在本机 `~/.tauri/logscope.key` 与 GitHub Actions Secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，不得提交仓库。
+- 本地执行 `yarn run package:macos` / `yarn run package:windows` 时，脚本会把 `TAURI_SIGNING_PRIVATE_KEY_PATH` 或 `~/.tauri/logscope.key` 的内容放入 `TAURI_SIGNING_PRIVATE_KEY`（Tauri bundler 只读取该内容变量），并读取同目录 `.password` 作为 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。缺少签名密钥时打包直接失败，避免产出无法用于自动更新的安装包。
+- Rust 侧通过 `update-status` 事件推送 `checking / available / downloading / installing / up-to-date / error` 阶段和下载进度；前端只展示状态，不参与版本比较或安装决策。启动静默检查不会发送这些事件，只写入 `available_version` 并重建原生菜单。
+- 红点由两部分组成：`Help` 子菜单标题追加 `🔴`（无需展开菜单即可在菜单栏看到），菜单项使用 `IconMenuItem` 加红色圆点图标（与收藏颜色标签共用抗锯齿圆盘渲染）。手动检查返回“已是最新”时会清除红点；检查失败时保留已有红点。
+- 版本号必须同步更新 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，标签使用同一语义版本（例如 `v0.1.1`）。`latest.json` 的 `version` 来自构建产物，版本未提升时不会触发更新。
+- 首个带 updater 的版本为 0.1.1；更早的 0.1.0 客户端不含更新逻辑，只能手动升级一次，之后可从 0.1.1 起自动升级。
+- 暂不支持后台静默检查、beta / stable 更新通道、增量更新和版本回滚；更新失败时前端展示错误，并提示用户从 GitHub Releases 手动下载。
 
 未签名产物的分发约束（README「安装与首次运行」一节的依据）：
 
