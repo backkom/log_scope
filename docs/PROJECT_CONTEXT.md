@@ -311,6 +311,9 @@ Rust command：
 - 调色板在 `src-tauri/src/lib.rs` 的 `FAVORITE_COLORS` 与 `src/main.tsx` 的 `FAVORITE_COLORS` 中成对维护，修改时必须同步。
 - 存储的 `color` 在读取时由 `normalize_favorite_color` 归一化：不在调色板内或为空的旧数据回退为默认色，因此 `state-v1.json` 兼容旧版本。
 - 颜色标签通过原生菜单图标呈现：`favorite_color_icon` 生成 36x36 RGBA 抗锯齿实心圆，macOS 由 muda 缩放到 18pt 高，Windows 下采样到 16x16，因此收藏项使用 `IconMenuItem` 而非普通 `MenuItem`。
+- Favorites 菜单结构为：收藏项列表 → 分隔线 → `Add to Favorites` → `Edit Favorites` 子菜单 → `Remove from Favorites` 子菜单。收藏项之间也插入原生分隔线，因为原生菜单不支持逐项 padding，这是增加行间距的唯一可靠方式。
+- `Edit Favorites` 子菜单列出全部收藏；点击后用同一个收藏对话框预填当前名称和颜色，确认时调用 Rust command `update_favorite(kind, path/host/port, customName, color)` 更新持久化项，名称清空时回退为路径或 `host:port`。修改后立即重建原生菜单。
+- Windows 进程启动时调用 `SetCurrentProcessExplicitAppUserModelID("com.logscope.viewer")`（`src-tauri/src/lib.rs`），使 MSI/NSIS 安装副本、不同安装目录的查询副本以及同时运行的多个实例在任务栏归入同一个应用图标；它不会删除历史安装目录或快捷方式，旧副本仍需用户自行清理。
 
 当前限制：
 
@@ -361,7 +364,7 @@ GitHub Actions 自动构建：
 - 本地执行 `yarn run package:macos` / `yarn run package:windows` 时，脚本会把 `TAURI_SIGNING_PRIVATE_KEY_PATH` 或 `~/.tauri/logscope.key` 的内容放入 `TAURI_SIGNING_PRIVATE_KEY`（Tauri bundler 只读取该内容变量），并读取同目录 `.password` 作为 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。缺少签名密钥时打包直接失败，避免产出无法用于自动更新的安装包。
 - Rust 侧通过 `update-status` 事件推送 `checking / available / downloading / installing / up-to-date / error` 阶段和下载进度；前端只展示状态，不参与版本比较或安装决策。启动静默检查不会发送这些事件，只写入 `available_version` 并重建原生菜单。
 - 红点由两部分组成：`Help` 子菜单标题追加 `🔴`（无需展开菜单即可在菜单栏看到），菜单项使用 `IconMenuItem` 加红色圆点图标（与收藏颜色标签共用抗锯齿圆盘渲染）。手动检查返回“已是最新”时会清除红点；检查失败时保留已有红点。
-- 版本号必须同步更新 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，标签使用同一语义版本（例如 `v0.1.1`）。`latest.json` 的 `version` 来自构建产物，版本未提升时不会触发更新。
+- 版本号必须同步更新 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，标签使用同一语义版本（例如 `v0.1.2`）。`latest.json` 的 `version` 来自构建产物，版本未提升时不会触发更新。
 - 首个带 updater 的版本为 0.1.1；更早的 0.1.0 客户端不含更新逻辑，只能手动升级一次，之后可从 0.1.1 起自动升级。
 - 暂不支持后台静默检查、beta / stable 更新通道、增量更新和版本回滚；更新失败时前端展示错误，并提示用户从 GitHub Releases 手动下载。
 
@@ -369,6 +372,7 @@ GitHub Actions 自动构建：
 
 - macOS 未签名 + 未公证的 app 会被 Gatekeeper 拦截，首次打开需右键「打开」、执行 `xattr -dr com.apple.quarantine <app>` 或走系统设置「仍要打开」，三条路径需在 README 中同时给出。
 - Windows 未签名安装包会触发 SmartScreen「更多信息 → 仍要运行」，并可能被 Defender 隔离；说明需包含还原路径。
+- Windows 的 NSIS 与 MSI 安装包只能二选一安装；两者安装目录与卸载项不同，同时安装会留下两套快捷方式。应用通过固定 AppUserModelID 把运行实例归入同一任务栏图标，但不会自动删除历史目录或快捷方式。
 - 每个 GitHub Release 自动附带的 `Source code (zip)` / `Source code (tar.gz)` 不是可执行程序，README 必须显式澄清，否则用户会误以为下载即可运行。
 - 运行时不要求用户安装 Node.js 或 Rust；Windows 依赖系统 WebView2。
 - 持久化文件为 Tauri app data 目录下的 `state-v1.json`，macOS 位于 `~/Library/Application Support/com.logscope.viewer/`，Windows 位于 `%APPDATA%\com.logscope.viewer\`；卸载说明应包含该目录以支持彻底清理。

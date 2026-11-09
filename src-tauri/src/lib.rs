@@ -216,7 +216,9 @@ fn favorite_color_icon(color: &str) -> Option<tauri::image::Image<'static>> {
     const SIZE: u32 = 36;
     let (r, g, b) = parse_hex_color(color)?;
     let center = (SIZE as f32 - 1.0) / 2.0;
-    let radius = center - 1.0;
+    // Keep a small transparent margin so the disc does not touch the menu row
+    // edges and visually matches the text line height better.
+    let radius = center - 3.0;
     let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
     for y in 0..SIZE {
         for x in 0..SIZE {
@@ -238,6 +240,25 @@ fn favorite_color_icon(color: &str) -> Option<tauri::image::Image<'static>> {
 /// anti-aliased disc renderer so it stays crisp on macOS and Windows.
 fn update_badge_icon() -> Option<tauri::image::Image<'static>> {
     favorite_color_icon("#ef4444")
+}
+
+/// Give every LogScope process the same Windows taskbar identity. Without this,
+/// an older LogScope install (different exe path) and the newly installed MSI
+/// are grouped as two separate tasks, so the taskbar shows two icons.
+#[cfg(windows)]
+fn set_windows_app_user_model_id() {
+    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
+    const APP_USER_MODEL_ID: &str = "com.logscope.viewer";
+    let wide: Vec<u16> = APP_USER_MODEL_ID
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(wide.as_ptr());
+    }
 }
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
@@ -766,6 +787,71 @@ fn remove_favorite(
             fav.host != host || fav.port != port
         }
     });
+    save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
+    deferred_update_app_menu(&app);
+    load_persisted_store(&app).map_err(|err| err.to_string())
+}
+
+fn apply_favorite_update(
+    favorites: &mut [PersistedFavorite],
+    kind: &str,
+    path: Option<&str>,
+    host: Option<&str>,
+    port: Option<u16>,
+    custom_name: Option<&str>,
+    color: Option<&str>,
+) -> Result<(), String> {
+    let favorite = favorites
+        .iter_mut()
+        .find(|fav| {
+            if fav.kind != kind {
+                return false;
+            }
+            if kind == "file" {
+                fav.path.as_deref() == path
+            } else {
+                fav.host.as_deref() == host && fav.port == port
+            }
+        })
+        .ok_or_else(|| "收藏项不存在".to_string())?;
+
+    let fallback_name = if kind == "file" {
+        path.unwrap_or_default().to_string()
+    } else {
+        format!("{}:{}", host.unwrap_or_default(), port.unwrap_or_default())
+    };
+    favorite.display_name = custom_name
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or(fallback_name);
+    if let Some(color) = color {
+        favorite.color = normalize_favorite_color(color);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn update_favorite(
+    kind: String,
+    path: Option<String>,
+    host: Option<String>,
+    port: Option<u16>,
+    custom_name: Option<String>,
+    color: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<PersistedStore, String> {
+    let mut store = load_persisted_store(&app).map_err(|err| err.to_string())?;
+    apply_favorite_update(
+        &mut store.favorites,
+        &kind,
+        path.as_deref(),
+        host.as_deref(),
+        port,
+        custom_name.as_deref(),
+        color.as_deref(),
+    )?;
+
     save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
     deferred_update_app_menu(&app);
     load_persisted_store(&app).map_err(|err| err.to_string())
@@ -2604,6 +2690,29 @@ pub fn deferred_update_app_menu(app_handle: &tauri::AppHandle) {
     });
 }
 
+/// Build a favorite list submenu with a separator between entries. Native menus
+/// have no per-item padding, so separators are the only way to add vertical
+/// breathing room between color-tagged entries.
+fn favorite_submenu_with_spacing(
+    app_handle: &tauri::AppHandle,
+    title: &str,
+    items: &[IconMenuItem<tauri::Wry>],
+) -> tauri::Result<Submenu<tauri::Wry>> {
+    let separators: Vec<PredefinedMenuItem<tauri::Wry>> = (1..items.len())
+        .map(|_| PredefinedMenuItem::separator(app_handle))
+        .collect::<tauri::Result<Vec<_>>>()?;
+
+    let mut item_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            item_refs.push(&separators[index - 1]);
+        }
+        item_refs.push(item);
+    }
+
+    Submenu::with_items(app_handle, title, true, &item_refs)
+}
+
 pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
     let mut file_items = Vec::new();
     let mut socket_items = Vec::new();
@@ -2660,6 +2769,7 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
 
     // ---- Favorites submenu ----
     let mut fav_open_items: Vec<IconMenuItem<tauri::Wry>> = Vec::new();
+    let mut fav_edit_items: Vec<IconMenuItem<tauri::Wry>> = Vec::new();
     let mut fav_remove_items: Vec<IconMenuItem<tauri::Wry>> = Vec::new();
 
     if let Ok(store) = load_persisted_store(app_handle) {
@@ -2668,20 +2778,28 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
             if fav.kind == "file" {
                 if let Some(ref path) = fav.path {
                     fav_open_items.push(IconMenuItem::with_id(app_handle, format!("open_favorite_file_{path}"), &fav.display_name, true, icon.clone(), None::<&str>)?);
+                    fav_edit_items.push(IconMenuItem::with_id(app_handle, format!("edit_favorite_file_{path}"), &fav.display_name, true, icon.clone(), None::<&str>)?);
                     fav_remove_items.push(IconMenuItem::with_id(app_handle, format!("remove_favorite_file_{path}"), &fav.display_name, true, icon, None::<&str>)?);
                 }
             } else if fav.kind == "socket" {
                 if let (Some(ref host), Some(port)) = (&fav.host, fav.port) {
                     let id_key = format!("{host}:{port}");
                     fav_open_items.push(IconMenuItem::with_id(app_handle, format!("open_favorite_socket_{id_key}"), &fav.display_name, true, icon.clone(), None::<&str>)?);
+                    fav_edit_items.push(IconMenuItem::with_id(app_handle, format!("edit_favorite_socket_{id_key}"), &fav.display_name, true, icon.clone(), None::<&str>)?);
                     fav_remove_items.push(IconMenuItem::with_id(app_handle, format!("remove_favorite_socket_{id_key}"), &fav.display_name, true, icon, None::<&str>)?);
                 }
             }
         }
     }
 
+    let fav_open_separators: Vec<PredefinedMenuItem<tauri::Wry>> = (1..fav_open_items.len())
+        .map(|_| PredefinedMenuItem::separator(app_handle))
+        .collect::<tauri::Result<Vec<_>>>()?;
     let mut fav_menu_items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
-    for item in &fav_open_items {
+    for (index, item) in fav_open_items.iter().enumerate() {
+        if index > 0 {
+            fav_menu_items.push(&fav_open_separators[index - 1]);
+        }
         fav_menu_items.push(item);
     }
     let fav_separator;
@@ -2692,14 +2810,30 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
     let add_fav_item = MenuItem::with_id(app_handle, "add_favorite", "Add to Favorites", true, None::<&str>)?;
     fav_menu_items.push(&add_fav_item);
 
-    let fav_remove_submenu;
-    if !fav_remove_items.is_empty() {
-        let mut remove_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
-        for item in &fav_remove_items {
-            remove_refs.push(item);
-        }
-        fav_remove_submenu = Submenu::with_items(app_handle, "Remove from Favorites", true, &remove_refs)?;
-        fav_menu_items.push(&fav_remove_submenu);
+    let fav_edit_submenu = if fav_edit_items.is_empty() {
+        None
+    } else {
+        Some(favorite_submenu_with_spacing(
+            app_handle,
+            "Edit Favorites",
+            &fav_edit_items,
+        )?)
+    };
+    if let Some(ref submenu) = fav_edit_submenu {
+        fav_menu_items.push(submenu);
+    }
+
+    let fav_remove_submenu = if fav_remove_items.is_empty() {
+        None
+    } else {
+        Some(favorite_submenu_with_spacing(
+            app_handle,
+            "Remove from Favorites",
+            &fav_remove_items,
+        )?)
+    };
+    if let Some(ref submenu) = fav_remove_submenu {
+        fav_menu_items.push(submenu);
     }
 
     let favorites_submenu = Submenu::with_items(app_handle, "Favorites", true, &fav_menu_items)?;
@@ -2799,6 +2933,9 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(windows)]
+    set_windows_app_user_model_id();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -2891,6 +3028,44 @@ pub fn run() {
                         "menu-event",
                         serde_json::json!({ "action": "add_favorite" }),
                     );
+                } else if let Some(path) = id.strip_prefix("edit_favorite_file_") {
+                    let favorite = load_persisted_store(app_handle)
+                        .ok()
+                        .and_then(|store| store.favorites.into_iter()
+                            .find(|f| f.kind == "file" && f.path.as_deref() == Some(path)));
+                    if let Some(favorite) = favorite {
+                        let _ = app_handle.emit(
+                            "menu-event",
+                            serde_json::json!({
+                                "action": "edit_favorite_file",
+                                "path": path,
+                                "displayName": favorite.display_name,
+                                "color": favorite.color,
+                            }),
+                        );
+                    }
+                } else if let Some(host_port) = id.strip_prefix("edit_favorite_socket_") {
+                    if let Some((host, port)) = host_port.rsplit_once(':') {
+                        if let Ok(port) = port.parse::<u16>() {
+                            let favorite = load_persisted_store(app_handle)
+                                .ok()
+                                .and_then(|store| store.favorites.into_iter()
+                                    .find(|f| f.kind == "socket" && f.host.as_deref() == Some(host) && f.port == Some(port)));
+                            if let Some(favorite) = favorite {
+                                let _ = app_handle.emit(
+                                    "menu-event",
+                                    serde_json::json!({
+                                        "action": "edit_favorite_socket",
+                                        "host": host,
+                                        "port": port,
+                                        "hostname": favorite.hostname,
+                                        "displayName": favorite.display_name,
+                                        "color": favorite.color,
+                                    }),
+                                );
+                            }
+                        }
+                    }
                 } else if let Some(path) = id.strip_prefix("remove_favorite_file_") {
                     let _ = remove_favorite("file".to_string(), Some(path.to_string()), None, None, app_handle.clone());
                     deferred_update_app_menu(app_handle);
@@ -2916,6 +3091,7 @@ pub fn run() {
             remove_recent_socket,
             add_favorite_file,
             add_favorite_socket,
+            update_favorite,
             remove_favorite,
             get_log_lines,
             get_log_markers,
@@ -3478,6 +3654,69 @@ mod tests {
         // Center pixel is opaque, corner pixel is fully transparent.
         assert_eq!(&rgba[(18 * 36 + 18) * 4..(18 * 36 + 18) * 4 + 4], &[248, 113, 113, 255]);
         assert_eq!(rgba[3], 0);
+    }
+
+    #[test]
+    fn updates_favorite_name_and_color_without_changing_identity() {
+        let mut favorites = vec![
+            PersistedFavorite {
+                kind: "file".to_string(),
+                path: Some("a.log".to_string()),
+                host: None,
+                port: None,
+                hostname: None,
+                display_name: "a.log".to_string(),
+                color: "#60a5fa".to_string(),
+            },
+            PersistedFavorite {
+                kind: "socket".to_string(),
+                path: None,
+                host: Some("127.0.0.1".to_string()),
+                port: Some(8765),
+                hostname: Some("dev-host".to_string()),
+                display_name: "old".to_string(),
+                color: "#34d399".to_string(),
+            },
+        ];
+
+        apply_favorite_update(
+            &mut favorites,
+            "file",
+            Some("a.log"),
+            None,
+            None,
+            Some("My Log"),
+            Some("#f87171"),
+        )
+        .unwrap();
+        assert_eq!(favorites[0].display_name, "My Log");
+        assert_eq!(favorites[0].color, "#f87171");
+        assert_eq!(favorites[0].path.as_deref(), Some("a.log"));
+
+        apply_favorite_update(
+            &mut favorites,
+            "socket",
+            None,
+            Some("127.0.0.1"),
+            Some(8765),
+            Some("   "),
+            None,
+        )
+        .unwrap();
+        assert_eq!(favorites[1].display_name, "127.0.0.1:8765");
+        assert_eq!(favorites[1].color, "#34d399");
+        assert_eq!(favorites[1].host.as_deref(), Some("127.0.0.1"));
+
+        assert!(apply_favorite_update(
+            &mut favorites,
+            "file",
+            Some("missing.log"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .is_err());
     }
 
     #[test]

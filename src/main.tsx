@@ -132,6 +132,22 @@ type UpdateStatus = {
   message: string | null;
 };
 
+type FavoriteEditTarget =
+  | {
+    kind: "file";
+    path: string;
+    displayName: string;
+    color: string;
+  }
+  | {
+    kind: "socket";
+    host: string;
+    port: number;
+    hostname: string | null;
+    displayName: string;
+    color: string;
+  };
+
 type SearchCache = {
   sessionId: number;
   fileSize: number;
@@ -552,6 +568,8 @@ function App() {
   const [socketPortInput, setSocketPortInput] = React.useState("");
   const [serverFilterText, setServerFilterText] = React.useState("");
   const [showFavoriteDialog, setShowFavoriteDialog] = React.useState(false);
+  const [favoriteDialogMode, setFavoriteDialogMode] = React.useState<"add" | "edit">("add");
+  const [favoriteEditTarget, setFavoriteEditTarget] = React.useState<FavoriteEditTarget | null>(null);
   const [favoriteDialogName, setFavoriteDialogName] = React.useState("");
   const [favoriteDialogPath, setFavoriteDialogPath] = React.useState("");
   const [favoriteDialogColor, setFavoriteDialogColor] = React.useState<string>(DEFAULT_FAVORITE_COLOR);
@@ -905,9 +923,37 @@ function App() {
         const displayPath = current.path.startsWith("logscope-frame-v1://")
           ? current.path.slice("logscope-frame-v1://".length)
           : current.path;
+        setFavoriteDialogMode("add");
+        setFavoriteEditTarget(null);
         setFavoriteDialogPath(displayPath);
         setFavoriteDialogName("");
         setFavoriteDialogColor(DEFAULT_FAVORITE_COLOR);
+        setShowFavoriteDialog(true);
+      } else if (payload.action === "edit_favorite_file") {
+        setFavoriteDialogMode("edit");
+        setFavoriteEditTarget({
+          kind: "file",
+          path: payload.path,
+          displayName: payload.displayName,
+          color: payload.color,
+        });
+        setFavoriteDialogPath(payload.path);
+        setFavoriteDialogName(payload.displayName);
+        setFavoriteDialogColor(payload.color);
+        setShowFavoriteDialog(true);
+      } else if (payload.action === "edit_favorite_socket") {
+        setFavoriteDialogMode("edit");
+        setFavoriteEditTarget({
+          kind: "socket",
+          host: payload.host,
+          port: payload.port,
+          hostname: payload.hostname ?? null,
+          displayName: payload.displayName,
+          color: payload.color,
+        });
+        setFavoriteDialogPath(`${payload.host}:${payload.port}`);
+        setFavoriteDialogName(payload.displayName);
+        setFavoriteDialogColor(payload.color);
         setShowFavoriteDialog(true);
       }
     }).then((unlistenFn) => {
@@ -1223,30 +1269,52 @@ function App() {
   }, []);
 
   const handleFavoriteDialogConfirm = React.useCallback(async () => {
-    const current = logFileRef.current;
-    if (!current) return;
     const name = favoriteDialogName.trim() || undefined;
     const color = favoriteDialogColor;
     try {
-      if (current.path.startsWith("logscope-frame-v1://")) {
-        const afterProto = current.path.slice("logscope-frame-v1://".length);
-        const sepIdx = afterProto.lastIndexOf(":");
-        if (sepIdx > 0) {
-          const host = afterProto.slice(0, sepIdx);
-          const port = Number.parseInt(afterProto.slice(sepIdx + 1), 10);
-          if (host && Number.isInteger(port)) {
-            await invoke<PersistedStore>("add_favorite_socket", { host, port, hostname: null, customName: name, color });
-          }
+      if (favoriteDialogMode === "edit" && favoriteEditTarget) {
+        if (favoriteEditTarget.kind === "file") {
+          await invoke<PersistedStore>("update_favorite", {
+            kind: "file",
+            path: favoriteEditTarget.path,
+            host: null,
+            port: null,
+            customName: name,
+            color,
+          });
+        } else {
+          await invoke<PersistedStore>("update_favorite", {
+            kind: "socket",
+            path: null,
+            host: favoriteEditTarget.host,
+            port: favoriteEditTarget.port,
+            customName: name,
+            color,
+          });
         }
       } else {
-        await invoke<PersistedStore>("add_favorite_file", { path: current.path, customName: name, color });
+        const current = logFileRef.current;
+        if (!current) return;
+        if (current.path.startsWith("logscope-frame-v1://")) {
+          const afterProto = current.path.slice("logscope-frame-v1://".length);
+          const sepIdx = afterProto.lastIndexOf(":");
+          if (sepIdx > 0) {
+            const host = afterProto.slice(0, sepIdx);
+            const port = Number.parseInt(afterProto.slice(sepIdx + 1), 10);
+            if (host && Number.isInteger(port)) {
+              await invoke<PersistedStore>("add_favorite_socket", { host, port, hostname: null, customName: name, color });
+            }
+          }
+        } else {
+          await invoke<PersistedStore>("add_favorite_file", { path: current.path, customName: name, color });
+        }
       }
       await refreshPersistedState();
     } catch (err) {
       setError(`收藏失败: ${String(err)}`);
     }
     setShowFavoriteDialog(false);
-  }, [favoriteDialogColor, favoriteDialogName, refreshPersistedState]);
+  }, [favoriteDialogColor, favoriteDialogMode, favoriteDialogName, favoriteEditTarget, refreshPersistedState]);
 
   const handleDiscoveredServerPick = React.useCallback((server: DiscoveredServer) => {
     setSocketHostInput(server.host);
@@ -2459,7 +2527,6 @@ function App() {
                       <CopyIcon />
                     </button>
                   </div>
-                  {!selectedPayload ? <pre className="payload-preview">载入中...</pre> : null}
                   {(() => {
                     const jsonData = selectedPayload?.parsedJson ?? null;
                     if (jsonData) {
@@ -3030,7 +3097,7 @@ function App() {
                 <svg className="modal-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
                 </svg>
-                <h2>添加到收藏</h2>
+                <h2>{favoriteDialogMode === "edit" ? "编辑收藏" : "添加到收藏"}</h2>
               </div>
               <button
                 type="button"
@@ -3073,7 +3140,7 @@ function App() {
                   id="favorite-name-input"
                   value={favoriteDialogName}
                   onChange={(event) => setFavoriteDialogName(event.target.value)}
-                  placeholder="留空则显示完整路径"
+                  placeholder="留空则显示路径或地址"
                   autoComplete="off"
                   spellCheck={false}
                   autoFocus
@@ -3098,7 +3165,7 @@ function App() {
                 className="primary-button"
                 onClick={() => void handleFavoriteDialogConfirm()}
               >
-                确定
+                {favoriteDialogMode === "edit" ? "保存" : "确定"}
               </button>
             </div>
           </div>

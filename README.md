@@ -64,7 +64,7 @@
 | 日志着色 | 三态：完整着色 / 仅 severity / 关闭；单行最多处理前 4 KB，纯装饰、不影响主链路 |
 | 规则配置 | 五类 extractor 可启停、可配色；区分「即时生效」与「需重新扫描」两类配置 |
 | 本地持久化 | `state-v1.json` 保存最近文件 / 最近 socket / 收藏夹 / 低风险 UI 状态 |
-| 收藏夹 | 文件 / socket 可收藏到原生应用菜单，支持自定义名称与 8 色颜色标签，跨会话保留 |
+| 收藏夹 | 文件 / socket 可收藏到原生应用菜单，支持自定义名称与 8 色颜色标签；菜单 **Favorites → Edit Favorites** 可随时修改名称和颜色，跨会话保留 |
 | 应用内更新 | 启动时静默检查 GitHub Releases，有新版本时在菜单栏显示红点；用户点击 **Help → Check for Updates...** 后才下载、覆盖安装并自动重启，不弹窗打扰、不强制更新 |
 | 性能观测 | 状态栏展示虚拟化 DOM 行数、缓存行数，以及顶部 marker 条与右侧 minimap 的 Canvas 绘制耗时 |
 | 大文件降级 | ≥100 MB 自动降为仅 severity 着色，≥300 MB 默认隐藏右侧 minimap，均可手动恢复 |
@@ -238,8 +238,8 @@ yarn run package:windows
 4. 打标签并推送，触发发布（标签版本应与三处版本号一致）：
 
    ```bash
-   git tag v0.1.1
-   git push github v0.1.1
+   git tag v0.1.2
+   git push github v0.1.2
    ```
 
 5. 在 **Actions** 页面观察构建，完成后在 **Releases** 下载各平台安装包；`latest.json` 会作为 Release 资产自动上传，供应用内更新读取。
@@ -264,6 +264,8 @@ yarn run package:windows
 
 > Release 页面里的 `Source code (zip)` / `Source code (tar.gz)` 是 GitHub 为每个 Release 自动附带的源码归档，**不是可执行程序**，无需下载。
 
+> Windows 的 NSIS 与 MSI 安装包请**二选一**，不要同时安装；两者安装目录不同，会留下两套开始菜单项或任务栏图标。应用已固定 AppUserModelID，同时运行的多个实例会归入同一个任务栏图标，但历史安装目录和旧快捷方式仍需手动清理。
+
 ### macOS
 
 首次打开会提示「无法打开，因为 Apple 无法检查其是否包含恶意软件」。任选一种方式放行：
@@ -282,6 +284,8 @@ yarn run package:windows
 ### Windows
 
 首次运行会出现「Windows 已保护你的电脑」（SmartScreen），点击「更多信息」→「仍要运行」。若被 Defender 隔离，需要在「Windows 安全中心 → 病毒和威胁防护 → 保护历史记录」中还原并允许。
+
+> 如果此前手动复制或安装过其他目录的旧版本，任务栏可能出现两个图标。当前版本固定了 AppUserModelID，运行中的 LogScope 实例会归入同一个任务栏图标；但仍建议删除旧安装目录及其快捷方式，避免误启动旧版本。
 
 ### 运行环境
 
