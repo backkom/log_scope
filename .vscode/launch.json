@@ -6,7 +6,12 @@
       "type": "node-terminal",
       "request": "launch",
       "command": "yarn tauri:dev",
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "osx": {
+        "env": {
+          "PATH": "/opt/homebrew/bin:/usr/local/bin:${userHome}/.cargo/bin:${env:PATH}"
+        }
+      }
     },
     {
       "name": "LogScope Socket Server",

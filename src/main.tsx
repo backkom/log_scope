@@ -16,6 +16,58 @@ type LogFileMetadata = {
   indexDurationMs: number;
 };
 
+type TabSource =
+  | { kind: "file"; path: string }
+  | { kind: "socket"; host: string; port: number; hostname: string | null };
+
+type SessionTab = {
+  id: string;
+  source: TabSource;
+  metadata: LogFileMetadata;
+  title: string;
+  dirty: boolean;
+  observedFileSize: number;
+  connectionVersion: number;
+  connectionStatus: "loading" | "connected" | "disconnected" | "error" | "quota";
+};
+
+type TabDropEdge = "before" | "after";
+
+type TabPointerDrag = {
+  tabId: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  sourceElement: HTMLDivElement;
+  started: boolean;
+  targetId: string | null;
+  edge: TabDropEdge;
+};
+
+type TabSnapshot = {
+  filePath: string;
+  logFile: LogFileMetadata;
+  scrollTop: number;
+  scrollLeft: number;
+  jumpLine: string;
+  selectedLine: number | null;
+  isDisconnected: boolean;
+  followTail: boolean;
+  pendingTailLines: number;
+  tailNotice: string | null;
+  selectedMarkerId: string | null;
+  markerFilterText: string;
+  markerFilterKinds: string[];
+  markerListScrollTop: number;
+  searchQuery: string;
+  searchCaseSensitive: boolean;
+  searchRegex: boolean;
+  searchWholeWord: boolean;
+  searchWrapAround: boolean;
+  searchFindAll: boolean;
+  logColorMode: "full" | "severity" | "off";
+};
+
 type SocketConnectMetadata = {
   sessionId: number;
   host: string;
@@ -23,6 +75,11 @@ type SocketConnectMetadata = {
   path: string;
   lineCount: number;
   protocol: string;
+};
+
+type SocketStatusMetadata = {
+  status: "loading" | "connected" | "disconnected" | "quota";
+  version: number;
 };
 
 type DiscoveredServer = {
@@ -550,7 +607,50 @@ function SettingsIcon() {
   );
 }
 
+function TabScrollLeftIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m15 18-6-6 6-6" />
+    </svg>
+  );
+}
+
+function TabScrollRightIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m9 18 6-6-6-6" />
+    </svg>
+  );
+}
+
 function App() {
+  const [tabs, setTabs] = React.useState<SessionTab[]>([]);
+  const [activeTabId, setActiveTabId] = React.useState<string | null>(null);
+  const [tabScrollState, setTabScrollState] = React.useState({
+    hasOverflow: false,
+    canScrollLeft: false,
+    canScrollRight: false,
+  });
+  const [draggingTabId, setDraggingTabId] = React.useState<string | null>(null);
+  const [tabDropTarget, setTabDropTarget] = React.useState<{ tabId: string; edge: TabDropEdge } | null>(null);
+  const tabListRef = React.useRef<HTMLDivElement | null>(null);
+  const tabPointerDragRef = React.useRef<TabPointerDrag | null>(null);
+  const suppressTabClickRef = React.useRef<string | null>(null);
+  const tabsRef = React.useRef<SessionTab[]>([]);
+  const activeSessionIdRef = React.useRef<number | null>(null);
+  const activationGenerationRef = React.useRef(0);
+  const loadingSessionIdRef = React.useRef<number | null>(null);
+  const markerListRequestRef = React.useRef(0);
+  const markerPayloadRequestRef = React.useRef(0);
+  const selectedMarkerIdRef = React.useRef<string | null>(null);
+  const searchRequestRef = React.useRef(0);
+  const sourceChangeVersionRef = React.useRef<Map<number, number>>(new Map());
+  const loadMarkersRef = React.useRef<(sessionId: number) => Promise<void>>(async () => {});
+  const tabSnapshotsRef = React.useRef<Map<string, TabSnapshot>>(new Map());
+  const pendingSyncRef = React.useRef<Map<number, { version: number; fileSize: number }>>(new Map());
+  const openingSourcesRef = React.useRef<Set<string>>(new Set());
+  const openPathsRef = React.useRef<(paths: string[]) => Promise<void>>(async () => {});
+  const connectSocketRef = React.useRef<(host: string, port: number, hostname?: string | null) => Promise<boolean>>(async () => false);
   const [filePath, setFilePath] = React.useState("");
   const [logFile, setLogFile] = React.useState<LogFileMetadata | null>(null);
   const [lineCache, setLineCache] = React.useState<Map<number, string>>(() => new Map());
@@ -640,9 +740,372 @@ function App() {
   React.useEffect(() => { logFileRef.current = logFile; }, [logFile]);
   const saveUiStateTimerRef = React.useRef<number | null>(null);
   const markerListRef = React.useRef<HTMLDivElement | null>(null);
-  const initialLoadDoneRef = React.useRef(false);
   const knownMarkerKindsRef = React.useRef<Set<string>>(new Set());
   const pendingHorizontalRevealRef = React.useRef<string | null>(null);
+
+  React.useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+
+  const updateTabs = React.useCallback((update: (current: SessionTab[]) => SessionTab[]) => {
+    const current = tabsRef.current;
+    const next = update(current);
+    if (next.length === current.length && next.every((tab, index) => tab === current[index])) return;
+    tabsRef.current = next;
+    setTabs(next);
+  }, []);
+
+  const reorderTabs = React.useCallback((sourceId: string, targetId: string, edge: TabDropEdge) => {
+    if (sourceId === targetId) return;
+    updateTabs((current) => {
+      const sourceIndex = current.findIndex((tab) => tab.id === sourceId);
+      const targetIndex = current.findIndex((tab) => tab.id === targetId);
+      if (sourceIndex < 0 || targetIndex < 0) return current;
+      const next = [...current];
+      const draggedTab = next.splice(sourceIndex, 1)[0];
+      if (!draggedTab) return current;
+      const adjustedTargetIndex = next.findIndex((tab) => tab.id === targetId);
+      if (adjustedTargetIndex < 0) return current;
+      next.splice(adjustedTargetIndex + (edge === "after" ? 1 : 0), 0, draggedTab);
+      return next;
+    });
+  }, [updateTabs]);
+
+  const updateTabScrollState = React.useCallback(() => {
+    const list = tabListRef.current;
+    if (!list) return;
+    const maxScrollLeft = Math.max(0, list.scrollWidth - list.clientWidth);
+    setTabScrollState((current) => {
+      const next = {
+        hasOverflow: maxScrollLeft > 1,
+        canScrollLeft: list.scrollLeft > 1,
+        canScrollRight: list.scrollLeft < maxScrollLeft - 1,
+      };
+      if (
+        current.hasOverflow === next.hasOverflow &&
+        current.canScrollLeft === next.canScrollLeft &&
+        current.canScrollRight === next.canScrollRight
+      ) return current;
+      return next;
+    });
+  }, []);
+
+  React.useEffect(() => {
+    const list = tabListRef.current;
+    if (!list) return;
+    updateTabScrollState();
+    list.addEventListener("scroll", updateTabScrollState, { passive: true });
+    const observer = new ResizeObserver(updateTabScrollState);
+    observer.observe(list);
+    for (const child of Array.from(list.children)) observer.observe(child);
+    return () => {
+      list.removeEventListener("scroll", updateTabScrollState);
+      observer.disconnect();
+    };
+  }, [tabs, updateTabScrollState]);
+
+  const scrollTabs = React.useCallback((direction: -1 | 1) => {
+    const list = tabListRef.current;
+    if (!list) return;
+    list.scrollBy({
+      left: direction * Math.max(120, Math.floor(list.clientWidth * 0.7)),
+      behavior: "smooth",
+    });
+  }, []);
+
+  const beginTabPointerDrag = React.useCallback((tabId: string, event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || event.pointerType === "touch") return;
+    if (event.target instanceof Element && event.target.closest(".source-tab-close")) return;
+    tabPointerDragRef.current = {
+      tabId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      sourceElement: event.currentTarget,
+      started: false,
+      targetId: null,
+      edge: "before",
+    };
+  }, []);
+
+  const consumeSuppressedTabClick = React.useCallback((tabId: string) => {
+    if (suppressTabClickRef.current !== tabId) return false;
+    suppressTabClickRef.current = null;
+    return true;
+  }, []);
+
+  React.useEffect(() => {
+    const onPointerMove = (event: PointerEvent) => {
+      const drag = tabPointerDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      if (!drag.started) {
+        if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
+        drag.started = true;
+        suppressTabClickRef.current = drag.tabId;
+        setDraggingTabId(drag.tabId);
+        document.body.classList.add("is-reordering-tabs");
+        try {
+          drag.sourceElement.setPointerCapture(event.pointerId);
+        } catch { /* Pointer may have ended while capture was being requested. */ }
+      }
+      event.preventDefault();
+      const hit = document.elementFromPoint(event.clientX, event.clientY);
+      const targetElement = hit instanceof Element ? hit.closest<HTMLElement>(".source-tab") : null;
+      const targetId = targetElement
+        ?.querySelector<HTMLButtonElement>(".source-tab-select")
+        ?.dataset.tabId ?? null;
+      if (!targetElement || !targetId) {
+        drag.targetId = null;
+        setTabDropTarget(null);
+        return;
+      }
+      const bounds = targetElement.getBoundingClientRect();
+      drag.targetId = targetId;
+      drag.edge = event.clientX < bounds.left + bounds.width / 2 ? "before" : "after";
+      setTabDropTarget({ tabId: targetId, edge: drag.edge });
+    };
+
+    const finishPointerDrag = (event: PointerEvent, cancelled: boolean) => {
+      const drag = tabPointerDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      if (drag.started && !cancelled && drag.targetId) {
+        reorderTabs(drag.tabId, drag.targetId, drag.edge);
+      }
+      tabPointerDragRef.current = null;
+      setDraggingTabId(null);
+      setTabDropTarget(null);
+      document.body.classList.remove("is-reordering-tabs");
+      if (drag.started) {
+        suppressTabClickRef.current = drag.tabId;
+        window.setTimeout(() => {
+          if (suppressTabClickRef.current === drag.tabId) suppressTabClickRef.current = null;
+        }, 150);
+      }
+    };
+
+    const onPointerUp = (event: PointerEvent) => finishPointerDrag(event, false);
+    const onPointerCancel = (event: PointerEvent) => finishPointerDrag(event, true);
+    const onWindowBlur = () => {
+      const drag = tabPointerDragRef.current;
+      if (!drag) return;
+      tabPointerDragRef.current = null;
+      setDraggingTabId(null);
+      setTabDropTarget(null);
+      document.body.classList.remove("is-reordering-tabs");
+      suppressTabClickRef.current = null;
+      if (drag.sourceElement.hasPointerCapture(drag.pointerId)) {
+        drag.sourceElement.releasePointerCapture(drag.pointerId);
+      }
+    };
+    window.addEventListener("pointermove", onPointerMove, { passive: false });
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
+    window.addEventListener("blur", onWindowBlur);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
+      window.removeEventListener("blur", onWindowBlur);
+      document.body.classList.remove("is-reordering-tabs");
+      tabPointerDragRef.current = null;
+    };
+  }, [reorderTabs]);
+
+  const captureTabSnapshot = React.useCallback((): TabSnapshot | null => {
+    if (!logFile) return null;
+    return {
+      filePath,
+      logFile,
+      scrollTop,
+      scrollLeft: logViewportRef.current?.scrollLeft ?? 0,
+      jumpLine,
+      selectedLine,
+      isDisconnected,
+      followTail,
+      pendingTailLines,
+      tailNotice,
+      selectedMarkerId: selectedMarker?.id ?? selectedMarkerIdRef.current,
+      markerFilterText,
+      markerFilterKinds: Array.from(markerFilterKinds),
+      markerListScrollTop,
+      searchQuery,
+      searchCaseSensitive,
+      searchRegex,
+      searchWholeWord,
+      searchWrapAround,
+      searchFindAll,
+      logColorMode,
+    };
+  }, [
+    filePath, logFile, scrollTop, jumpLine, selectedLine, isDisconnected, followTail,
+    pendingTailLines, tailNotice, selectedMarker?.id, markerFilterText,
+    markerFilterKinds, markerListScrollTop, searchQuery, searchCaseSensitive,
+    searchRegex, searchWholeWord, searchWrapAround, searchFindAll, logColorMode,
+  ]);
+
+  const restoreTabSnapshot = React.useCallback((snapshot: TabSnapshot) => {
+    setFilePath(snapshot.filePath);
+    setLogFile(snapshot.logFile);
+    setLineCache(new Map());
+    setScrollTop(snapshot.scrollTop);
+    setJumpLine(snapshot.jumpLine);
+    setSelectedLine(snapshot.selectedLine);
+    setIsDisconnected(snapshot.isDisconnected);
+    setFollowTail(snapshot.followTail);
+    setPendingTailLines(snapshot.pendingTailLines);
+    setTailNotice(snapshot.tailNotice);
+    setMarkers([]);
+    setShaderVariantMissingCount(0);
+    setSelectedMarker(null);
+    selectedMarkerIdRef.current = snapshot.selectedMarkerId;
+    setSelectedPayload(null);
+    setMarkerFilterText(snapshot.markerFilterText);
+    setMarkerFilterKinds(new Set(snapshot.markerFilterKinds));
+    setMarkerListScrollTop(snapshot.markerListScrollTop);
+    setSearchResult(null);
+    setActiveSearchMatch(null);
+    setSearchQuery(snapshot.searchQuery);
+    setSearchCaseSensitive(snapshot.searchCaseSensitive);
+    setSearchRegex(snapshot.searchRegex);
+    setSearchWholeWord(snapshot.searchWholeWord);
+    setSearchWrapAround(snapshot.searchWrapAround);
+    setSearchFindAll(snapshot.searchFindAll);
+    setLogColorMode(snapshot.logColorMode);
+    setFindBarOpen(false);
+    setGotoBarOpen(false);
+    searchCacheRef.current = null;
+    knownMarkerKindsRef.current = new Set();
+    pendingHorizontalRevealRef.current = null;
+  }, []);
+
+  const activateTab = React.useCallback(async (tabId: string) => {
+    const target = tabsRef.current.find((tab) => tab.id === tabId);
+    if (!target) return;
+    if (
+      activeSessionIdRef.current === target.metadata.sessionId &&
+      (logFile?.sessionId === target.metadata.sessionId || loadingSessionIdRef.current === target.metadata.sessionId)
+    ) return;
+    const generation = ++activationGenerationRef.current;
+    const previousTab = tabsRef.current.find((tab) => tab.metadata.sessionId === activeSessionIdRef.current);
+    const currentSnapshot = captureTabSnapshot();
+    const keepPreviousIndex = currentSnapshot?.isDisconnected ?? false;
+    if (previousTab && currentSnapshot) {
+      tabSnapshotsRef.current.set(previousTab.id, currentSnapshot);
+    }
+    setActiveTabId(tabId);
+    activeSessionIdRef.current = target.metadata.sessionId;
+    loadingSessionIdRef.current = target.metadata.sessionId;
+    markerPayloadRequestRef.current += 1;
+    markerListRequestRef.current += 1;
+    searchRequestRef.current += 1;
+    updateTabs((current) => current.map((tab) =>
+      tab.id === tabId ? { ...tab, connectionStatus: "loading" } : tab
+    ));
+    setLogFile(null);
+    setLineCache(new Map());
+    setMarkers([]);
+    setSelectedMarker(null);
+    selectedMarkerIdRef.current = null;
+    setSelectedPayload(null);
+    setIsSearching(false);
+    setIsOpening(true);
+    setError(null);
+    searchCacheRef.current = null;
+    try {
+      if (previousTab && previousTab.id !== tabId && !keepPreviousIndex) {
+        await invoke("unload_log_session", { sessionId: previousTab.metadata.sessionId }).catch(() => {});
+      }
+      if (generation !== activationGenerationRef.current) return;
+      const metadata = await invoke<LogFileMetadata>("load_log_session", {
+        sessionId: target.metadata.sessionId,
+      });
+      if (
+        generation !== activationGenerationRef.current ||
+        activeSessionIdRef.current !== metadata.sessionId ||
+        !tabsRef.current.some((tab) => tab.id === tabId)
+      ) {
+        if (activeSessionIdRef.current !== metadata.sessionId) {
+          await invoke("unload_log_session", { sessionId: metadata.sessionId }).catch(() => {});
+        }
+        return;
+      }
+      updateTabs((current) => current.map((tab) =>
+        tab.id === tabId
+          ? {
+            ...tab,
+            metadata,
+            observedFileSize: metadata.fileSize,
+            connectionStatus: target.source.kind === "socket" ? "loading" : "connected",
+          }
+          : tab
+      ));
+      const saved = tabSnapshotsRef.current.get(tabId);
+      const snapshot: TabSnapshot = saved
+        ? { ...saved, logFile: metadata }
+        : {
+          filePath: target.source.kind === "file" ? target.source.path : "",
+          logFile: metadata,
+          scrollTop: 0,
+          scrollLeft: 0,
+          jumpLine: "1",
+          selectedLine: null,
+          isDisconnected: false,
+          followTail,
+          pendingTailLines: 0,
+          tailNotice: target.source.kind === "socket" ? "Socket 已连接，正在等待 frame 数据" : null,
+          selectedMarkerId: null,
+          markerFilterText: "",
+          markerFilterKinds: [],
+          markerListScrollTop: 0,
+          searchQuery: "",
+          searchCaseSensitive,
+          searchRegex,
+          searchWholeWord,
+          searchWrapAround,
+          searchFindAll,
+          logColorMode,
+        };
+      tabSnapshotsRef.current.set(tabId, snapshot);
+      restoreTabSnapshot(snapshot);
+      await loadMarkersRef.current(metadata.sessionId);
+      if (generation !== activationGenerationRef.current) return;
+      if (target.source.kind === "socket") {
+        const socketStatus = await invoke<SocketStatusMetadata>("get_log_socket_status", {
+          sessionId: metadata.sessionId,
+        });
+        if (generation !== activationGenerationRef.current) return;
+        updateTabs((current) => current.map((tab) =>
+          tab.id === tabId && socketStatus.version >= tab.connectionVersion
+            ? {
+              ...tab,
+              connectionStatus: socketStatus.status,
+              connectionVersion: socketStatus.version,
+            }
+            : tab
+        ));
+      }
+      applyLargeFileDegradation(metadata);
+      requestAnimationFrame(() => {
+        if (viewportRef.current) viewportRef.current.scrollTop = snapshot.scrollTop;
+        if (logViewportRef.current) logViewportRef.current.scrollLeft = snapshot.scrollLeft;
+      });
+    } catch (err) {
+      if (activeSessionIdRef.current === target.metadata.sessionId) {
+        updateTabs((current) => current.map((tab) =>
+          tab.id === tabId ? { ...tab, connectionStatus: "error" } : tab
+        ));
+        setError(String(err));
+      }
+    } finally {
+      if (generation === activationGenerationRef.current) {
+        loadingSessionIdRef.current = null;
+        setIsOpening(false);
+      }
+    }
+  }, [
+    captureTabSnapshot, restoreTabSnapshot, followTail, updateTabs, logFile?.sessionId,
+    searchCaseSensitive, searchRegex, searchWholeWord, searchWrapAround,
+    searchFindAll, logColorMode,
+  ]);
 
   React.useEffect(() => {
     try {
@@ -835,12 +1298,119 @@ function App() {
   }, [markerRuleConfig]);
 
   React.useEffect(() => {
-    const title = logFile?.path ? `${logFile.path} - Log Scope` : "Log Scope";
+    let disposed = false;
+    const unlisten: Array<() => void> = [];
+    const changedSessions = new Set<number>();
+    let changeTimer: number | null = null;
+    listen<{ sessionId: number }>("log-source-changed", ({ payload }) => {
+      changedSessions.add(payload.sessionId);
+      if (changeTimer !== null) return;
+      changeTimer = window.setTimeout(() => {
+        const changed = new Set(changedSessions);
+        changedSessions.clear();
+        changeTimer = null;
+        const nextVersions = new Map<number, number>();
+        for (const tab of tabsRef.current) {
+          if (!changed.has(tab.metadata.sessionId)) continue;
+          const nextVersion = (sourceChangeVersionRef.current.get(tab.metadata.sessionId) ?? 0) + 1;
+          sourceChangeVersionRef.current.set(tab.metadata.sessionId, nextVersion);
+          nextVersions.set(tab.metadata.sessionId, nextVersion);
+        }
+        updateTabs((current) => current.map((tab) => {
+          const nextVersion = nextVersions.get(tab.metadata.sessionId);
+          if (nextVersion === undefined || tab.dirty) return tab;
+          return { ...tab, dirty: true };
+        }));
+      }, 100);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten.push(stop);
+    });
+    listen<{ sessionId: number; status: "connected" | "disconnected" | "error" | "quota"; version: number }>("log-socket-status", ({ payload }) => {
+      updateTabs((current) => current.map((tab) =>
+        tab.metadata.sessionId === payload.sessionId
+          && payload.version >= tab.connectionVersion
+          ? { ...tab, connectionStatus: payload.status, connectionVersion: payload.version }
+          : tab
+      ));
+      if (payload.sessionId === activeSessionIdRef.current) {
+        if (payload.status === "connected") {
+          setTailNotice("Socket 已连接");
+        } else if (payload.status === "quota") {
+          setTailNotice("Socket 临时日志达到存储上限，已停止接收");
+        } else if (payload.status === "disconnected") {
+          setTailNotice("Socket 已断开，可手动重新连接");
+        }
+      }
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten.push(stop);
+    });
+    return () => {
+      disposed = true;
+      if (changeTimer !== null) window.clearTimeout(changeTimer);
+      unlisten.forEach((stop) => stop());
+    };
+  }, [updateTabs]);
+
+  React.useEffect(() => {
+    const checkInactiveSources = async () => {
+      const sessionIds = tabsRef.current
+        .filter((tab) =>
+          tab.source.kind === "file" && (tab.id !== activeTabId || isDisconnected)
+        )
+        .map((tab) => tab.metadata.sessionId);
+      if (sessionIds.length === 0) return;
+      try {
+        const changes = await invoke<Array<{ sessionId: number; hasUpdates: boolean; fileSize: number }>>(
+          "get_log_source_changes",
+          { sessionIds },
+        );
+        for (const change of changes) {
+          const tab = tabsRef.current.find((item) => item.metadata.sessionId === change.sessionId);
+          if (!change.hasUpdates || !tab || tab.dirty) continue;
+          const nextVersion = (sourceChangeVersionRef.current.get(change.sessionId) ?? 0) + 1;
+          sourceChangeVersionRef.current.set(change.sessionId, nextVersion);
+        }
+        updateTabs((current) => current.map((tab) => {
+          const change = changes.find((item) => item.sessionId === tab.metadata.sessionId);
+          if (!change) return tab;
+          const dirty = tab.dirty || change.hasUpdates;
+          const observedFileSize = Math.max(tab.observedFileSize, change.fileSize);
+          if (dirty === tab.dirty && observedFileSize === tab.observedFileSize) return tab;
+          return {
+            ...tab,
+            dirty,
+            observedFileSize,
+          };
+        }));
+      } catch (err) {
+        console.warn("Unable to check inactive log sources", err);
+      }
+    };
+    void checkInactiveSources();
+    const intervalId = window.setInterval(checkInactiveSources, 1500);
+    return () => window.clearInterval(intervalId);
+  }, [activeTabId, isDisconnected, tabs.length, updateTabs]);
+
+  React.useEffect(() => {
+    const title = activeTab?.source.kind === "file"
+      ? activeTab.source.path + " - Log Scope"
+      : activeTab
+        ? activeTab.title + " - Log Scope"
+        : "Log Scope";
     document.title = title;
     void getCurrentWindow().setTitle(title).catch((err: unknown) => {
       console.warn("Unable to set Tauri window title", err);
     });
-  }, [logFile?.path]);
+  }, [activeTab]);
+
+  React.useEffect(() => {
+    if (!activeTabId) return;
+    document
+      .querySelector<HTMLButtonElement>(`.source-tab-select[data-tab-id="${activeTabId}"]`)
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTabId, tabScrollState.hasOverflow]);
 
   React.useEffect(() => {
     if (!gotoBarOpen) {
@@ -884,10 +1454,28 @@ function App() {
   }, []);
 
   const loadMarkers = React.useCallback(async (sessionId: number) => {
+    const requestId = ++markerListRequestRef.current;
     const range = await invoke<LogMarkerRange>("get_log_markers", { sessionId });
+    if (activeSessionIdRef.current !== sessionId || requestId !== markerListRequestRef.current) return;
     setMarkers(range.markers);
     setShaderVariantMissingCount(range.shaderVariantMissingCount);
+    const selectedId = selectedMarkerIdRef.current;
+    const selected = selectedId ? range.markers.find((marker) => marker.id === selectedId) ?? null : null;
+    const payloadRequest = ++markerPayloadRequestRef.current;
+    selectedMarkerIdRef.current = selected?.id ?? null;
+    setSelectedMarker(selected);
+    setSelectedPayload(null);
+    if (selected) {
+      invoke<MarkerPayload>("get_marker_payload", { sessionId, markerId: selected.id })
+        .then((payload) => {
+          if (activeSessionIdRef.current === sessionId && payloadRequest === markerPayloadRequestRef.current) {
+            setSelectedPayload(payload);
+          }
+        })
+        .catch(() => {});
+    }
   }, []);
+  loadMarkersRef.current = loadMarkers;
 
   React.useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -896,27 +1484,25 @@ function App() {
       const payload = event.payload;
       if (payload.action === "open_file") {
         open({
-          multiple: false,
+          multiple: true,
           directory: false,
         }).then((selected) => {
-          if (typeof selected === "string") {
-            setFilePath(selected);
-            openPath(selected);
-          }
+          const paths = typeof selected === "string" ? [selected] : Array.isArray(selected) ? selected : [];
+          if (paths.length > 0) void openPathsRef.current(paths);
         }).catch(console.error);
       } else if (payload.action === "connect_socket") {
         setShowSocketModal(true);
         setServerFilterText("");
       } else if (payload.action === "open_recent_file") {
         setFilePath(payload.path);
-        openPath(payload.path);
+        void openPathsRef.current([payload.path]);
       } else if (payload.action === "open_recent_socket") {
-        connectSocketSource(payload.host, payload.port);
+        void connectSocketRef.current(payload.host, payload.port);
       } else if (payload.action === "open_favorite_file") {
         setFilePath(payload.path);
-        openPath(payload.path);
+        void openPathsRef.current([payload.path]);
       } else if (payload.action === "open_favorite_socket") {
-        connectSocketSource(payload.host, payload.port, payload.hostname);
+        void connectSocketRef.current(payload.host, payload.port, payload.hostname);
       } else if (payload.action === "add_favorite") {
         const current = logFileRef.current;
         if (!current) return;
@@ -991,9 +1577,8 @@ function App() {
     let unlisten: (() => void) | undefined;
     getCurrentWindow().onDragDropEvent((event: any) => {
       if (event.payload.type === "drop" && event.payload.paths.length > 0) {
-        const path = event.payload.paths[0];
-        setFilePath(path);
-        openPath(path);
+        const paths = event.payload.paths.filter((path: string) => !path.endsWith("/") && !path.endsWith("\\"));
+        if (paths.length > 0) void openPathsRef.current(paths);
       }
     }).then((unlistenFn: any) => {
       unlisten = unlistenFn;
@@ -1042,7 +1627,7 @@ function App() {
     Math.ceil(Math.max(viewportHeight, ROW_HEIGHT) / ROW_HEIGHT) + OVERSCAN_ROWS * 2;
 
   React.useEffect(() => {
-    if (!logFile) {
+    if (!logFile || activeTabId !== String(logFile.sessionId)) {
       setLineCache(new Map());
       return;
     }
@@ -1054,7 +1639,7 @@ function App() {
       lineCount: requestedLineCount,
     })
       .then((range) => {
-        if (!cancelled) {
+        if (!cancelled && activeSessionIdRef.current === range.sessionId) {
           setLineCache((currentCache) => {
             const nextCache = new Map(currentCache);
             for (const line of range.lines) {
@@ -1074,10 +1659,33 @@ function App() {
             return nextCache;
           });
           setError(null);
+          const pending = pendingSyncRef.current.get(range.sessionId);
+          if (pending) {
+            void invoke<Array<{ sessionId: number; hasUpdates: boolean; fileSize: number }>>(
+              "get_log_source_changes",
+              { sessionIds: [range.sessionId] },
+            ).then((changes) => {
+              const change = changes[0];
+              const tab = tabsRef.current.find((item) => item.metadata.sessionId === range.sessionId);
+              if (
+                activeSessionIdRef.current === range.sessionId &&
+                change &&
+                !change.hasUpdates &&
+                sourceChangeVersionRef.current.get(range.sessionId) === pending.version &&
+                tab &&
+                tab.observedFileSize <= pending.fileSize
+              ) {
+                updateTabs((current) => current.map((item) =>
+                  item.metadata.sessionId === range.sessionId ? { ...item, dirty: false } : item
+                ));
+                pendingSyncRef.current.delete(range.sessionId);
+              }
+            }).catch(() => {});
+          }
         }
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
+        if (!cancelled && activeSessionIdRef.current === logFile.sessionId) {
           setError(String(err));
         }
       });
@@ -1085,21 +1693,30 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [firstVisibleLine, logFile, requestedStartLine, requestedLineCount]);
+  }, [activeTabId, firstVisibleLine, logFile, requestedStartLine, requestedLineCount]);
 
   React.useEffect(() => {
-    if (!logFile || isDisconnected) {
+    if (!logFile || activeTabId !== String(logFile.sessionId) || isDisconnected) {
       return;
     }
 
     let cancelled = false;
+    let timeoutId: number | null = null;
     const refresh = async () => {
+      const refreshVersion = sourceChangeVersionRef.current.get(logFile.sessionId) ?? 0;
+      const refreshWasDirty = tabsRef.current.find((tab) => tab.metadata.sessionId === logFile.sessionId)?.dirty ?? false;
       try {
         const metadata = await invoke<LogRefreshMetadata>("refresh_log_file", {
           sessionId: logFile.sessionId,
         });
-        if (cancelled) {
+        if (cancelled || activeSessionIdRef.current !== metadata.sessionId) {
           return;
+        }
+        if (refreshWasDirty) {
+          pendingSyncRef.current.set(metadata.sessionId, {
+            version: refreshVersion,
+            fileSize: metadata.fileSize,
+          });
         }
 
         if (metadata.wasTruncated) {
@@ -1132,67 +1749,110 @@ function App() {
             }
             : current,
         );
+        updateTabs((current) => current.map((tab) => {
+          if (tab.metadata.sessionId !== metadata.sessionId) return tab;
+          const nextMetadata = {
+            ...tab.metadata,
+            path: tab.metadata.path.startsWith("logscope-frame-v1://") ? tab.metadata.path : metadata.path,
+            fileSize: metadata.fileSize,
+            lineCount: metadata.lineCount,
+          };
+          return {
+            ...tab,
+            metadata: nextMetadata,
+            observedFileSize: metadata.wasTruncated
+              ? metadata.fileSize
+              : Math.max(tab.observedFileSize, metadata.fileSize),
+          };
+        }));
         if (metadata.appendedBytes > 0 || metadata.wasTruncated) {
           searchCacheRef.current = null;
           await loadMarkers(metadata.sessionId);
         }
-        setError(null);
+        if (activeSessionIdRef.current === metadata.sessionId) setError(null);
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && activeSessionIdRef.current === logFile.sessionId) {
           setError(String(err));
+        }
+      } finally {
+        if (!cancelled && activeSessionIdRef.current === logFile.sessionId) {
+          timeoutId = window.setTimeout(() => void refresh(), TAIL_REFRESH_INTERVAL_MS);
         }
       }
     };
 
-    const intervalId = window.setInterval(refresh, TAIL_REFRESH_INTERVAL_MS);
+    void refresh();
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
     };
-  }, [followTail, loadMarkers, logFile?.sessionId, isDisconnected]);
+  }, [activeTabId, followTail, loadMarkers, logFile?.sessionId, isDisconnected, updateTabs]);
 
-  const openPath = async (targetPath: string) => {
-    const normalizedPath = targetPath.trim();
-    if (!normalizedPath) {
-      setError("请输入 log 文件路径");
-      return;
+  const installOpenedTab = async (
+    source: TabSource,
+    metadata: LogFileMetadata,
+    initialNotice: string | null,
+    activate = true,
+  ): Promise<string> => {
+    const sourceKey = getSourceKey(source);
+    const existing = tabsRef.current.find((tab) => getSourceKey(tab.source) === sourceKey);
+    if (existing) {
+      await invoke("close_log_session", { sessionId: metadata.sessionId }).catch(() => {});
+      if (activate) await activateTab(existing.id);
+      return existing.id;
     }
 
-    setIsOpening(true);
-    setError(null);
-    try {
-      const metadata = await invoke<LogFileMetadata>("open_log_file", { path: normalizedPath });
-      setLogFile(metadata);
-      setLineCache(new Map());
-      setMarkers([]);
-      setShaderVariantMissingCount(0);
+    const id = String(metadata.sessionId);
+    const currentActiveTab = tabsRef.current.find((tab) =>
+      tab.metadata.sessionId === activeSessionIdRef.current
+    );
+    const currentSnapshot = captureTabSnapshot();
+    if (currentActiveTab && currentSnapshot) {
+      tabSnapshotsRef.current.set(currentActiveTab.id, currentSnapshot);
+    }
+    const tab: SessionTab = {
+      id,
+      source,
+      metadata,
+      title: source.kind === "file" ? getFileTabTitle(source.path) : getSocketTabTitle(source),
+      dirty: false,
+      observedFileSize: metadata.fileSize,
+      connectionVersion: 0,
+      connectionStatus: "loading",
+    };
+    updateTabs((current) => [...current, tab]);
+    const snapshot: TabSnapshot = {
+      filePath: source.kind === "file" ? source.path : "",
+      logFile: metadata,
+      scrollTop: 0,
+      scrollLeft: 0,
+      jumpLine: "1",
+      selectedLine: null,
+      isDisconnected: false,
+      followTail,
+      pendingTailLines: 0,
+      tailNotice: initialNotice,
+      selectedMarkerId: null,
+      markerFilterText: "",
+      markerFilterKinds: [],
+      markerListScrollTop: 0,
+      searchQuery: "",
+      searchCaseSensitive,
+      searchRegex,
+      searchWholeWord,
+      searchWrapAround,
+      searchFindAll,
+      logColorMode,
+    };
+    tabSnapshotsRef.current.set(id, snapshot);
+    if (activate) {
+      await activateTab(id);
       setShaderVariantMissingCopied(false);
-      setSelectedMarker(null);
-      setSelectedPayload(null);
       setCopiedMarkerId(null);
-      setMarkerFilterText("");
-      setMarkerFilterKinds(new Set());
-      setMarkerListScrollTop(0);
-      knownMarkerKindsRef.current = new Set();
-      setSearchResult(null);
-      setActiveSearchMatch(null);
-      searchCacheRef.current = null;
-      setPendingTailLines(0);
-      setTailNotice(null);
-      setScrollTop(0);
-      setJumpLine("1");
-      setIsDisconnected(false);
-      await loadMarkers(metadata.sessionId);
+      setError(null);
       await refreshPersistedState();
-      applyLargeFileDegradation(metadata);
-      if (viewportRef.current) {
-        viewportRef.current.scrollTop = 0;
-      }
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setIsOpening(false);
     }
+    return id;
   };
 
   const connectSocketSource = async (
@@ -1200,6 +1860,20 @@ function App() {
     parsedPort: number,
     hostname?: string | null,
   ) => {
+    const source: TabSource = {
+      kind: "socket",
+      host: normalizedHost.trim(),
+      port: parsedPort,
+      hostname: hostname ?? null,
+    };
+    const sourceKey = getSourceKey(source);
+    const existing = tabsRef.current.find((tab) => getSourceKey(tab.source) === sourceKey);
+    if (existing) {
+      activateTab(existing.id);
+      return true;
+    }
+    if (openingSourcesRef.current.has(sourceKey)) return true;
+    openingSourcesRef.current.add(sourceKey);
     setIsConnectingSocket(true);
     setError(null);
     try {
@@ -1208,44 +1882,124 @@ function App() {
         port: parsedPort,
         hostname: hostname ?? null,
       });
-      setLogFile({
+      const logMetadata: LogFileMetadata = {
         sessionId: metadata.sessionId,
         path: `${metadata.protocol}://${metadata.host}:${metadata.port}`,
         fileSize: 0,
         lineCount: metadata.lineCount,
         indexDurationMs: 0,
-      });
-      setLineCache(new Map());
-      setMarkers([]);
-      setShaderVariantMissingCount(0);
-      setShaderVariantMissingCopied(false);
-      setSelectedMarker(null);
-      setSelectedPayload(null);
-      setCopiedMarkerId(null);
-      setMarkerFilterText("");
-      setMarkerFilterKinds(new Set());
-      setMarkerListScrollTop(0);
-      knownMarkerKindsRef.current = new Set();
-      setSearchResult(null);
-      setActiveSearchMatch(null);
-      searchCacheRef.current = null;
-      setPendingTailLines(0);
-      setTailNotice("Socket 已连接，正在等待 frame 数据");
-      setScrollTop(0);
-      setJumpLine("1");
-      setIsDisconnected(false);
-      await refreshPersistedState();
-      if (viewportRef.current) {
-        viewportRef.current.scrollTop = 0;
-      }
+      };
+      await installOpenedTab(
+        { ...source, host: metadata.host },
+        logMetadata,
+        "Socket 已连接，正在等待 frame 数据",
+      );
       return true;
     } catch (err) {
       setError(String(err));
       return false;
     } finally {
+      openingSourcesRef.current.delete(sourceKey);
       setIsConnectingSocket(false);
     }
   };
+
+  const openPaths = async (paths: string[]) => {
+    let focusTabId: string | null = null;
+    const failures: string[] = [];
+    setIsOpening(true);
+    for (const targetPath of paths) {
+      const normalizedPath = targetPath.trim();
+      if (!normalizedPath) continue;
+
+      const source: TabSource = { kind: "file", path: normalizedPath };
+      const sourceKey = getSourceKey(source);
+      const existing = tabsRef.current.find((tab) => getSourceKey(tab.source) === sourceKey);
+      if (existing) {
+        focusTabId = existing.id;
+        continue;
+      }
+      if (openingSourcesRef.current.has(sourceKey)) continue;
+      openingSourcesRef.current.add(sourceKey);
+      try {
+        const metadata = await invoke<LogFileMetadata>("register_log_file", { path: normalizedPath });
+        focusTabId = await installOpenedTab({ kind: "file", path: metadata.path }, metadata, null, false);
+      } catch (err) {
+        failures.push(`${normalizedPath}: ${String(err)}`);
+      } finally {
+        openingSourcesRef.current.delete(sourceKey);
+      }
+    }
+
+    if (focusTabId) {
+      await activateTab(focusTabId);
+      setShaderVariantMissingCopied(false);
+      setCopiedMarkerId(null);
+      await refreshPersistedState().catch((err: unknown) => console.warn("Unable to refresh persisted state", err));
+    }
+    setError(failures.length > 0 ? failures.join("\n") : null);
+    setIsOpening(false);
+  };
+
+  const closeTab = (tabId: string) => {
+    const currentTabs = tabsRef.current;
+    const index = currentTabs.findIndex((tab) => tab.id === tabId);
+    if (index < 0) return;
+    const closing = currentTabs[index];
+    pendingSyncRef.current.delete(closing.metadata.sessionId);
+    sourceChangeVersionRef.current.delete(closing.metadata.sessionId);
+    const wasActive = tabId === activeTabId;
+    if (wasActive) {
+      const currentSnapshot = captureTabSnapshot();
+      if (currentSnapshot) tabSnapshotsRef.current.set(tabId, currentSnapshot);
+    }
+    const nextTabs = currentTabs.filter((tab) => tab.id !== tabId);
+    tabsRef.current = nextTabs;
+    setTabs(nextTabs);
+    tabSnapshotsRef.current.delete(tabId);
+    void invoke("close_log_session", { sessionId: closing.metadata.sessionId }).catch((err: unknown) => {
+      console.warn("Unable to close log session", err);
+    });
+    if (!wasActive) return;
+
+    const next = nextTabs[Math.min(index, nextTabs.length - 1)];
+    if (!next) {
+      activationGenerationRef.current += 1;
+      loadingSessionIdRef.current = null;
+      setActiveTabId(null);
+      activeSessionIdRef.current = null;
+      setLogFile(null);
+      setLineCache(new Map());
+      setMarkers([]);
+      setSelectedMarker(null);
+      selectedMarkerIdRef.current = null;
+      setSelectedPayload(null);
+      setError(null);
+      setIsOpening(false);
+      return;
+    }
+    void activateTab(next.id);
+  };
+
+  const reconnectActiveSocket = async () => {
+    if (!activeTab || activeTab.source.kind !== "socket") return;
+    const sessionId = activeTab.metadata.sessionId;
+    setError(null);
+    updateTabs((current) => current.map((tab) =>
+      tab.metadata.sessionId === sessionId ? { ...tab, connectionStatus: "loading" } : tab
+    ));
+    try {
+      await invoke("reconnect_log_socket", { sessionId });
+    } catch (err) {
+      updateTabs((current) => current.map((tab) =>
+        tab.metadata.sessionId === sessionId ? { ...tab, connectionStatus: "error" } : tab
+      ));
+      setError(String(err));
+    }
+  };
+
+  openPathsRef.current = openPaths;
+  connectSocketRef.current = connectSocketSource;
 
   const normalizedSocketHost = socketHostInput.trim();
   const normalizedSocketPortText = socketPortInput.trim();
@@ -1589,11 +2343,14 @@ function App() {
         return;
       }
       setSelectedMarker(marker);
+      selectedMarkerIdRef.current = marker.id;
       if (!options?.keepPanelState) {
         setShowSourcePanel(true);
       }
       setSelectedPayload(null);
       setCopiedMarkerId(null);
+      const sessionId = logFile.sessionId;
+      const payloadRequest = ++markerPayloadRequestRef.current;
       if (!isMarkerInViewport(marker)) {
         scrollToLineCentered(marker.startLine);
       }
@@ -1601,13 +2358,16 @@ function App() {
       requestAnimationFrame(() => scrollMarkerListToSelected(marker.id));
       try {
         const payload = await invoke<MarkerPayload>("get_marker_payload", {
-          sessionId: logFile.sessionId,
+          sessionId,
           markerId: marker.id,
         });
+        if (activeSessionIdRef.current !== sessionId || payloadRequest !== markerPayloadRequestRef.current) return;
         setSelectedPayload(payload);
         setError(null);
       } catch (err) {
-        setError(String(err));
+        if (activeSessionIdRef.current === sessionId && payloadRequest === markerPayloadRequestRef.current) {
+          setError(String(err));
+        }
       }
     },
     [isMarkerInViewport, logFile, scrollToLineCentered, scrollMarkerListToSelected],
@@ -1758,11 +2518,14 @@ function App() {
     if (!logFile) {
       return;
     }
+    const sessionId = logFile.sessionId;
+    const requestId = ++searchRequestRef.current;
 
     const query = override?.query ?? searchQuery;
     if (!query) {
       setSearchResult(null);
       setActiveSearchMatch(null);
+      setIsSearching(false);
       return;
     }
 
@@ -1785,6 +2548,7 @@ function App() {
         setSearchResult(nextResult);
         const match = getActiveSearchMatch(nextResult);
         setActiveSearchMatch(match);
+        setIsSearching(false);
         if (match) {
           revealSearchMatchIfNeeded(match);
         }
@@ -1807,7 +2571,7 @@ function App() {
       }
 
       const result = await invoke<LogSearchResult>("search_log_text", {
-        sessionId: logFile.sessionId,
+        sessionId,
         query,
         startLine: Math.min(Math.max(1, startLine), Math.max(logFile.lineCount, 1)),
         startColumn,
@@ -1818,6 +2582,7 @@ function App() {
         wrapAround: searchWrapAround,
         findAll: searchFindAll,
       });
+      if (activeSessionIdRef.current !== sessionId || requestId !== searchRequestRef.current) return;
       if (searchFindAll) {
         searchCacheRef.current = {
           sessionId: logFile.sessionId,
@@ -1839,9 +2604,13 @@ function App() {
         revealSearchMatchIfNeeded(match);
       }
     } catch (err) {
-      setError(String(err));
+      if (activeSessionIdRef.current === sessionId && requestId === searchRequestRef.current) {
+        setError(String(err));
+      }
     } finally {
-      setIsSearching(false);
+      if (activeSessionIdRef.current === sessionId && requestId === searchRequestRef.current) {
+        setIsSearching(false);
+      }
     }
   };
 
@@ -2039,7 +2808,7 @@ function App() {
       cachedLines: lineCache.size,
     }));
   }, [lineCache.size, renderedLineCount]);
-  const activePath = logFile?.path ?? "尚未打开文件";
+  const activePath = activeTab?.title ?? "尚未打开文件";
   const activeStatus = isDisconnected ? "已断开" : "Ready";
   const updateDialogClosable =
     !updateStatus || updateStatus.stage === "up-to-date" || updateStatus.stage === "error";
@@ -2280,20 +3049,25 @@ function App() {
   };
 
   React.useEffect(() => {
-    if (persistedStore && !initialLoadDoneRef.current) {
-      initialLoadDoneRef.current = true;
-      if (persistedStore.lastSource?.kind === "file" && persistedStore.lastSource.path) {
-        void openPath(persistedStore.lastSource.path);
-      } else if (persistedStore.lastSource?.kind === "socket" && persistedStore.lastSource.host && persistedStore.lastSource.port) {
-        void connectSocketSource(
-          persistedStore.lastSource.host,
-          persistedStore.lastSource.port,
-          persistedStore.lastSource.hostname,
-        );
+    const handleTabShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || showSocketModal || showMarkerConfigModal || showFavoriteDialog) return;
+      const currentTabs = tabsRef.current;
+      const activeIndex = currentTabs.findIndex((tab) => tab.id === activeTabId);
+      if (event.key.toLowerCase() === "w" && (event.metaKey || event.ctrlKey) && !event.altKey) {
+        event.preventDefault();
+        if (activeTabId) closeTab(activeTabId);
+      } else if (event.key === "Tab" && event.ctrlKey && activeIndex >= 0 && currentTabs.length > 1) {
+        const target = event.target;
+        if (target instanceof HTMLElement && (target.isContentEditable || target.matches("input, textarea, select, [role='combobox']"))) return;
+        event.preventDefault();
+        const delta = event.shiftKey ? -1 : 1;
+        const nextIndex = (activeIndex + delta + currentTabs.length) % currentTabs.length;
+        activateTab(currentTabs[nextIndex].id);
       }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [persistedStore]);
+    };
+    window.addEventListener("keydown", handleTabShortcut);
+    return () => window.removeEventListener("keydown", handleTabShortcut);
+  }, [activeTabId, tabs, closeTab, activateTab, showSocketModal, showMarkerConfigModal, showFavoriteDialog]);
 
   return (
     <main className="app-shell">
@@ -2302,10 +3076,11 @@ function App() {
           <button
             type="button"
             className="toolbar-icon-button"
-            onClick={() => open({ multiple: false, directory: false }).then((selected) => {
-              if (typeof selected === "string") {
-                setFilePath(selected);
-                openPath(selected);
+            onClick={() => open({ multiple: true, directory: false }).then((selected) => {
+              const paths = typeof selected === "string" ? [selected] : Array.isArray(selected) ? selected : [];
+              if (paths.length > 0) {
+                setFilePath(paths[paths.length - 1]);
+                void openPaths(paths);
               }
             }).catch(console.error)}
             title="打开文件 (⌘O)"
@@ -2334,6 +3109,17 @@ function App() {
           >
             {isDisconnected ? <PlayIcon /> : <PauseIcon />}
           </button>
+          {activeTab?.source.kind === "socket" &&
+            activeTab.connectionStatus !== "connected" &&
+            activeTab.connectionStatus !== "quota" && (
+            <button
+              type="button"
+              className="toolbar-icon-button"
+              onClick={() => void reconnectActiveSocket()}
+              title="重新连接 Socket"
+              aria-label="重新连接 Socket"
+            ><ConnectSocketIcon /></button>
+          )}
           <span className="toolbar-separator" />
           <button
             type="button"
@@ -2370,6 +3156,48 @@ function App() {
           </button>
         </div>
       </header>
+
+      <nav className="source-tabs" aria-label="打开的数据源">
+        <div ref={tabListRef} className="source-tab-list" role="tablist">
+          {tabs.map((tab) => (
+            <SourceTabItem
+              key={tab.id}
+              tab={tab}
+              tabs={tabs}
+              isActive={tab.id === activeTabId}
+              isDragging={tab.id === draggingTabId}
+              dropEdge={tabDropTarget?.tabId === tab.id ? tabDropTarget.edge : null}
+              onActivate={activateTab}
+              onClickSelect={(tabId) => {
+                if (consumeSuppressedTabClick(tabId)) return;
+                void activateTab(tabId);
+              }}
+              onClose={closeTab}
+              onPointerDown={beginTabPointerDrag}
+            />
+          ))}
+        </div>
+        {tabScrollState.hasOverflow && (
+          <div className="source-tab-scroll-controls" role="group" aria-label="标签列表滚动">
+            <button
+              type="button"
+              className="source-tab-scroll-button"
+              title="向左滚动标签"
+              aria-label="向左滚动标签"
+              disabled={!tabScrollState.canScrollLeft}
+              onClick={() => scrollTabs(-1)}
+            ><TabScrollLeftIcon /></button>
+            <button
+              type="button"
+              className="source-tab-scroll-button"
+              title="向右滚动标签"
+              aria-label="向右滚动标签"
+              disabled={!tabScrollState.canScrollRight}
+              onClick={() => scrollTabs(1)}
+            ><TabScrollRightIcon /></button>
+          </div>
+        )}
+      </nav>
 
       <div className="app-body" style={{ gridTemplateColumns: showSourcePanel ? `${sourcePanelWidth}px 4px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
         <aside className="source-panel" style={{ display: showSourcePanel ? 'flex' : 'none' }}>
@@ -3492,7 +4320,17 @@ function App() {
                   className="marker-config-btn secondary"
                   onClick={() => {
                     setShowMarkerConfigModal(false);
-                    openPath(filePath);
+                    if (!logFile) return;
+                    const sessionId = logFile.sessionId;
+                    setSelectedMarker(null);
+                    selectedMarkerIdRef.current = null;
+                    setSelectedPayload(null);
+                    markerPayloadRequestRef.current += 1;
+                    invoke("rescan_log_markers", { sessionId })
+                      .then(() => loadMarkers(sessionId))
+                      .catch((err: unknown) => {
+                        if (activeSessionIdRef.current === sessionId) setError(String(err));
+                      });
                   }}
                 >
                   重新扫描
@@ -3636,6 +4474,126 @@ function App() {
       )}
     </main>
   );
+}
+
+type SourceTabItemProps = {
+  tab: SessionTab;
+  tabs: SessionTab[];
+  isActive: boolean;
+  isDragging: boolean;
+  dropEdge: TabDropEdge | null;
+  onActivate: (tabId: string) => Promise<void>;
+  onClickSelect: (tabId: string) => void;
+  onClose: (tabId: string) => void;
+  onPointerDown: (tabId: string, event: React.PointerEvent<HTMLDivElement>) => void;
+};
+
+function SourceTabItem({
+  tab,
+  tabs,
+  isActive,
+  isDragging,
+  dropEdge,
+  onActivate,
+  onClickSelect,
+  onClose,
+  onPointerDown,
+}: SourceTabItemProps) {
+  const statusText = tab.connectionStatus === "quota"
+    ? "，临时存储已满"
+    : tab.connectionStatus === "disconnected"
+      ? "，Socket 已断开"
+      : "";
+  const sourceTitle = tab.source.kind === "file"
+    ? tab.source.path
+    : tab.source.host + ":" + tab.source.port;
+
+  return (
+    <div
+      className={"source-tab"
+        + (isActive ? " is-active" : "")
+        + (tab.dirty ? " has-updates" : "")
+        + (isDragging ? " is-dragging" : "")
+        + (dropEdge ? " drop-" + dropEdge : "")}
+      role="presentation"
+      onPointerDown={(event) => onPointerDown(tab.id, event)}
+    >
+      <button
+        type="button"
+        role="tab"
+        aria-selected={isActive}
+        tabIndex={isActive ? 0 : -1}
+        data-tab-id={tab.id}
+        aria-label={tab.title + (tab.dirty ? "，有更新" : "") + statusText}
+        className="source-tab-select"
+        title={sourceTitle + statusText}
+        onClick={() => onClickSelect(tab.id)}
+        onKeyDown={(event) => {
+          const currentIndex = tabs.findIndex((item) => item.id === tab.id);
+          let nextIndex = currentIndex;
+          if (event.key === "ArrowRight") nextIndex = Math.min(tabs.length - 1, currentIndex + 1);
+          else if (event.key === "ArrowLeft") nextIndex = Math.max(0, currentIndex - 1);
+          else if (event.key === "Home") nextIndex = 0;
+          else if (event.key === "End") nextIndex = tabs.length - 1;
+          else return;
+          event.preventDefault();
+          if (nextIndex === currentIndex) return;
+          const nextTab = tabs[nextIndex];
+          event.currentTarget.closest(".source-tab-list")
+            ?.querySelector<HTMLButtonElement>(`[data-tab-id="${nextTab.id}"]`)
+            ?.focus();
+          void onActivate(nextTab.id);
+        }}
+      >
+        <span className={"source-tab-status " + tab.connectionStatus} aria-hidden="true" />
+        <span className="source-tab-title">{getTabDisplayTitle(tab, tabs)}</span>
+        {tab.dirty && <span className="source-tab-dirty" aria-hidden="true" />}
+      </button>
+      <button
+        type="button"
+        className="source-tab-close"
+        title={"关闭 " + tab.title}
+        aria-label={"关闭 " + tab.title}
+        onClick={() => onClose(tab.id)}
+      >×</button>
+    </div>
+  );
+}
+
+function getSourceKey(source: TabSource): string {
+  if (source.kind === "socket") {
+    return "socket:" + source.host.trim().toLowerCase() + ":" + source.port;
+  }
+  let path = source.path.trim().split(String.fromCharCode(92)).join("/").replace(/\/+$/, "");
+  if (navigator.userAgent.toLowerCase().includes("windows")) path = path.toLowerCase();
+  return "file:" + path;
+}
+
+function getFileTabTitle(path: string): string {
+  return path.split(String.fromCharCode(92)).join("/").split("/").filter(Boolean).pop() ?? path;
+}
+
+function getSocketTabTitle(source: Extract<TabSource, { kind: "socket" }>): string {
+  const endpoint = source.host + ":" + source.port;
+  return source.hostname ? source.hostname + " · " + endpoint : endpoint;
+}
+
+function getTabDisplayTitle(tab: SessionTab, allTabs: SessionTab[]): string {
+  if (tab.source.kind !== "file") return getSocketTabTitle(tab.source);
+  const sameName = allTabs.filter((candidate) =>
+    candidate.source.kind === "file" && getFileTabTitle(candidate.source.path) === getFileTabTitle(tab.source.path)
+  );
+  if (sameName.length < 2) return getFileTabTitle(tab.source.path);
+  const parts = tab.source.path.split(String.fromCharCode(92)).join("/").split("/").filter(Boolean);
+  for (let depth = 2; depth <= parts.length; depth += 1) {
+    const suffix = parts.slice(-depth).join("/");
+    const ambiguous = sameName.some((candidate) => {
+      if (candidate.id === tab.id || candidate.source.kind !== "file") return false;
+      return candidate.source.path.split(String.fromCharCode(92)).join("/").split("/").filter(Boolean).slice(-depth).join("/") === suffix;
+    });
+    if (!ambiguous) return suffix;
+  }
+  return tab.source.path;
 }
 
 function formatBytes(bytes: number) {

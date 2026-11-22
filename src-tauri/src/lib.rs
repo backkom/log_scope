@@ -5,7 +5,7 @@ use std::{
     net::{TcpStream, UdpSocket},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -98,6 +98,10 @@ impl Default for MarkerConfig {
 struct AppState {
     next_session_id: AtomicU64,
     sessions: Mutex<HashMap<u64, Arc<Mutex<LogSession>>>>,
+    session_sources: Mutex<HashMap<u64, SessionSource>>,
+    socket_controls: Mutex<HashMap<u64, SocketControl>>,
+    active_socket_connections: Arc<AtomicUsize>,
+    socket_log_bytes: Arc<AtomicU64>,
     udp_discovery_active: Arc<AtomicBool>,
     marker_config: Mutex<MarkerConfig>,
 }
@@ -107,8 +111,105 @@ impl Default for AppState {
         Self {
             next_session_id: AtomicU64::new(0),
             sessions: Mutex::new(HashMap::new()),
+            session_sources: Mutex::new(HashMap::new()),
+            socket_controls: Mutex::new(HashMap::new()),
+            active_socket_connections: Arc::new(AtomicUsize::new(0)),
+            socket_log_bytes: Arc::new(AtomicU64::new(0)),
             udp_discovery_active: Arc::new(AtomicBool::new(false)),
             marker_config: Mutex::new(MarkerConfig::default()),
+        }
+    }
+}
+
+impl Drop for AppState {
+    fn drop(&mut self) {
+        let total_log_bytes = Arc::clone(&self.socket_log_bytes);
+        if let Ok(controls) = self.socket_controls.get_mut() {
+            for control in controls.values() {
+                control.cleanup_on_exit.store(true, Ordering::Release);
+                let _ = control.shutdown_stream.shutdown(std::net::Shutdown::Both);
+                let path = control.path.clone();
+                let log_bytes = Arc::clone(&control.log_bytes);
+                let total_log_bytes = Arc::clone(&total_log_bytes);
+                std::thread::spawn(move || {
+                    cleanup_socket_log_file(&path, &log_bytes, &total_log_bytes)
+                });
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SessionSource {
+    path: PathBuf,
+    indexed_file_size: u64,
+    indexed_modified_ns: u128,
+    generation: u64,
+}
+
+struct SocketControl {
+    shutdown_stream: TcpStream,
+    cleanup_on_exit: Arc<AtomicBool>,
+    connected: Arc<AtomicBool>,
+    reader_active: Arc<AtomicBool>,
+    status_version: Arc<AtomicU64>,
+    quota_exceeded: Arc<AtomicBool>,
+    log_bytes: Arc<AtomicU64>,
+    path: PathBuf,
+    host: String,
+    port: u16,
+}
+
+struct SocketSlotReservation {
+    slots: Arc<AtomicUsize>,
+    active: bool,
+}
+
+struct SocketReconnectReservation {
+    connected: Arc<AtomicBool>,
+    active: bool,
+}
+
+impl SocketSlotReservation {
+    fn reserve(slots: Arc<AtomicUsize>) -> Result<Self, String> {
+        slots
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |count| {
+                (count < 4).then_some(count + 1)
+            })
+            .map_err(|_| "最多同时连接 4 个 Socket".to_string())?;
+        Ok(Self { slots, active: true })
+    }
+
+    fn commit(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for SocketSlotReservation {
+    fn drop(&mut self) {
+        if self.active {
+            self.slots.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+impl SocketReconnectReservation {
+    fn reserve(connected: Arc<AtomicBool>) -> Result<Self, String> {
+        connected
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "socket session is already connected or reconnecting".to_string())?;
+        Ok(Self { connected, active: true })
+    }
+
+    fn commit(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for SocketReconnectReservation {
+    fn drop(&mut self) {
+        if self.active {
+            self.connected.store(false, Ordering::Release);
         }
     }
 }
@@ -116,6 +217,7 @@ impl Default for AppState {
 struct LogSession {
     path: PathBuf,
     file_size: u64,
+    modified_time_ns: u128,
     line_offsets: Vec<u64>,
     markers: Vec<LogMarker>,
     marker_payloads: HashMap<String, MarkerPayload>,
@@ -154,6 +256,22 @@ struct LogRefreshMetadata {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct LogSourceChange {
+    session_id: u64,
+    has_updates: bool,
+    file_size: u64,
+    modified_ns: u128,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogSocketStatus {
+    status: &'static str,
+    version: u64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SocketConnectMetadata {
     session_id: u64,
     host: String,
@@ -173,6 +291,9 @@ struct DiscoveredServer {
 
 /// UDP broadcast discovery port (same as Python server).
 const DISCOVERY_PORT: u16 = 9876;
+const MAX_SOCKET_LOG_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_TOTAL_SOCKET_LOG_BYTES: u64 = 1024 * 1024 * 1024;
+const SOCKET_LOG_QUOTA_ERROR: &str = "socket log quota exceeded";
 const MAX_MARKER_PAYLOAD_BYTES: usize = 1024 * 1024;
 
 /// Built-in palette for favorite color tags.
@@ -478,7 +599,7 @@ async fn open_log_file(
         .lock()
         .map_err(|_| "marker config lock poisoned".to_string())?
         .clone();
-    let path_buf = PathBuf::from(path);
+    let path_buf = fs::canonicalize(PathBuf::from(path)).map_err(|err| err.to_string())?;
     let session = tauri::async_runtime::spawn_blocking(move || LogSession::open(path_buf, &config))
         .await
         .map_err(|err| format!("failed to join file indexing task: {err}"))?
@@ -492,14 +613,155 @@ async fn open_log_file(
         index_duration_ms: session.index_duration_ms,
     };
 
-    let mut sessions = state
+    state
+        .session_sources
+        .lock()
+        .map_err(|_| "log source state is unavailable".to_string())?
+        .insert(
+            session_id,
+            SessionSource {
+                path: PathBuf::from(metadata.path.as_str()),
+                indexed_file_size: metadata.file_size,
+                indexed_modified_ns: file_modified_time_ns(&PathBuf::from(metadata.path.as_str())),
+                generation: 0,
+            },
+        );
+    state
         .sessions
         .lock()
-        .map_err(|_| "log session state is unavailable".to_string())?;
-    sessions.insert(session_id, Arc::new(Mutex::new(session)));
-    remember_recent_file(&app, metadata.path.clone())?;
+        .map_err(|_| "log session state is unavailable".to_string())?
+        .insert(session_id, Arc::new(Mutex::new(session)));
+    if let Err(err) = remember_recent_file(&app, metadata.path.clone()) {
+        eprintln!("log_scope could not update recent files: {err}");
+    }
 
     Ok(metadata)
+}
+
+#[tauri::command]
+async fn register_log_file(
+    path: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<LogFileMetadata, String> {
+    let path_buf = fs::canonicalize(PathBuf::from(path)).map_err(|err| err.to_string())?;
+    let metadata = fs::metadata(&path_buf).map_err(|err| err.to_string())?;
+    if !metadata.is_file() {
+        return Err("选择的数据源不是文件".to_string());
+    }
+    File::open(&path_buf).map_err(|err| err.to_string())?;
+    let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed) + 1;
+    let path = path_buf.to_string_lossy().into_owned();
+    let indexed_modified_ns = file_modified_time_ns(&path_buf);
+    state
+        .session_sources
+        .lock()
+        .map_err(|_| "log source state is unavailable".to_string())?
+        .insert(
+            session_id,
+            SessionSource {
+                path: path_buf,
+                indexed_file_size: metadata.len(),
+                indexed_modified_ns,
+                generation: 0,
+            },
+        );
+    if let Err(err) = remember_recent_file(&app, path.clone()) {
+        eprintln!("log_scope could not update recent files: {err}");
+    }
+    Ok(LogFileMetadata {
+        session_id,
+        path,
+        file_size: metadata.len(),
+        line_count: 0,
+        index_duration_ms: 0,
+    })
+}
+
+#[tauri::command]
+async fn load_log_session(
+    session_id: u64,
+    state: tauri::State<'_, AppState>,
+) -> Result<LogFileMetadata, String> {
+    if let Some(session) = state
+        .sessions
+        .lock()
+        .map_err(|_| "log session state is unavailable".to_string())?
+        .get(&session_id)
+        .cloned()
+    {
+        let session = session.lock().map_err(|_| "log session state is unavailable".to_string())?;
+        return Ok(LogFileMetadata {
+            session_id,
+            path: session.path.to_string_lossy().into_owned(),
+            file_size: session.file_size,
+            line_count: session.line_offsets.len(),
+            index_duration_ms: session.index_duration_ms,
+        });
+    }
+
+    let source = state
+        .session_sources
+        .lock()
+        .map_err(|_| "log source state is unavailable".to_string())?
+        .get(&session_id)
+        .cloned()
+        .ok_or_else(|| format!("log session {session_id} was closed"))?;
+    let source_snapshot_generation = source.generation;
+    let config = state
+        .marker_config
+        .lock()
+        .map_err(|_| "marker config lock poisoned".to_string())?
+        .clone();
+    let path = source.path.clone();
+    let session = tauri::async_runtime::spawn_blocking(move || LogSession::open(path, &config))
+        .await
+        .map_err(|err| format!("failed to join log indexing task: {err}"))?
+        .map_err(|err| err.to_string())?;
+    let metadata = LogFileMetadata {
+        session_id,
+        path: session.path.to_string_lossy().into_owned(),
+        file_size: session.file_size,
+        line_count: session.line_offsets.len(),
+        index_duration_ms: session.index_duration_ms,
+    };
+    let mut sources = state
+        .session_sources
+        .lock()
+        .map_err(|_| "log source state is unavailable".to_string())?;
+    let Some(source) = sources.get_mut(&session_id) else {
+        return Err(format!("log session {session_id} was closed while indexing"));
+    };
+    if source.generation != source_snapshot_generation {
+        return Err(format!("log session {session_id} was unloaded while indexing"));
+    }
+    source.indexed_file_size = metadata.file_size;
+    source.indexed_modified_ns = file_modified_time_ns(&source.path);
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "log session state is unavailable".to_string())?
+        .insert(session_id, Arc::new(Mutex::new(session)));
+    drop(sources);
+    Ok(metadata)
+}
+
+#[tauri::command]
+fn unload_log_session(session_id: u64, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut sources = state
+        .session_sources
+        .lock()
+        .map_err(|_| "log source state is unavailable".to_string())?;
+    if let Some(source) = sources.get_mut(&session_id) {
+        source.generation = source.generation.wrapping_add(1);
+    }
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "log session state is unavailable".to_string())?
+        .remove(&session_id);
+    drop(sources);
+    Ok(())
 }
 
 #[tauri::command]
@@ -514,6 +776,8 @@ async fn connect_log_socket(
     if normalized_host.is_empty() {
         return Err("请输入 socket host".to_string());
     }
+    let mut reservation =
+        SocketSlotReservation::reserve(Arc::clone(&state.active_socket_connections))?;
 
     let address = format!("{normalized_host}:{port}");
     let connect_host = normalized_host.clone();
@@ -530,41 +794,125 @@ possible causes: server is only listening on 127.0.0.1, the discovered port is s
                 format!("failed to connect socket: {err}")
             }
         })?;
-
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let socket_dir = std::env::temp_dir().join("log_scope").join("socket");
-    fs::create_dir_all(&socket_dir)
-        .map_err(|err| format!("failed to create socket log dir: {err}"))?;
-    let safe_host = safe_socket_filename_part(&normalized_host);
-    let path = socket_dir.join(format!("socket-{safe_host}-{port}-{suffix}.log"));
-    File::create(&path).map_err(|err| format!("failed to create socket log file: {err}"))?;
+    let shutdown_stream = stream
+        .try_clone()
+        .map_err(|err| format!("failed to create socket shutdown handle: {err}"))?;
 
     let config = state
         .marker_config
         .lock()
         .map_err(|_| "marker config lock poisoned".to_string())?
         .clone();
-    let session = LogSession::open(path.clone(), &config).map_err(|err| err.to_string())?;
     let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed) + 1;
-    {
-        let mut sessions = state
-            .sessions
-            .lock()
-            .map_err(|_| "log session state is unavailable".to_string())?;
-        sessions.insert(session_id, Arc::new(Mutex::new(session)));
-    }
+    let created_at_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let socket_dir = std::env::temp_dir().join("log_scope").join("socket");
+    fs::create_dir_all(&socket_dir)
+        .map_err(|err| format!("failed to create socket log dir: {err}"))?;
+    let safe_host = safe_socket_filename_part(&normalized_host);
+    let path = socket_dir.join(format!("socket-{session_id}-{created_at_ns}-{safe_host}-{port}.log"));
+    File::options()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|err| format!("failed to create socket log file: {err}"))?;
+    let session = match LogSession::open(path.clone(), &config) {
+        Ok(session) => session,
+        Err(err) => {
+            let _ = fs::remove_file(&path);
+            return Err(err.to_string());
+        }
+    };
+    state
+        .session_sources
+        .lock()
+        .map_err(|_| "log source state is unavailable".to_string())?
+        .insert(
+            session_id,
+            SessionSource {
+                path: path.clone(),
+                indexed_file_size: 0,
+                indexed_modified_ns: file_modified_time_ns(&path),
+                generation: 0,
+            },
+        );
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "log session state is unavailable".to_string())?
+        .insert(session_id, Arc::new(Mutex::new(session)));
+    let cleanup_on_exit = Arc::new(AtomicBool::new(false));
+    let connected = Arc::new(AtomicBool::new(true));
+    let reader_active = Arc::new(AtomicBool::new(true));
+    let status_version = Arc::new(AtomicU64::new(0));
+    let quota_exceeded = Arc::new(AtomicBool::new(false));
+    let log_bytes = Arc::new(AtomicU64::new(0));
+    state
+        .socket_controls
+        .lock()
+        .map_err(|_| "socket control state is unavailable".to_string())?
+        .insert(
+            session_id,
+            SocketControl {
+                shutdown_stream,
+                cleanup_on_exit: Arc::clone(&cleanup_on_exit),
+                connected: Arc::clone(&connected),
+                reader_active: Arc::clone(&reader_active),
+                status_version: Arc::clone(&status_version),
+                quota_exceeded: Arc::clone(&quota_exceeded),
+                log_bytes: Arc::clone(&log_bytes),
+                path: path.clone(),
+                host: normalized_host.clone(),
+                port,
+            },
+        );
+    reservation.commit();
 
     let writer_path = path.clone();
+    let app_handle = app.clone();
+    let socket_slots = Arc::clone(&state.active_socket_connections);
+    let socket_total_bytes = Arc::clone(&state.socket_log_bytes);
+    let reader_log_bytes = Arc::clone(&log_bytes);
+    let reader_quota_exceeded = Arc::clone(&quota_exceeded);
+    let reader_active_flag = Arc::clone(&reader_active);
+    let reader_status_version = Arc::clone(&status_version);
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(err) = read_socket_frames_to_file(stream, writer_path) {
+        emit_log_socket_status(&app_handle, session_id, &reader_status_version, "connected");
+        let result = read_socket_frames_to_file(
+            stream,
+            writer_path.clone(),
+            app_handle.clone(),
+            session_id,
+            Arc::clone(&reader_log_bytes),
+            Arc::clone(&socket_total_bytes),
+        );
+        if connected.swap(false, Ordering::AcqRel) {
+            socket_slots.fetch_sub(1, Ordering::AcqRel);
+        }
+        if let Err(err) = result {
             eprintln!("log_scope socket reader stopped: {err}");
+            let quota = err.to_string() == SOCKET_LOG_QUOTA_ERROR;
+            if quota {
+                reader_quota_exceeded.store(true, Ordering::Release);
+            }
+            emit_log_socket_status(
+                &app_handle,
+                session_id,
+                &reader_status_version,
+                if quota { "quota" } else { "disconnected" },
+            );
+        }
+        reader_active_flag.store(false, Ordering::Release);
+        if cleanup_on_exit.load(Ordering::Relaxed) {
+            cleanup_socket_log_file(&writer_path, &reader_log_bytes, &socket_total_bytes);
         }
     });
 
-    remember_recent_socket(&app, normalized_host.clone(), port, hostname)?;
+    if let Err(err) = remember_recent_socket(&app, normalized_host.clone(), port, hostname) {
+        eprintln!("log_scope could not update recent sockets: {err}");
+    }
 
     Ok(SocketConnectMetadata {
         session_id,
@@ -574,6 +922,156 @@ possible causes: server is only listening on 127.0.0.1, the discovered port is s
         line_count: 0,
         protocol: "logscope-frame-v1",
     })
+}
+
+#[tauri::command]
+async fn reconnect_log_socket(
+    session_id: u64,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let (
+        host,
+        port,
+        path,
+        cleanup_on_exit,
+        quota_exceeded,
+        log_bytes,
+        connected,
+        reader_active,
+        status_version,
+        mut reconnect,
+    ) = {
+        let sources = state
+            .session_sources
+            .lock()
+            .map_err(|_| "log source state is unavailable".to_string())?;
+        let source = sources
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| format!("socket session {session_id} was closed"))?;
+        let controls = state
+            .socket_controls
+            .lock()
+            .map_err(|_| "socket control state is unavailable".to_string())?;
+        let control = controls
+            .get(&session_id)
+            .ok_or_else(|| format!("socket session {session_id} is unavailable"))?;
+        if control.connected.load(Ordering::Acquire) {
+            return Err(format!("socket session {session_id} is already connected"));
+        }
+        if control.quota_exceeded.load(Ordering::Acquire) {
+            return Err("该 Socket 日志已达到临时存储上限，不能继续接收".to_string());
+        }
+        if control.reader_active.load(Ordering::Acquire) {
+            return Err("Socket reader is still stopping; retry reconnect shortly".to_string());
+        }
+        let connected = Arc::clone(&control.connected);
+        let reconnect = SocketReconnectReservation::reserve(Arc::clone(&connected))?;
+        (
+            control.host.clone(),
+            control.port,
+            source.path,
+            Arc::clone(&control.cleanup_on_exit),
+            Arc::clone(&control.quota_exceeded),
+            Arc::clone(&control.log_bytes),
+            connected,
+            Arc::clone(&control.reader_active),
+            Arc::clone(&control.status_version),
+            reconnect,
+        )
+    };
+    let mut reservation =
+        SocketSlotReservation::reserve(Arc::clone(&state.active_socket_connections))?;
+    let address = format!("{host}:{port}");
+    let connect_host = host.clone();
+    let stream = tauri::async_runtime::spawn_blocking(move || TcpStream::connect(address))
+        .await
+        .map_err(|err| format!("failed to join socket reconnect task: {err}"))?
+        .map_err(|err| format!("failed to reconnect socket: {err}. target={connect_host}:{port}"))?;
+    let shutdown_stream = stream
+        .try_clone()
+        .map_err(|err| format!("failed to create socket shutdown handle: {err}"))?;
+    let sources = state
+        .session_sources
+        .lock()
+        .map_err(|_| "log source state is unavailable".to_string())?;
+    if !sources.contains_key(&session_id) {
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        return Err(format!("socket session {session_id} was closed"));
+    }
+    let mut controls = state
+        .socket_controls
+        .lock()
+        .map_err(|_| "socket control state is unavailable".to_string())?;
+    let Some(current) = controls.get(&session_id) else {
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        return Err(format!("socket session {session_id} was closed"));
+    };
+    if !Arc::ptr_eq(&current.connected, &connected) {
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        return Err(format!("socket session {session_id} changed during reconnect"));
+    }
+    cleanup_on_exit.store(false, Ordering::Release);
+    reader_active.store(true, Ordering::Release);
+    controls.insert(
+        session_id,
+        SocketControl {
+            shutdown_stream,
+            cleanup_on_exit: Arc::clone(&cleanup_on_exit),
+            connected: Arc::clone(&connected),
+            reader_active: Arc::clone(&reader_active),
+            status_version: Arc::clone(&status_version),
+            quota_exceeded: Arc::clone(&quota_exceeded),
+            log_bytes: Arc::clone(&log_bytes),
+            path: path.clone(),
+            host,
+            port,
+        },
+    );
+    drop(controls);
+    drop(sources);
+    reservation.commit();
+    reconnect.commit();
+    let app_handle = app.clone();
+    let socket_slots = Arc::clone(&state.active_socket_connections);
+    let socket_total_bytes = Arc::clone(&state.socket_log_bytes);
+    let reader_log_bytes = Arc::clone(&log_bytes);
+    let reader_quota_exceeded = Arc::clone(&quota_exceeded);
+    let reader_active_flag = Arc::clone(&reader_active);
+    let reader_status_version = Arc::clone(&status_version);
+    tauri::async_runtime::spawn_blocking(move || {
+        emit_log_socket_status(&app_handle, session_id, &reader_status_version, "connected");
+        let result = read_socket_frames_to_file(
+            stream,
+            path.clone(),
+            app_handle.clone(),
+            session_id,
+            Arc::clone(&reader_log_bytes),
+            Arc::clone(&socket_total_bytes),
+        );
+        if connected.swap(false, Ordering::AcqRel) {
+            socket_slots.fetch_sub(1, Ordering::AcqRel);
+        }
+        if let Err(err) = result {
+            eprintln!("log_scope socket reader stopped: {err}");
+            let quota = err.to_string() == SOCKET_LOG_QUOTA_ERROR;
+            if quota {
+                reader_quota_exceeded.store(true, Ordering::Release);
+            }
+            emit_log_socket_status(
+                &app_handle,
+                session_id,
+                &reader_status_version,
+                if quota { "quota" } else { "disconnected" },
+            );
+        }
+        reader_active_flag.store(false, Ordering::Release);
+        if cleanup_on_exit.load(Ordering::Relaxed) {
+            cleanup_socket_log_file(&path, &reader_log_bytes, &socket_total_bytes);
+        }
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -1040,14 +1538,115 @@ async fn refresh_log_file(
         )
     };
 
-    tauri::async_runtime::spawn_blocking(move || {
+    let metadata = tauri::async_runtime::spawn_blocking(move || {
         let mut session = session
             .lock()
             .map_err(|_| format!("log session {session_id} is unavailable"))?;
         session.refresh(session_id, &config).map_err(|err| err.to_string())
     })
     .await
-    .map_err(|err| format!("failed to join file refresh task: {err}"))?
+    .map_err(|err| format!("failed to join file refresh task: {err}"))??;
+    if let Ok(mut sources) = state.session_sources.lock() {
+        if let Some(source) = sources.get_mut(&session_id) {
+            source.indexed_file_size = metadata.file_size;
+            source.indexed_modified_ns = file_modified_time_ns(&source.path);
+        }
+    }
+    Ok(metadata)
+}
+
+#[tauri::command]
+async fn rescan_log_markers(
+    session_id: u64,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let config = state
+        .marker_config
+        .lock()
+        .map_err(|_| "marker config lock poisoned".to_string())?
+        .clone();
+    let session = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "log session state is unavailable".to_string())?;
+        Arc::clone(
+            sessions
+                .get(&session_id)
+                .ok_or_else(|| format!("log session {session_id} was not found"))?,
+        )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        session
+            .lock()
+            .map_err(|_| format!("log session {session_id} is unavailable"))?
+            .rebuild_markers(&config)
+            .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| format!("failed to join marker scan task: {err}"))?
+}
+
+#[tauri::command]
+fn get_log_source_changes(
+    session_ids: Vec<u64>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<LogSourceChange>, String> {
+    let sources = state
+        .session_sources
+        .lock()
+        .map_err(|_| "log source state is unavailable".to_string())?;
+    let mut changes = Vec::with_capacity(session_ids.len());
+    for session_id in session_ids {
+        let Some(source) = sources.get(&session_id) else {
+            continue;
+        };
+        let file_size = fs::metadata(&source.path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(source.indexed_file_size);
+        let modified_ns = file_modified_time_ns(&source.path);
+        changes.push(LogSourceChange {
+            session_id,
+            has_updates: file_size != source.indexed_file_size
+                || modified_ns != source.indexed_modified_ns,
+            file_size,
+            modified_ns,
+        });
+    }
+    Ok(changes)
+}
+
+#[tauri::command]
+fn close_log_session(
+    session_id: u64,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let mut sources = state
+        .session_sources
+        .lock()
+        .map_err(|_| "log source state is unavailable".to_string())?;
+    let source = sources.remove(&session_id);
+    let session = state
+        .sessions
+        .lock()
+        .map_err(|_| "log session state is unavailable".to_string())?
+        .remove(&session_id);
+    drop(sources);
+    let socket = state
+        .socket_controls
+        .lock()
+        .map_err(|_| "socket control state is unavailable".to_string())?
+        .remove(&session_id);
+    if let Some(socket) = socket {
+        socket.cleanup_on_exit.store(true, Ordering::Relaxed);
+        let _ = socket.shutdown_stream.shutdown(std::net::Shutdown::Both);
+        let path = source.map(|source| source.path).unwrap_or(socket.path);
+        let total_bytes = Arc::clone(&state.socket_log_bytes);
+        let log_bytes = Arc::clone(&socket.log_bytes);
+        std::thread::spawn(move || cleanup_socket_log_file(&path, &log_bytes, &total_bytes));
+    }
+    drop(session);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1124,7 +1723,14 @@ impl LogSession {
     fn open(path: PathBuf, config: &MarkerConfig) -> std::io::Result<Self> {
         let started_at = Instant::now();
         let file = File::open(&path)?;
-        let file_size = file.metadata()?.len();
+        let file_metadata = file.metadata()?;
+        let file_size = file_metadata.len();
+        let modified_time_ns = file_metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
         let (line_offsets, ended_with_newline) = build_line_index(file, file_size)?;
         let (markers, marker_payloads, shader_variant_missing_entries) =
             scan_log_markers(&path, file_size, config)?;
@@ -1133,6 +1739,7 @@ impl LogSession {
         Ok(Self {
             path,
             file_size,
+            modified_time_ns,
             line_offsets,
             markers,
             marker_payloads,
@@ -1145,13 +1752,20 @@ impl LogSession {
     fn refresh(&mut self, session_id: u64, config: &MarkerConfig) -> std::io::Result<LogRefreshMetadata> {
         let metadata = fs::metadata(&self.path)?;
         let new_file_size = metadata.len();
+        let modified_time_ns = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
         let old_file_size = self.file_size;
         let old_line_count = self.line_offsets.len();
 
-        if new_file_size < old_file_size {
+        if new_file_size < old_file_size || (new_file_size == old_file_size && modified_time_ns != self.modified_time_ns) {
             let file = File::open(&self.path)?;
             let (line_offsets, ended_with_newline) = build_line_index(file, new_file_size)?;
             self.file_size = new_file_size;
+            self.modified_time_ns = modified_time_ns;
             self.line_offsets = line_offsets;
             self.ended_with_newline = ended_with_newline;
             self.rebuild_markers(config)?;
@@ -1190,6 +1804,7 @@ impl LogSession {
         }
 
         self.file_size = new_file_size;
+        self.modified_time_ns = modified_time_ns;
         self.ended_with_newline = buffer.last().is_some_and(|byte| *byte == b'\n');
         self.rebuild_markers(config)?;
 
@@ -2326,11 +2941,20 @@ fn split_lines(buffer: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn read_socket_frames_to_file(mut stream: TcpStream, path: PathBuf) -> std::io::Result<()> {
+fn read_socket_frames_to_file(
+    mut stream: TcpStream,
+    path: PathBuf,
+    app: tauri::AppHandle,
+    session_id: u64,
+    log_bytes: Arc<AtomicU64>,
+    total_log_bytes: Arc<AtomicU64>,
+) -> std::io::Result<()> {
     const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
     let file = File::options().append(true).open(path)?;
     let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
+    let mut last_change_notification = Instant::now();
+    let mut has_notified_change = false;
 
     loop {
         let mut length_bytes = [0_u8; 4];
@@ -2359,6 +2983,14 @@ fn read_socket_frames_to_file(mut stream: TcpStream, path: PathBuf) -> std::io::
             ));
         }
 
+        let additional_bytes = socket_frame_output_bytes(&frame);
+        if !reserve_socket_frame_space(&log_bytes, &total_log_bytes, additional_bytes) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                SOCKET_LOG_QUOTA_ERROR,
+            ));
+        }
+
         match frame.record_type.as_str() {
             "log.batch" => {
                 if let Some(records) = frame.records {
@@ -2383,7 +3015,70 @@ fn read_socket_frames_to_file(mut stream: TcpStream, path: PathBuf) -> std::io::
         }
 
         writer.flush()?;
+        if additional_bytes > 0
+            && (!has_notified_change
+                || last_change_notification.elapsed() >= Duration::from_millis(100))
+        {
+            let _ = app.emit(
+                "log-source-changed",
+                serde_json::json!({ "sessionId": session_id }),
+            );
+            last_change_notification = Instant::now();
+            has_notified_change = true;
+        }
     }
+}
+
+fn socket_frame_output_bytes(frame: &SocketFrame) -> u64 {
+    fn record_bytes(text: &str) -> u64 {
+        text.len() as u64 + if text.ends_with(char::from(10)) { 0 } else { 1 }
+    }
+
+    match frame.record_type.as_str() {
+        "log.batch" => frame
+            .records
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .map(|record| record_bytes(&record.text))
+            .fold(0_u64, u64::saturating_add),
+        "log.text" => frame.payload.as_deref().map(record_bytes).unwrap_or(0),
+        other => record_bytes(&format!(
+            "00:00:00\tWARN unsupported socket record_type={other} in logscope-frame-v1"
+        )),
+    }
+}
+
+fn reserve_socket_frame_space(
+    log_bytes: &AtomicU64,
+    total_log_bytes: &AtomicU64,
+    amount: u64,
+) -> bool {
+    if amount == 0 {
+        return true;
+    }
+    if log_bytes
+        .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
+            current
+                .checked_add(amount)
+                .filter(|next| *next <= MAX_SOCKET_LOG_BYTES)
+        })
+        .is_err()
+    {
+        return false;
+    }
+    if total_log_bytes
+        .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
+            current
+                .checked_add(amount)
+                .filter(|next| *next <= MAX_TOTAL_SOCKET_LOG_BYTES)
+        })
+        .is_err()
+    {
+        log_bytes.fetch_sub(amount, Ordering::AcqRel);
+        return false;
+    }
+    true
 }
 
 fn safe_socket_filename_part(value: &str) -> String {
@@ -2397,6 +3092,81 @@ fn safe_socket_filename_part(value: &str) -> String {
             }
         })
         .collect()
+}
+
+fn file_modified_time_ns(path: &PathBuf) -> u128 {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
+fn emit_log_socket_status(
+    app: &tauri::AppHandle,
+    session_id: u64,
+    status_version: &AtomicU64,
+    status: &'static str,
+) {
+    let version = status_version.fetch_add(1, Ordering::AcqRel) + 1;
+    let _ = app.emit(
+        "log-socket-status",
+        serde_json::json!({ "sessionId": session_id, "status": status, "version": version }),
+    );
+}
+
+#[tauri::command]
+fn get_log_socket_status(
+    session_id: u64,
+    state: tauri::State<'_, AppState>,
+) -> Result<LogSocketStatus, String> {
+    let controls = state
+        .socket_controls
+        .lock()
+        .map_err(|_| "socket control state is unavailable".to_string())?;
+    let control = controls
+        .get(&session_id)
+        .ok_or_else(|| format!("socket session {session_id} was not found"))?;
+    let (status, version) = loop {
+        let version_before = control.status_version.load(Ordering::Acquire);
+        let status = if control.quota_exceeded.load(Ordering::Acquire) {
+            "quota"
+        } else if control.connected.load(Ordering::Acquire) {
+            if control.reader_active.load(Ordering::Acquire) {
+                "connected"
+            } else {
+                "loading"
+            }
+        } else {
+            "disconnected"
+        };
+        let version_after = control.status_version.load(Ordering::Acquire);
+        if version_before == version_after {
+            break (status, version_after);
+        }
+    };
+    Ok(LogSocketStatus {
+        status,
+        version,
+    })
+}
+
+fn cleanup_socket_log_file(path: &PathBuf, log_bytes: &AtomicU64, total_log_bytes: &AtomicU64) {
+    for _ in 0..600 {
+        match fs::remove_file(path) {
+            Ok(()) => {
+                total_log_bytes.fetch_sub(log_bytes.swap(0, Ordering::AcqRel), Ordering::AcqRel);
+                return;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                total_log_bytes.fetch_sub(log_bytes.swap(0, Ordering::AcqRel), Ordering::AcqRel);
+                return;
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+    eprintln!("log_scope could not remove socket log file: {}", path.display());
 }
 
 fn write_socket_text_record<W: Write>(writer: &mut W, text: &str) -> std::io::Result<()> {
@@ -3082,7 +3852,14 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_log_file,
+            register_log_file,
+            load_log_session,
+            unload_log_session,
             connect_log_socket,
+            reconnect_log_socket,
+            get_log_socket_status,
+            close_log_session,
+            get_log_source_changes,
             start_udp_discovery,
             stop_udp_discovery,
             get_persisted_state,
@@ -3100,6 +3877,7 @@ pub fn run() {
             get_marker_copy_text,
             copy_text_to_clipboard,
             refresh_log_file,
+            rescan_log_markers,
             search_log_text,
             update_marker_config
         ])

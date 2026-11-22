@@ -132,7 +132,7 @@
 
 目标：支持连接 IP/端口并接收本项目协议数据。
 
-状态：已完成第一版编码。当前定义 `logscope-frame-v1`：4 字节 big-endian length + UTF-8 JSON payload，payload 包含 `version`、`recordType`，当前支持 `log.batch` records 和 `log.text` payload。Rust command `connect_log_socket(host, port)` 会连接 TCP 服务端，创建临时 socket session 文件，后台读取 frame 并追加文本；前端可输入 host/port 建立连接，socket session 复用既有 `refresh_log_file`、虚拟化 viewer、follow tail、搜索和 marker/minimap 路径。仓库新增 `scripts/logscope_socket_server.py`，VS Code launch 中新增 `LogScope Socket Server`，默认监听 `127.0.0.1:8765` 并持续产生随机 log、单行 JSON marker 和 Send/Receive Message marker 块。仍需补充显式取消、连接状态事件、断线重连、背压策略和高频 socket burst 压测。
+状态：已完成第一版编码。当前定义 `logscope-frame-v1`：4 字节 big-endian length + UTF-8 JSON payload，payload 包含 `version`、`recordType`，当前支持 `log.batch` records 和 `log.text` payload。Rust command `connect_log_socket(host, port)` 会连接 TCP 服务端，创建临时 socket session 文件，后台读取 frame 并追加文本；前端可输入 host/port 建立连接，socket session 复用既有 `refresh_log_file`、虚拟化 viewer、follow tail、搜索和 marker/minimap 路径。仓库新增 `scripts/logscope_socket_server.py`，VS Code launch 中新增 `LogScope Socket Server`，默认监听 `127.0.0.1:8765` 并持续产生随机 log、单行 JSON marker 和 Send/Receive Message marker 块。多标签阶段已补连接状态事件、手动重连和连接/临时存储限额；仍需补充任务取消和高频 socket burst 压测。
 
 任务：
 
@@ -209,7 +209,68 @@
 
 ## 建议的首个开发切片
 
-首个实际实现切片建议控制在阶段 0 + 阶段 1 的最小闭环：
+## 阶段 10：多数据源标签页
+
+状态：首版已编码；TypeScript/Rust 构建检查及 macOS、Windows 验收待完成。目标是在一个窗口同时查看多个文件和 socket，保留各自的阅读进度，并沿用 Tauri 2、Rust 和现有虚拟化 viewer。
+
+### 首版已实现
+
+- `src/main.tsx` 维护无固定数量上限的文件/Socket 标签和单一 Viewer。每个标签独立保存滚动位置、横向位置、跟随/暂停、搜索词及选项、Marker 过滤和选中 ID；行缓存、Canvas、搜索结果与 payload 只保留在活跃 Viewer 中。标签切换时重新加载可见内容与 Marker，搜索结果按需重算。
+- 标签可通过拖放调整顺序；标签超出可见宽度时，在右侧显示左右箭头，按视口宽度分段滚动标签范围。
+- 文件对话框支持多选，拖放、菜单、历史和收藏共用打开流程。批量打开先轻量注册所有文件，再激活并索引最后一个来源；重复来源聚焦已有标签。同名文件显示可区分的路径后缀，Socket 显示 hostname 与 endpoint。
+- 只有活跃且未暂停的标签刷新 Viewer。活跃刷新按完成后再延迟约 1 秒调度；未暂停的旧标签卸载行索引，切回后按需重建。暂停标签保留索引以冻结阅读状态，因此同时暂停多个大文件仍可能增加内存占用。
+- 后台来源变化显示标签提示。非活跃文件及暂停中的活跃文件每 1.5 秒批量查询大小和修改时间；Socket reader 在 frame 写入并 flush 后发送变化事件，后端和前端各做约 100 毫秒合并。切入后刷新数据，待可见行读取完成、来源没有再次变化才清除提示；刷新失败或暂停时保留提示。
+- Rust 提供 `register_log_file`、`load_log_session`、`unload_log_session`、`close_log_session`、`get_log_source_changes`、`get_log_socket_status` 和 `reconnect_log_socket`。文件注册不建索引；Socket 继续后台收取 `logscope-frame-v1` 并追加到唯一临时文件。最多 4 条活动连接，单源 256 MiB、进程总计 1 GiB；关闭 session 会移除索引并关闭 Socket，退出时也会请求关闭 reader 和清理 Socket 临时文件。
+- 关闭当前标签优先切到右邻，否则左邻；关闭后台标签不改变焦点。支持 `Cmd/Ctrl+W`、`Ctrl+Tab` / `Ctrl+Shift+Tab` 及标签栏方向键导航。启动不自动恢复运行期标签或重连 Socket，最近数据源仍可由用户主动打开。
+- 不修改 `logscope-frame-v1`，不引入分屏、镜像标签、自动重连或跨启动恢复工作区。继续使用现有系统菜单、历史、收藏和 UDP 发现。
+
+### 交互与状态
+
+| 场景 | 首版行为 |
+| --- | --- |
+| 打开 | 工具栏下方加入可横向滚动的标签栏；打开文件和连接 Socket 的入口保留在顶部工具栏，菜单、历史、收藏、拖放统一走同一打开流程。多选或拖入多项时按输入顺序建轻量标签，激活并索引最后一个请求；目录和无效项只报本项错误。 |
+| 标题与状态 | 文件显示文件名，悬停显示完整路径；同名文件显示最短可区分父路径。Socket 优先显示 `hostname · host:port`，缺少 hostname 时显示 endpoint。标签主体和右侧关闭区属于同一个标签组件，关闭符号在活跃、悬停或键盘聚焦时显示。后台数据有变动时，标签显示“有更新”圆点及可访问文本；多次追加合并成一个圆点，不统计后台新增行数。Socket 断开或达到配额使用独立状态提示。窗口标题、底部状态栏和查找快捷键指向活跃标签。 |
+| 重复打开 | 已打开的文件按规范化路径、Socket 按小写 host 和端口去重；hostname 只用于显示。已断开的 Socket 聚焦原标签，可显式重连。 |
+| 切换与关闭 | 可拖动标签调整顺序；标签超出可见范围时，右侧左右箭头按视口宽度滚动列表。切到有更新的标签立即刷新，内容成功更新后清除圆点；失败或用户仍暂停更新时保留圆点。阅读锁定保持首可见行、行内偏移和横向位置；开启跟随的标签同步后显示末尾。关闭活跃标签优先选择右邻，其次左邻；关闭后台标签保持当前选择；最后一个关闭后显示数据源入口，窗口保留。 |
+| 键盘 | 用 `Cmd/Ctrl+W` 关闭当前标签，`Ctrl+Tab` / `Ctrl+Shift+Tab` 切换；标签栏支持左右、Home、End 导航。标签有可访问名称，弹窗打开时不消费标签快捷键。 |
+
+### Rust 接口与资源回收
+
+| 接口 | 约定 |
+| --- | --- |
+| `register_log_file` / `load_log_session` / `unload_log_session` | 文件先校验并注册为轻量 session；首次激活时建立行索引和 Marker。卸载只释放索引，保留源和阅读状态。`open_log_file` 保留为原生兼容入口。 |
+| `connect_log_socket` / `reconnect_log_socket` | 用户显式连接；重连追加到原临时日志。同一 session 用原子状态保护 reader，避免并发重连。没有独立的手动断开入口；关闭标签会断开并回收。 |
+| `log-socket-status` 事件 | 按 session ID 报告连接、断开和配额状态，并带递增版本以丢弃迟到状态。Socket reader 在写入并 flush 后发 `log-source-changed`，每 100 毫秒最多一次；来源事件只携带 session ID。 |
+| `get_log_socket_status(sessionId)` | 标签激活时读取当前连接状态和版本，补上标签创建前可能已经发出的连接事件；重连中的状态显示为 loading。 |
+| `get_log_source_changes(sessionIds)` | 前端每 1.5 秒批量调用，查询非活跃文件及暂停中的活跃文件大小和修改时间；Socket 变化另有事件提示。相同大小且修改时间未变的文件替换可能无法被发现。 |
+| `refresh_log_file(sessionId)` | 活跃且未暂停的标签约每秒刷新；文件追加、截断及同尺寸但修改时间变化会更新索引。Marker 在追加后全量重扫。可见行和 Marker 仅由活跃 Viewer 拉取。 |
+| `close_log_session(sessionId)` | 幂等移除数据源和索引；Socket `shutdown` reader，删除应用创建的临时文件并归还临时日志额度。Windows 文件占用时最多重试 30 秒。 |
+
+### 尚未完成与验收
+
+- 索引任务、搜索和 TCP 连接没有取消令牌；TCP 连接没有显式超时。前端搜索、Marker 列表和 payload 请求会按 session 与请求序号丢弃过期结果，但 Rust 扫描任务仍会运行到结束。
+- 没有 Rust 索引 LRU/共享内存预算；未暂停的旧 session 会卸载索引，但多个暂停标签可同时保留索引。长时间运行并暂停多个大文件前需要补内存预算。
+- 文件变化依靠 1.5 秒大小/修改时间轮询，没有系统文件 watcher；当前无法保证检测到元数据完全相同的轮转替换。`log-source-changed` 来源事件没有单调版本号，提示清除使用刷新后的元数据核对；Socket 连接状态事件有递增版本。
+- Socket 连接失败发生在标签创建前，因此错误显示在连接弹窗，不保留可重试的失败标签。关闭流程通过 shutdown 和有限重试回收资源，尚未等待所有搜索快照退出。
+- 尚未运行 `yarn checktsc`、`yarn build`、Rust 测试，也未在 Windows/macOS 验证文件轮转、快捷键和临时文件清理。
+
+验收顺序：
+
+1. 同时打开多个同名文件和多个 Socket，批量打开或拖入文件；确认去重、最后一个标签激活、拖动排序、超宽时左右箭头滚动、关闭标签、焦点和快捷键行为。
+2. 反复切换并验证滚动、follow tail、暂停、搜索选项、Marker 过滤/选择恢复；模拟后台追加、刷新期间再次追加、刷新失败和快速切换，确认提示不会提前清除或跨标签更新。
+3. 打开至少 50 个文件并测量索引内存；使用两个 100 MiB 文件和多个 Socket 检查切换耗时、marker 扫描、连接上限、临时日志配额、关闭与重连。
+4. 在 macOS 和 Windows 执行 `yarn checktsc`、`yarn build` 及 Rust 测试，核对原生选择器、Socket shutdown、文件轮转和临时文件删除。
+
+### 后续演进方向
+
+- 用共享文件 watcher 替换非活跃文件的元数据轮询，并让通知携带每个来源的递增版本，覆盖截断和轮转替换。
+- 增加可取消的索引、搜索和连接任务，以及 Socket 连接超时；关闭 session 时等待 reader 和临时文件读任务退出。
+- 引入 Rust 索引 LRU 和总内存预算；对暂停标签定义索引保留策略，避免无上限标签数导致无上限索引内存。
+- 实时流追加时改为增量 Marker 扫描，保留截断和规则变更时的全量重建。
+
+## 阶段 0+1 的首个开发切片（已完成）
+
+以下记录项目最初实现闭环时的范围：
 
 1. 初始化 Tauri + TypeScript 前端。
 2. Rust command 支持打开文件并返回指定行范围。
