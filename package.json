@@ -12,6 +12,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "icons:sync": "tauri icon src-tauri/icons/icon.png --output src-tauri/icons",
+    "patch": "node scripts/bump-patch.mjs",
     "checktsc": "tsc --noEmit",
     "package:macos": "bash scripts/package-macos.sh",
     "package:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1"
