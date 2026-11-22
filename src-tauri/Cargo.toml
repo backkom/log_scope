@@ -1,6 +1,6 @@
 [package]
 name = "log_scope"
-version = "0.1.2"
+version = "0.1.3"
 description = "A high-performance readonly log viewer."
 authors = ["log_scope contributors"]
 edition = "2021"
