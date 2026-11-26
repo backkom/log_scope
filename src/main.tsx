@@ -4580,11 +4580,13 @@ function getSocketTabTitle(source: Extract<TabSource, { kind: "socket" }>): stri
 
 function getTabDisplayTitle(tab: SessionTab, allTabs: SessionTab[]): string {
   if (tab.source.kind !== "file") return getSocketTabTitle(tab.source);
+  const filePath = tab.source.path;
+  const fileTitle = getFileTabTitle(filePath);
   const sameName = allTabs.filter((candidate) =>
-    candidate.source.kind === "file" && getFileTabTitle(candidate.source.path) === getFileTabTitle(tab.source.path)
+    candidate.source.kind === "file" && getFileTabTitle(candidate.source.path) === fileTitle
   );
-  if (sameName.length < 2) return getFileTabTitle(tab.source.path);
-  const parts = tab.source.path.split(String.fromCharCode(92)).join("/").split("/").filter(Boolean);
+  if (sameName.length < 2) return fileTitle;
+  const parts = filePath.split(String.fromCharCode(92)).join("/").split("/").filter(Boolean);
   for (let depth = 2; depth <= parts.length; depth += 1) {
     const suffix = parts.slice(-depth).join("/");
     const ambiguous = sameName.some((candidate) => {
@@ -4593,7 +4595,7 @@ function getTabDisplayTitle(tab: SessionTab, allTabs: SessionTab[]): string {
     });
     if (!ambiguous) return suffix;
   }
-  return tab.source.path;
+  return filePath;
 }
 
 function formatBytes(bytes: number) {
