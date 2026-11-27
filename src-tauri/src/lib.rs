@@ -15,6 +15,7 @@ use regex::Regex;
 use tauri::{Emitter, Manager};
 use tauri::menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
+mod http_log;
 mod update;
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -100,6 +101,9 @@ struct AppState {
     sessions: Mutex<HashMap<u64, Arc<Mutex<LogSession>>>>,
     session_sources: Mutex<HashMap<u64, SessionSource>>,
     socket_controls: Mutex<HashMap<u64, SocketControl>>,
+    http_controls: Mutex<HashMap<u64, Arc<http_log::HttpLogControl>>>,
+    http_client: reqwest::Client,
+    http_meta_client: reqwest::Client,
     active_socket_connections: Arc<AtomicUsize>,
     socket_log_bytes: Arc<AtomicU64>,
     udp_discovery_active: Arc<AtomicBool>,
@@ -113,6 +117,9 @@ impl Default for AppState {
             sessions: Mutex::new(HashMap::new()),
             session_sources: Mutex::new(HashMap::new()),
             socket_controls: Mutex::new(HashMap::new()),
+            http_controls: Mutex::new(HashMap::new()),
+            http_client: http_log::build_http_client(),
+            http_meta_client: http_log::build_http_meta_client(),
             active_socket_connections: Arc::new(AtomicUsize::new(0)),
             socket_log_bytes: Arc::new(AtomicU64::new(0)),
             udp_discovery_active: Arc::new(AtomicBool::new(false)),
@@ -134,6 +141,14 @@ impl Drop for AppState {
                 std::thread::spawn(move || {
                     cleanup_socket_log_file(&path, &log_bytes, &total_log_bytes)
                 });
+            }
+        }
+        if let Ok(http_controls) = self.http_controls.get_mut() {
+            for control in http_controls.values() {
+                control.cancelled.store(true, Ordering::Release);
+                control.cleanup_on_exit.store(true, Ordering::Release);
+                let path = control.path.clone();
+                std::thread::spawn(move || http_log::cleanup_http_log_file(&path));
             }
         }
     }
@@ -389,6 +404,10 @@ struct PersistedStore {
     recent_files: Vec<PersistedFileSource>,
     recent_sockets: Vec<PersistedSocketSource>,
     #[serde(default)]
+    http_server_url: String,
+    #[serde(default)]
+    recent_http_servers: Vec<String>,
+    #[serde(default)]
     favorites: Vec<PersistedFavorite>,
     last_source: Option<PersistedDataSource>,
     ui_state: PersistedUiState,
@@ -599,7 +618,7 @@ async fn open_log_file(
         .lock()
         .map_err(|_| "marker config lock poisoned".to_string())?
         .clone();
-    let path_buf = fs::canonicalize(PathBuf::from(path)).map_err(|err| err.to_string())?;
+    let path_buf = canonicalize_path(PathBuf::from(path)).map_err(|err| err.to_string())?;
     let session = tauri::async_runtime::spawn_blocking(move || LogSession::open(path_buf, &config))
         .await
         .map_err(|err| format!("failed to join file indexing task: {err}"))?
@@ -644,7 +663,7 @@ async fn register_log_file(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<LogFileMetadata, String> {
-    let path_buf = fs::canonicalize(PathBuf::from(path)).map_err(|err| err.to_string())?;
+    let path_buf = canonicalize_path(PathBuf::from(path)).map_err(|err| err.to_string())?;
     let metadata = fs::metadata(&path_buf).map_err(|err| err.to_string())?;
     if !metadata.is_file() {
         return Err("选择的数据源不是文件".to_string());
@@ -1178,6 +1197,159 @@ fn save_ui_state(
 }
 
 #[tauri::command]
+fn save_http_server_url(url: String, app: tauri::AppHandle) -> Result<PersistedStore, String> {
+    let normalized = http_log::normalize_http_server_url(&url)?;
+    let mut store = load_persisted_store(&app).map_err(|err| err.to_string())?;
+    store.http_server_url = normalized.clone();
+    store.recent_http_servers.retain(|item| item != &normalized);
+    store.recent_http_servers.insert(0, normalized);
+    store.recent_http_servers.truncate(10);
+    save_persisted_store(&app, &store).map_err(|err| err.to_string())?;
+    Ok(store)
+}
+
+#[tauri::command]
+async fn fetch_http_service_logs(
+    server_url: String,
+    project: Option<String>,
+    package: Option<String>,
+    rid: Option<String>,
+    rolename: Option<String>,
+    udid: Option<String>,
+    limit: Option<u32>,
+    state: tauri::State<'_, AppState>,
+) -> Result<http_log::HttpServiceLogListResponse, String> {
+    http_log::fetch_service_log_list(
+        &state.http_client,
+        &server_url,
+        project.as_deref(),
+        package.as_deref(),
+        rid.as_deref(),
+        rolename.as_deref(),
+        udid.as_deref(),
+        limit,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn open_http_log(
+    server_url: String,
+    log_id: u64,
+    file_name: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<http_log::HttpOpenMetadata, String> {
+    let normalized_url = http_log::normalize_http_server_url(&server_url)?;
+    let config = state
+        .marker_config
+        .lock()
+        .map_err(|_| "marker config lock poisoned".to_string())?
+        .clone();
+    let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed) + 1;
+    let created_at_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let http_dir = std::env::temp_dir().join("log_scope").join("http");
+    fs::create_dir_all(&http_dir)
+        .map_err(|err| format!("failed to create http log dir: {err}"))?;
+    let safe_name = http_log::safe_http_filename_part(&file_name);
+    let path = http_dir.join(format!("http-{session_id}-{created_at_ns}-{log_id}-{safe_name}.log"));
+    File::options()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|err| format!("failed to create http log file: {err}"))?;
+    let session = match LogSession::open(path.clone(), &config) {
+        Ok(session) => session,
+        Err(err) => {
+            let _ = fs::remove_file(&path);
+            return Err(err.to_string());
+        }
+    };
+    state
+        .session_sources
+        .lock()
+        .map_err(|_| "log source state is unavailable".to_string())?
+        .insert(
+            session_id,
+            SessionSource {
+                path: path.clone(),
+                indexed_file_size: 0,
+                indexed_modified_ns: file_modified_time_ns(&path),
+                generation: 0,
+            },
+        );
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "log session state is unavailable".to_string())?
+        .insert(session_id, Arc::new(Mutex::new(session)));
+    let control = Arc::new(http_log::HttpLogControl::new(
+        normalized_url.clone(),
+        log_id,
+        path.clone(),
+    ));
+    state
+        .http_controls
+        .lock()
+        .map_err(|_| "http control state is unavailable".to_string())?
+        .insert(session_id, Arc::clone(&control));
+
+    let client = state.http_client.clone();
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        http_log::run_initial_http_download(client, app_handle, session_id, control).await;
+    });
+
+    Ok(http_log::HttpOpenMetadata {
+        session_id,
+        server_url: normalized_url,
+        log_id,
+        path: path.to_string_lossy().into_owned(),
+        file_size: 0,
+        line_count: 0,
+    })
+}
+
+#[tauri::command]
+fn get_log_http_status(
+    session_id: u64,
+    state: tauri::State<'_, AppState>,
+) -> Result<http_log::LogHttpStatus, String> {
+    let controls = state
+        .http_controls
+        .lock()
+        .map_err(|_| "http control state is unavailable".to_string())?;
+    let control = controls
+        .get(&session_id)
+        .ok_or_else(|| format!("http session {session_id} was not found"))?;
+    Ok(control.snapshot_status())
+}
+
+#[tauri::command]
+async fn retry_http_log_sync(
+    session_id: u64,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let control = {
+        let controls = state
+            .http_controls
+            .lock()
+            .map_err(|_| "http control state is unavailable".to_string())?;
+        Arc::clone(
+            controls
+                .get(&session_id)
+                .ok_or_else(|| format!("http session {session_id} was not found"))?,
+        )
+    };
+    control.remote_deleted.store(false, Ordering::Release);
+    http_log::sync_http_log_delta(&state.http_client, &app, session_id, &control).await
+}
+
+#[tauri::command]
 fn remove_recent_file(path: String, app: tauri::AppHandle) -> Result<PersistedStore, String> {
     let mut store = load_persisted_store(&app).map_err(|err| err.to_string())?;
     store.recent_files.retain(|source| source.path != path);
@@ -1519,8 +1691,19 @@ fn copy_text_to_clipboard(text: String) -> Result<(), String> {
 #[tauri::command]
 async fn refresh_log_file(
     session_id: u64,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<LogRefreshMetadata, String> {
+    let http_control = state
+        .http_controls
+        .lock()
+        .map_err(|_| "http control state is unavailable".to_string())?
+        .get(&session_id)
+        .cloned();
+    if let Some(control) = http_control {
+        http_log::sync_http_log_delta(&state.http_client, &app, session_id, &control).await?;
+    }
+
     let config = state
         .marker_config
         .lock()
@@ -1588,28 +1771,58 @@ async fn rescan_log_markers(
 }
 
 #[tauri::command]
-fn get_log_source_changes(
+async fn get_log_source_changes(
     session_ids: Vec<u64>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<LogSourceChange>, String> {
-    let sources = state
-        .session_sources
-        .lock()
-        .map_err(|_| "log source state is unavailable".to_string())?;
-    let mut changes = Vec::with_capacity(session_ids.len());
-    for session_id in session_ids {
-        let Some(source) = sources.get(&session_id) else {
-            continue;
-        };
-        let file_size = fs::metadata(&source.path)
+    let snapshot: Vec<(u64, SessionSource, Option<Arc<http_log::HttpLogControl>>)> = {
+        let sources = state
+            .session_sources
+            .lock()
+            .map_err(|_| "log source state is unavailable".to_string())?;
+        let http_controls = state
+            .http_controls
+            .lock()
+            .map_err(|_| "http control state is unavailable".to_string())?;
+        session_ids
+            .into_iter()
+            .filter_map(|session_id| {
+                sources
+                    .get(&session_id)
+                    .cloned()
+                    .map(|source| (session_id, source, http_controls.get(&session_id).cloned()))
+            })
+            .collect()
+    };
+
+    let meta_client = state.http_meta_client.clone();
+    let mut changes = Vec::with_capacity(snapshot.len());
+    for (session_id, source, http_control) in snapshot {
+        let local_file_size = fs::metadata(&source.path)
             .map(|metadata| metadata.len())
             .unwrap_or(source.indexed_file_size);
         let modified_ns = file_modified_time_ns(&source.path);
+        let mut has_updates = local_file_size != source.indexed_file_size
+            || modified_ns != source.indexed_modified_ns;
+        let mut reported_size = local_file_size;
+
+        if let Some(control) = http_control {
+            if control.is_downloading.load(Ordering::Acquire) {
+                has_updates = true;
+            } else if !has_updates {
+                if let Some(remote_size) = http_log::fetch_remote_file_size(&meta_client, &control).await {
+                    reported_size = remote_size;
+                    if remote_size != source.indexed_file_size {
+                        has_updates = true;
+                    }
+                }
+            }
+        }
+
         changes.push(LogSourceChange {
             session_id,
-            has_updates: file_size != source.indexed_file_size
-                || modified_ns != source.indexed_modified_ns,
-            file_size,
+            has_updates,
+            file_size: reported_size,
             modified_ns,
         });
     }
@@ -1640,10 +1853,21 @@ fn close_log_session(
     if let Some(socket) = socket {
         socket.cleanup_on_exit.store(true, Ordering::Relaxed);
         let _ = socket.shutdown_stream.shutdown(std::net::Shutdown::Both);
-        let path = source.map(|source| source.path).unwrap_or(socket.path);
+        let path = source.as_ref().map(|s| s.path.clone()).unwrap_or(socket.path);
         let total_bytes = Arc::clone(&state.socket_log_bytes);
         let log_bytes = Arc::clone(&socket.log_bytes);
         std::thread::spawn(move || cleanup_socket_log_file(&path, &log_bytes, &total_bytes));
+    }
+    let http = state
+        .http_controls
+        .lock()
+        .map_err(|_| "http control state is unavailable".to_string())?
+        .remove(&session_id);
+    if let Some(http) = http {
+        http.cancelled.store(true, Ordering::Release);
+        http.cleanup_on_exit.store(true, Ordering::Release);
+        let path = source.map(|s| s.path).unwrap_or_else(|| http.path.clone());
+        std::thread::spawn(move || http_log::cleanup_http_log_file(&path));
     }
     drop(session);
     Ok(())
@@ -3233,6 +3457,8 @@ impl Default for PersistedStore {
             schema_version: 1,
             recent_files: Vec::new(),
             recent_sockets: Vec::new(),
+            http_server_url: String::new(),
+            recent_http_servers: Vec::new(),
             favorites: Vec::new(),
             last_source: None,
             ui_state: PersistedUiState::default(),
@@ -3368,6 +3594,15 @@ fn sanitize_store(mut store: PersistedStore) -> PersistedStore {
     store
         .recent_files
         .retain(|source| !source.path.trim().is_empty());
+    let mut seen_recent = HashSet::new();
+    store.recent_files.retain_mut(|source| {
+        let stripped = strip_verbatim_prefix(&source.path);
+        if source.display_name == source.path {
+            source.display_name = stripped.clone();
+        }
+        source.path = stripped;
+        seen_recent.insert(source.path.clone())
+    });
     store
         .recent_sockets
         .retain(|source| !source.host.trim().is_empty() && source.port > 0);
@@ -3380,6 +3615,9 @@ fn sanitize_store(mut store: PersistedStore) -> PersistedStore {
         );
     }
     if let Some(last_source) = &mut store.last_source {
+        if last_source.kind == "file" {
+            last_source.path = last_source.path.as_deref().map(strip_verbatim_prefix);
+        }
         last_source.hostname = normalize_hostname(last_source.hostname.as_deref(), last_source.host.as_deref().unwrap_or_default());
         if last_source.kind == "socket" && last_source.hostname.is_none() {
             if let (Some(host), Some(port)) = (last_source.host.as_deref(), last_source.port) {
@@ -3393,6 +3631,17 @@ fn sanitize_store(mut store: PersistedStore) -> PersistedStore {
     }
     store.recent_files.truncate(12);
     store.recent_sockets.truncate(12);
+    store.http_server_url = store.http_server_url.trim().trim_end_matches('/').to_string();
+    let mut seen_http_servers = HashSet::new();
+    store.recent_http_servers.retain_mut(|url| {
+        let normalized = url.trim().trim_end_matches('/').to_string();
+        if normalized.is_empty() {
+            return false;
+        }
+        *url = normalized.clone();
+        seen_http_servers.insert(normalized)
+    });
+    store.recent_http_servers.truncate(10);
     store.favorites.retain(|fav| {
         if fav.kind == "file" {
             fav.path.as_deref().is_some_and(|p| !p.trim().is_empty())
@@ -3403,6 +3652,15 @@ fn sanitize_store(mut store: PersistedStore) -> PersistedStore {
         }
     });
     for fav in &mut store.favorites {
+        if fav.kind == "file" {
+            if let Some(path) = fav.path.as_deref() {
+                let stripped = strip_verbatim_prefix(path);
+                if fav.display_name == path {
+                    fav.display_name = stripped.clone();
+                }
+                fav.path = Some(stripped);
+            }
+        }
         fav.color = normalize_favorite_color(&fav.color);
     }
     store.favorites.truncate(50);
@@ -3419,6 +3677,33 @@ fn sanitize_ui_state(mut ui_state: PersistedUiState) -> PersistedUiState {
     }
     ui_state.search_query = ui_state.search_query.chars().take(256).collect();
     ui_state
+}
+
+fn strip_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        if rest.len() >= 4 && rest[..4].eq_ignore_ascii_case(r"UNC\") {
+            return format!(r"\\{}", &rest[4..]);
+        }
+        if matches!(rest.as_bytes(), [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic()) {
+            return rest.to_string();
+        }
+    }
+    path.to_string()
+}
+
+fn canonicalize_path(path: PathBuf) -> std::io::Result<PathBuf> {
+    let canonical = fs::canonicalize(path)?;
+    if cfg!(windows) {
+        if let Some(raw) = canonical.to_str() {
+            let stripped = strip_verbatim_prefix(raw);
+            if stripped != raw
+                && fs::canonicalize(&stripped).ok().as_ref() == Some(&canonical)
+            {
+                return Ok(PathBuf::from(stripped));
+            }
+        }
+    }
+    Ok(canonical)
 }
 
 fn display_name_for_path(path: &str) -> String {
@@ -3610,6 +3895,7 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
 
     let open_file_item = MenuItem::with_id(app_handle, "open_file", "Open...", true, Some("CmdOrCtrl+O"))?;
     let connect_socket_item = MenuItem::with_id(app_handle, "connect_socket", "Connect Socket", true, Some("CmdOrCtrl+Shift+O"))?;
+    let open_http_item = MenuItem::with_id(app_handle, "open_http_server", "Open from HTTP Server...", true, Some("CmdOrCtrl+Shift+H"))?;
 
     // The startup check records a newer version here. When present, the menu bar
     // shows a red dot and the update item carries a matching red icon.
@@ -3651,6 +3937,7 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
         &[
             &open_file_item,
             &connect_socket_item,
+            &open_http_item,
             &open_recent_submenu,
             &PredefinedMenuItem::separator(app_handle)?,
             &PredefinedMenuItem::quit(app_handle, Some("Quit LogScope"))?,
@@ -3703,6 +3990,9 @@ pub fn update_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // reqwest needs the provider before AppState builds its HTTP clients.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     #[cfg(windows)]
     set_windows_app_user_model_id();
 
@@ -3720,7 +4010,7 @@ pub fn run() {
                 let id = event.id().0.as_str();
                 if id == "check_for_updates" {
                     update::check_for_updates(app_handle.clone());
-                } else if id == "open_file" || id == "connect_socket" {
+                } else if id == "open_file" || id == "connect_socket" || id == "open_http_server" {
                     let _ = app_handle.emit(
                         "menu-event",
                         serde_json::json!({ "action": id }),
@@ -3731,26 +4021,7 @@ pub fn run() {
                         serde_json::json!({ "action": "open_recent_file", "path": path }),
                     );
                 } else if id == "clear_all_recent" {
-                    let mut store = load_persisted_store(app_handle).unwrap_or_else(|_| PersistedStore {
-                        schema_version: 1,
-                        recent_files: Vec::new(),
-                        recent_sockets: Vec::new(),
-                        favorites: Vec::new(),
-                        last_source: None,
-                        ui_state: sanitize_ui_state(PersistedUiState {
-                            follow_tail: true,
-                            show_source_panel: false,
-                            show_global_minimap: true,
-                            show_local_minimap: true,
-                            log_color_mode: "full".to_string(),
-                            search_query: "".to_string(),
-                            search_case_sensitive: false,
-                            search_regex: false,
-                            search_whole_word: false,
-                            search_wrap_around: true,
-                            search_find_all: true,
-                        }),
-                    });
+                    let mut store = load_persisted_store(app_handle).unwrap_or_else(|_| PersistedStore::default());
                     store.recent_files.clear();
                     store.recent_sockets.clear();
                     let _ = save_persisted_store(app_handle, &store);
@@ -3864,6 +4135,11 @@ pub fn run() {
             stop_udp_discovery,
             get_persisted_state,
             save_ui_state,
+            save_http_server_url,
+            fetch_http_service_logs,
+            open_http_log,
+            get_log_http_status,
+            retry_http_log_sync,
             remove_recent_file,
             remove_recent_socket,
             add_favorite_file,
@@ -4507,6 +4783,23 @@ mod tests {
             &rgba[(18 * 36 + 18) * 4..(18 * 36 + 18) * 4 + 4],
             &[239, 68, 68, 255]
         );
+    }
+
+    #[test]
+    fn strips_windows_verbatim_prefix_when_canonicalizing() {
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\Y:\pm-devs\Output\PersistentData\gameLog.log"),
+            r"Y:\pm-devs\Output\PersistentData\gameLog.log"
+        );
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\UNC\server\share\logs\game.log"),
+            r"\\server\share\logs\game.log"
+        );
+        let path = test_file_path("canonicalize.log");
+        fs::write(&path, b"hello\n").unwrap();
+        let canonical = canonicalize_path(path.clone()).unwrap();
+        assert!(!canonical.to_string_lossy().starts_with(r"\\?\"));
+        fs::remove_file(path).unwrap();
     }
 
     fn test_file_path(name: &str) -> PathBuf {

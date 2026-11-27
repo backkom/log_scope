@@ -2604,3 +2604,419 @@ body.is-reordering-tabs {
   justify-content: flex-end;
   margin-top: 20px;
 }
+
+/* ---- HTTP Log Server Modal ---- */
+
+.http-log-modal {
+  width: min(1060px, calc(100vw - 32px));
+  max-height: calc(100vh - 36px);
+  display: flex;
+  flex-direction: column;
+  padding: 22px 24px;
+}
+
+.http-log-modal .modal-header {
+  margin-bottom: 14px;
+  flex-shrink: 0;
+}
+
+.http-modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.http-auto-refresh-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(58, 166, 151, 0.16);
+  border: 1px solid rgba(58, 166, 151, 0.35);
+  color: #6ee7d4;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.http-server-url-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.http-url-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.http-url-field > span {
+  min-width: 44px;
+}
+
+.http-url-save-button {
+  min-width: 110px;
+  flex-shrink: 0;
+}
+
+.http-sub-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #3a4a3e;
+  margin-bottom: 10px;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.http-sub-tab {
+  flex: 0 0 auto;
+  min-height: 32px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #8fa193;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 4px 12px;
+}
+
+.http-sub-tab:hover {
+  color: #e0ebe2;
+  background: rgba(58, 166, 151, 0.08);
+}
+
+.http-sub-tab.is-active {
+  color: #6ee7d4;
+  border-bottom-color: #3aa697;
+}
+
+.http-tertiary-tabs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 7px 10px;
+  border: 1px solid #354238;
+  border-radius: 8px;
+  background: #1a1f1a;
+  flex-shrink: 0;
+}
+
+.http-tertiary-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8fa193;
+}
+
+.http-tertiary-tab {
+  min-height: 24px;
+  padding: 2px 10px;
+  border: 1px solid #455348;
+  border-radius: 999px;
+  background: #252b26;
+  color: #b8c6bb;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.http-tertiary-tab:hover {
+  border-color: #3aa697;
+  color: #eef5f0;
+}
+
+.http-tertiary-tab.is-active {
+  border-color: #3aa697;
+  background: #18706a;
+  color: #ffffff;
+}
+
+.http-filter-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid #354238;
+  border-radius: 8px;
+  background: #1a1f1a;
+  flex-shrink: 0;
+}
+
+.http-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.http-filter-field > span {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #95a799;
+}
+
+.http-filter-field > input {
+  min-height: 32px;
+  border: 1px solid #4a594d;
+  border-radius: 7px;
+  background: #252b26;
+  color: #eef5f0;
+  font-size: 12.5px;
+  padding: 0 10px;
+}
+
+.http-filter-field > input:focus {
+  outline: none;
+  border-color: #3aa697;
+}
+
+.http-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.http-filter-actions .primary-button,
+.http-filter-actions .secondary-button {
+  min-height: 32px;
+  padding: 0 14px;
+  font-size: 12.5px;
+}
+
+.http-filter-actions .secondary-button {
+  background: #303731;
+  border-color: #4a594d;
+  color: #c8d6cb;
+}
+
+.http-filter-history {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #8fa193;
+  flex-shrink: 0;
+}
+
+.http-history-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.http-history-chip {
+  min-height: 24px;
+  padding: 2px 10px;
+  border: 1px solid #455348;
+  border-radius: 999px;
+  background: #252b26;
+  color: #dce6de;
+  font-size: 11.5px;
+}
+
+.http-history-chip:hover {
+  border-color: #3aa697;
+  background: #1d3d39;
+}
+
+.http-history-clear {
+  min-height: 24px;
+  padding: 2px 10px;
+  border: 1px dashed #4a594d;
+  border-radius: 999px;
+  background: transparent;
+  color: #8fa193;
+  font-size: 11.5px;
+}
+
+.http-modal-error {
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.1);
+  color: #fca5a5;
+  font-size: 12.5px;
+  flex-shrink: 0;
+}
+
+.http-log-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #95a799;
+  flex-shrink: 0;
+}
+
+.http-selected-summary {
+  color: #6ee7d4;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.http-log-table-wrap {
+  flex: 1;
+  min-height: 200px;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid #3c4a3f;
+  border-radius: 10px;
+  background: #181d19;
+  scrollbar-color: #5c695e #181d19;
+}
+
+.http-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  color: #dce6de;
+}
+
+.http-log-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #232924;
+  color: #a9baa9;
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #3c4a3f;
+  white-space: nowrap;
+}
+
+.http-log-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  vertical-align: middle;
+}
+
+.http-log-table tbody tr {
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.http-log-table tbody tr:hover {
+  background: #1d3632;
+}
+
+.http-log-table tbody tr.is-selected {
+  background: #224a44;
+  box-shadow: inset 3px 0 0 #3aa697;
+}
+
+.http-mono {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.http-nowrap {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.http-sub-meta {
+  font-size: 11px;
+  color: #829486;
+  margin-top: 2px;
+}
+
+.http-platform-cell {
+  white-space: nowrap;
+}
+
+.http-platform-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.http-platform-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.http-platform-fallback {
+  font-size: 11px;
+  color: #b8c6bb;
+}
+
+.http-contexts {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.http-context-chip {
+  display: inline-block;
+  padding: 2px 7px;
+  border: 1px solid #3b4a3e;
+  border-radius: 4px;
+  background: #232a24;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.http-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.http-status-pill.is-protected {
+  background: rgba(58, 166, 151, 0.2);
+  color: #6ee7d4;
+}
+
+.http-status-pill.is-normal {
+  background: rgba(148, 163, 184, 0.14);
+  color: #94a3b8;
+}
+
+.http-log-empty {
+  padding: 48px 16px;
+  text-align: center;
+  color: #829486;
+  font-size: 13px;
+}
+
+.http-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+  flex-shrink: 0;
+}
+
+.http-modal-footer .secondary-button {
+  background: #2c332d;
+  border-color: #4a594d;
+  color: #c8d6cb;
+  min-width: 84px;
+}
+
+.http-modal-footer .primary-button {
+  min-width: 104px;
+}
+
+@media (max-width: 780px) {
+  .http-filter-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

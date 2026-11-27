@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import "./styles.css";
+import { HttpLogModal, type HttpServiceLogItem } from "./HttpLogModal";
 
 type LogFileMetadata = {
   sessionId: number;
@@ -18,7 +19,18 @@ type LogFileMetadata = {
 
 type TabSource =
   | { kind: "file"; path: string }
-  | { kind: "socket"; host: string; port: number; hostname: string | null };
+  | { kind: "socket"; host: string; port: number; hostname: string | null }
+  | {
+      kind: "http";
+      serverUrl: string;
+      logId: number;
+      uuid: string;
+      fileName: string;
+      project: string;
+      packageName: string;
+      platform: string;
+      udid: string;
+    };
 
 type SessionTab = {
   id: string;
@@ -80,6 +92,24 @@ type SocketConnectMetadata = {
 type SocketStatusMetadata = {
   status: "loading" | "connected" | "disconnected" | "quota";
   version: number;
+};
+
+type HttpOpenMetadata = {
+  sessionId: number;
+  serverUrl: string;
+  logId: number;
+  path: string;
+  fileSize: number;
+  lineCount: number;
+};
+
+type LogHttpStatus = {
+  sessionId?: number;
+  status: "loading" | "connected" | "disconnected" | "error";
+  version: number;
+  downloadedBytes: number;
+  totalBytes: number | null;
+  message: string | null;
 };
 
 type DiscoveredServer = {
@@ -322,6 +352,8 @@ type PersistedStore = {
   schemaVersion: number;
   recentFiles: PersistedFileSource[];
   recentSockets: PersistedSocketSource[];
+  httpServerUrl: string;
+  recentHttpServers: string[];
   favorites: PersistedFavorite[];
   lastSource: PersistedDataSource | null;
   uiState: PersistedUiState;
@@ -589,6 +621,16 @@ function ConnectSocketIcon() {
   );
 }
 
+function HttpServerIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </svg>
+  );
+}
+
 function CopyIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -662,6 +704,8 @@ function App() {
   const [isOpening, setIsOpening] = React.useState(false);
   const [isConnectingSocket, setIsConnectingSocket] = React.useState(false);
   const [showSocketModal, setShowSocketModal] = React.useState(false);
+  const [showHttpModal, setShowHttpModal] = React.useState(false);
+  const [isOpeningHttp, setIsOpeningHttp] = React.useState(false);
   const [discoveredServers, setDiscoveredServers] = React.useState<DiscoveredServer[]>([]);
   const [discoveryRefreshToken, setDiscoveryRefreshToken] = React.useState(0);
   const [socketHostInput, setSocketHostInput] = React.useState("");
@@ -1034,7 +1078,7 @@ function App() {
             ...tab,
             metadata,
             observedFileSize: metadata.fileSize,
-            connectionStatus: target.source.kind === "socket" ? "loading" : "connected",
+            connectionStatus: target.source.kind === "file" ? "connected" : "loading",
           }
           : tab
       ));
@@ -1051,7 +1095,11 @@ function App() {
           isDisconnected: false,
           followTail,
           pendingTailLines: 0,
-          tailNotice: target.source.kind === "socket" ? "Socket 已连接，正在等待 frame 数据" : null,
+          tailNotice: target.source.kind === "socket"
+            ? "Socket 已连接，正在等待 frame 数据"
+            : target.source.kind === "http"
+              ? "正在从服务器下载日志..."
+              : null,
           selectedMarkerId: null,
           markerFilterText: "",
           markerFilterKinds: [],
@@ -1079,6 +1127,20 @@ function App() {
               ...tab,
               connectionStatus: socketStatus.status,
               connectionVersion: socketStatus.version,
+            }
+            : tab
+        ));
+      } else if (target.source.kind === "http") {
+        const httpStatus = await invoke<LogHttpStatus>("get_log_http_status", {
+          sessionId: metadata.sessionId,
+        });
+        if (generation !== activationGenerationRef.current) return;
+        updateTabs((current) => current.map((tab) =>
+          tab.id === tabId && httpStatus.version >= tab.connectionVersion
+            ? {
+              ...tab,
+              connectionStatus: httpStatus.status,
+              connectionVersion: httpStatus.version,
             }
             : tab
         ));
@@ -1346,6 +1408,29 @@ function App() {
       if (disposed) stop();
       else unlisten.push(stop);
     });
+    listen<LogHttpStatus & { sessionId: number }>("log-http-status", ({ payload }) => {
+      updateTabs((current) => current.map((tab) =>
+        tab.metadata.sessionId === payload.sessionId
+          && payload.version >= tab.connectionVersion
+          ? { ...tab, connectionStatus: payload.status, connectionVersion: payload.version }
+          : tab
+      ));
+      if (payload.sessionId === activeSessionIdRef.current) {
+        if (payload.status === "loading") {
+          const totalText = payload.totalBytes ? ` / ${formatBytes(payload.totalBytes)}` : "";
+          setTailNotice(`正在从服务器下载日志: ${formatBytes(payload.downloadedBytes)}${totalText}`);
+        } else if (payload.status === "connected") {
+          setTailNotice((current) =>
+            current && current.startsWith("正在从服务器下载日志") ? null : current
+          );
+        } else if (payload.status === "disconnected" || payload.status === "error") {
+          setTailNotice(payload.message ?? "HTTP 日志同步失败");
+        }
+      }
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten.push(stop);
+    });
     return () => {
       disposed = true;
       if (changeTimer !== null) window.clearTimeout(changeTimer);
@@ -1357,7 +1442,7 @@ function App() {
     const checkInactiveSources = async () => {
       const sessionIds = tabsRef.current
         .filter((tab) =>
-          tab.source.kind === "file" && (tab.id !== activeTabId || isDisconnected)
+          (tab.source.kind === "file" || tab.source.kind === "http") && (tab.id !== activeTabId || isDisconnected)
         )
         .map((tab) => tab.metadata.sessionId);
       if (sessionIds.length === 0) return;
@@ -1493,6 +1578,8 @@ function App() {
       } else if (payload.action === "connect_socket") {
         setShowSocketModal(true);
         setServerFilterText("");
+      } else if (payload.action === "open_http_server") {
+        setShowHttpModal(true);
       } else if (payload.action === "open_recent_file") {
         setFilePath(payload.path);
         void openPathsRef.current([payload.path]);
@@ -1506,6 +1593,10 @@ function App() {
       } else if (payload.action === "add_favorite") {
         const current = logFileRef.current;
         if (!current) return;
+        if (current.path.startsWith("http://") || current.path.startsWith("https://")) {
+          setTailNotice("HTTP 服务器日志暂不支持添加到收藏");
+          return;
+        }
         const displayPath = current.path.startsWith("logscope-frame-v1://")
           ? current.path.slice("logscope-frame-v1://".length)
           : current.path;
@@ -1743,7 +1834,7 @@ function App() {
           current && current.sessionId === metadata.sessionId
             ? {
               ...current,
-              path: current.path.startsWith("logscope-frame-v1://") ? current.path : metadata.path,
+              path: isVirtualSourcePath(current.path) ? current.path : metadata.path,
               fileSize: metadata.fileSize,
               lineCount: metadata.lineCount,
             }
@@ -1753,7 +1844,7 @@ function App() {
           if (tab.metadata.sessionId !== metadata.sessionId) return tab;
           const nextMetadata = {
             ...tab.metadata,
-            path: tab.metadata.path.startsWith("logscope-frame-v1://") ? tab.metadata.path : metadata.path,
+            path: isVirtualSourcePath(tab.metadata.path) ? tab.metadata.path : metadata.path,
             fileSize: metadata.fileSize,
             lineCount: metadata.lineCount,
           };
@@ -1776,7 +1867,12 @@ function App() {
         }
       } finally {
         if (!cancelled && activeSessionIdRef.current === logFile.sessionId) {
-          timeoutId = window.setTimeout(() => void refresh(), TAIL_REFRESH_INTERVAL_MS);
+          const currentTab = tabsRef.current.find((item) => item.metadata.sessionId === logFile.sessionId);
+          const intervalMs =
+            currentTab?.source.kind === "http" && currentTab.connectionStatus === "loading"
+              ? 300
+              : TAIL_REFRESH_INTERVAL_MS;
+          timeoutId = window.setTimeout(() => void refresh(), intervalMs);
         }
       }
     };
@@ -1814,7 +1910,11 @@ function App() {
       id,
       source,
       metadata,
-      title: source.kind === "file" ? getFileTabTitle(source.path) : getSocketTabTitle(source),
+      title: source.kind === "file"
+        ? getFileTabTitle(source.path)
+        : source.kind === "socket"
+          ? getSocketTabTitle(source)
+          : getHttpTabTitle(source),
       dirty: false,
       observedFileSize: metadata.fileSize,
       connectionVersion: 0,
@@ -1994,6 +2094,75 @@ function App() {
       updateTabs((current) => current.map((tab) =>
         tab.metadata.sessionId === sessionId ? { ...tab, connectionStatus: "error" } : tab
       ));
+      setError(String(err));
+    }
+  };
+
+  const handleSaveHttpServerUrl = React.useCallback(async (url: string) => {
+    const store = await invoke<PersistedStore>("save_http_server_url", { url });
+    setPersistedStore(store);
+    return store.httpServerUrl;
+  }, []);
+
+  const openHttpSource = async (item: HttpServiceLogItem, serverUrl: string) => {
+    const normalizedUrl = serverUrl.trim().replace(/\/+$/, "");
+    const source: TabSource = {
+      kind: "http",
+      serverUrl: normalizedUrl,
+      logId: item.id,
+      uuid: item.uuid,
+      fileName: item.fileName,
+      project: item.project,
+      packageName: item.package || "",
+      platform: item.platform,
+      udid: item.udid,
+    };
+    const sourceKey = getSourceKey(source);
+    const existing = tabsRef.current.find((tab) => getSourceKey(tab.source) === sourceKey);
+    if (existing) {
+      await activateTab(existing.id);
+      return true;
+    }
+    if (openingSourcesRef.current.has(sourceKey)) return true;
+    openingSourcesRef.current.add(sourceKey);
+    setIsOpeningHttp(true);
+    setError(null);
+    try {
+      const metadata = await invoke<HttpOpenMetadata>("open_http_log", {
+        serverUrl: normalizedUrl,
+        logId: item.id,
+        fileName: item.fileName,
+      });
+      const logMetadata: LogFileMetadata = {
+        sessionId: metadata.sessionId,
+        path: `${metadata.serverUrl}/api/service_logs/${metadata.logId}`,
+        fileSize: metadata.fileSize,
+        lineCount: metadata.lineCount,
+        indexDurationMs: 0,
+      };
+      await installOpenedTab(
+        { ...source, serverUrl: metadata.serverUrl },
+        logMetadata,
+        "正在从服务器下载日志...",
+      );
+      return true;
+    } catch (err) {
+      setError(String(err));
+      return false;
+    } finally {
+      openingSourcesRef.current.delete(sourceKey);
+      setIsOpeningHttp(false);
+    }
+  };
+
+  const retryActiveHttpSync = async () => {
+    if (!activeTab || activeTab.source.kind !== "http") return;
+    const sessionId = activeTab.metadata.sessionId;
+    setError(null);
+    setTailNotice("正在重新同步服务器日志...");
+    try {
+      await invoke("retry_http_log_sync", { sessionId });
+    } catch (err) {
       setError(String(err));
     }
   };
@@ -3050,7 +3219,7 @@ function App() {
 
   React.useEffect(() => {
     const handleTabShortcut = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || showSocketModal || showMarkerConfigModal || showFavoriteDialog) return;
+      if (event.defaultPrevented || showSocketModal || showHttpModal || showMarkerConfigModal || showFavoriteDialog) return;
       const currentTabs = tabsRef.current;
       const activeIndex = currentTabs.findIndex((tab) => tab.id === activeTabId);
       if (event.key.toLowerCase() === "w" && (event.metaKey || event.ctrlKey) && !event.altKey) {
@@ -3067,7 +3236,7 @@ function App() {
     };
     window.addEventListener("keydown", handleTabShortcut);
     return () => window.removeEventListener("keydown", handleTabShortcut);
-  }, [activeTabId, tabs, closeTab, activateTab, showSocketModal, showMarkerConfigModal, showFavoriteDialog]);
+  }, [activeTabId, tabs, closeTab, activateTab, showSocketModal, showHttpModal, showMarkerConfigModal, showFavoriteDialog]);
 
   return (
     <main className="app-shell">
@@ -3095,6 +3264,14 @@ function App() {
           >
             <ConnectSocketIcon />
           </button>
+          <button
+            type="button"
+            className="toolbar-icon-button"
+            onClick={() => setShowHttpModal(true)}
+            title="从 HTTP 服务器打开 (⌘⇧H)"
+          >
+            <HttpServerIcon />
+          </button>
           <span className="toolbar-separator" />
           <button
             type="button"
@@ -3103,7 +3280,7 @@ function App() {
               backgroundColor: isDisconnected ? "#ffe9e9" : "#e9f2ef",
               color: isDisconnected ? "#c92a2a" : "#18706a",
             }}
-            disabled={!logFile && !isConnectingSocket}
+            disabled={!logFile && !isConnectingSocket && !isOpeningHttp}
             onClick={() => setIsDisconnected((current) => !current)}
             title={isDisconnected ? "恢复更新" : "暂停更新"}
           >
@@ -3119,6 +3296,16 @@ function App() {
               title="重新连接 Socket"
               aria-label="重新连接 Socket"
             ><ConnectSocketIcon /></button>
+          )}
+          {activeTab?.source.kind === "http" &&
+            (activeTab.connectionStatus === "disconnected" || activeTab.connectionStatus === "error") && (
+            <button
+              type="button"
+              className="toolbar-icon-button"
+              onClick={() => void retryActiveHttpSync()}
+              title="重新同步 HTTP 日志"
+              aria-label="重新同步 HTTP 日志"
+            ><HttpServerIcon /></button>
           )}
           <span className="toolbar-separator" />
           <button
@@ -3907,6 +4094,17 @@ function App() {
         document.body
       )}
 
+      {showHttpModal && (
+        <HttpLogModal
+          initialUrl={persistedStore?.httpServerUrl ?? ""}
+          recentUrls={persistedStore?.recentHttpServers ?? []}
+          isOpening={isOpeningHttp}
+          onClose={() => setShowHttpModal(false)}
+          onSaveUrl={handleSaveHttpServerUrl}
+          onOpenLog={openHttpSource}
+        />
+      )}
+
       {showFavoriteDialog && createPortal(
         <div
           className="modal-overlay"
@@ -4502,11 +4700,15 @@ function SourceTabItem({
   const statusText = tab.connectionStatus === "quota"
     ? "，临时存储已满"
     : tab.connectionStatus === "disconnected"
-      ? "，Socket 已断开"
-      : "";
+      ? (tab.source.kind === "http" ? "，服务器日志不可用" : "，Socket 已断开")
+      : tab.connectionStatus === "error"
+        ? "，同步异常"
+        : "";
   const sourceTitle = tab.source.kind === "file"
     ? tab.source.path
-    : tab.source.host + ":" + tab.source.port;
+    : tab.source.kind === "socket"
+      ? tab.source.host + ":" + tab.source.port
+      : `${tab.source.serverUrl} · #${tab.source.logId} · ${tab.source.packageName || tab.source.project} · ${tab.source.udid} · ${tab.source.fileName}`;
 
   return (
     <div
@@ -4560,9 +4762,16 @@ function SourceTabItem({
   );
 }
 
+function isVirtualSourcePath(path: string): boolean {
+  return path.startsWith("logscope-frame-v1://") || path.startsWith("http://") || path.startsWith("https://");
+}
+
 function getSourceKey(source: TabSource): string {
   if (source.kind === "socket") {
     return "socket:" + source.host.trim().toLowerCase() + ":" + source.port;
+  }
+  if (source.kind === "http") {
+    return "http:" + source.serverUrl.trim().replace(/\/+$/, "").toLowerCase() + "#" + source.logId;
   }
   let path = source.path.trim().split(String.fromCharCode(92)).join("/").replace(/\/+$/, "");
   if (navigator.userAgent.toLowerCase().includes("windows")) path = path.toLowerCase();
@@ -4578,22 +4787,28 @@ function getSocketTabTitle(source: Extract<TabSource, { kind: "socket" }>): stri
   return source.hostname ? source.hostname + " · " + endpoint : endpoint;
 }
 
+function getHttpTabTitle(source: Extract<TabSource, { kind: "http" }>): string {
+  return `#${source.logId} · ${source.fileName}`;
+}
+
 function getTabDisplayTitle(tab: SessionTab, allTabs: SessionTab[]): string {
-  if (tab.source.kind !== "file") return getSocketTabTitle(tab.source);
-  const sameName = allTabs.filter((candidate) =>
-    candidate.source.kind === "file" && getFileTabTitle(candidate.source.path) === getFileTabTitle(tab.source.path)
+  if (tab.source.kind === "socket") return getSocketTabTitle(tab.source);
+  if (tab.source.kind === "http") return getHttpTabTitle(tab.source);
+  const filePath = tab.source.path;
+  const sameName = allTabs.filter((candidate): candidate is SessionTab & { source: Extract<TabSource, { kind: "file" }> } =>
+    candidate.source.kind === "file" && getFileTabTitle(candidate.source.path) === getFileTabTitle(filePath)
   );
-  if (sameName.length < 2) return getFileTabTitle(tab.source.path);
-  const parts = tab.source.path.split(String.fromCharCode(92)).join("/").split("/").filter(Boolean);
+  if (sameName.length < 2) return getFileTabTitle(filePath);
+  const parts = filePath.split(String.fromCharCode(92)).join("/").split("/").filter(Boolean);
   for (let depth = 2; depth <= parts.length; depth += 1) {
     const suffix = parts.slice(-depth).join("/");
     const ambiguous = sameName.some((candidate) => {
-      if (candidate.id === tab.id || candidate.source.kind !== "file") return false;
+      if (candidate.id === tab.id) return false;
       return candidate.source.path.split(String.fromCharCode(92)).join("/").split("/").filter(Boolean).slice(-depth).join("/") === suffix;
     });
     if (!ambiguous) return suffix;
   }
-  return tab.source.path;
+  return filePath;
 }
 
 function formatBytes(bytes: number) {

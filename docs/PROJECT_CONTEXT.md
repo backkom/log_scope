@@ -1,6 +1,6 @@
 # 项目上下文
 
-最后更新：2026-11-22
+最后更新：2026-11-27
 
 本文档是 `log_scope` 的长期项目记忆。后续 AI agent 和开发者在做项目决策前应先阅读本文档；当需求、架构、取舍或实现细节发生变化时，必须同步更新本文档。
 
@@ -18,7 +18,7 @@
 
 ## 数据来源
 
-应用支持两类数据输入。
+应用支持三类数据输入。
 
 1. 文件 tail 模式
    - 打开用户选择的文件。
@@ -30,10 +30,19 @@
    - 使用本项目定义的协议接收数据。
    - 协议由本项目设计，不继承 CudaText 的模型。
 
+3. HTTP 日志服务器模式
+   - 通过工具栏按钮或 File 菜单打开“HTTP 日志服务器”弹窗，设置并保存日志服务器 URL 到 `state-v1.json`（`httpServerUrl` 与 `recentHttpServers`）。
+   - HTTP 日志和自动更新共用 Rustls 的 `ring` provider。应用入口在构造 HTTP 客户端前注册它，满足 `reqwest` 的 `rustls-no-provider` 配置。
+   - 前端通过 Rust command `fetch_http_service_logs` 请求服务端 `GET /api/service_logs/recent`，支持按 Project 二级标签、Package 三级标签以及 `rid`、`rolename`、`udid` 过滤（含历史条件记录与有过滤条件时 5 秒自动刷新），列表展示包含平台图标、上下文（`rid` / 角色 / 服务器地址）、文件大小与保护状态。
+   - 用户选择日志并确认后立即打开标签页，Rust command `open_http_log` 创建临时缓存文件（`std::env::temp_dir()/log_scope/http/`）并异步流式下载初始日志，同时复用 `LogSession` 虚拟化展示、Marker 解析、查找和 follow tail。
+   - 服务端（`qq-bot-notifier`）新增 `GET /api/service_logs/{log_id}/meta` 返回实际文件大小，并在 `GET /api/service_logs/{log_id}/download?offset=<bytes>` 支持按字节偏移增量拉取（未变化返回 `204`，截断返回 `X-Log-Truncated: 1`）。
+   - 激活且未暂停的 HTTP 标签通过 `refresh_log_file` 增量同步服务端追加字节；非活跃或已暂停的 HTTP 标签通过 `get_log_source_changes` 每 1.5 秒查询 `/meta` 检查远程文件大小变化，展示标签页更新提示点，切回或恢复后再同步内容。关闭标签页或退出应用时取消下载并清理临时文件。
+
 应用需要记住历史数据来源：
 
 - 最近打开的文件路径。
 - 最近连接过的 IP/端口组合。
+- 最近使用的 HTTP 日志服务器 URL（`httpServerUrl` 与 `recentHttpServers`，最多保留 10 条）。
 - 最近 socket 连接记录的展示名需要尽量与“连接 Socket”发现列表一致，优先显示 `hostname · ip:port`；若缺少 hostname，则至少显示 `ip:port`。
 - `lastSource` 恢复 socket 时也要保留 `hostname`；不能因为自动重连时只拿到 `host/port` 就把 recent 记录里已有的 hostname 覆盖成空。
 - 后续可按需要保存每个数据源的展示、搜索、过滤状态。
@@ -49,6 +58,7 @@
 
 底部状态栏：
 - 全局固定在应用底部，不参与 viewer 高度计算，集中展示文件大小、总行数、索引耗时、查找耗时和 marker 总数；当前路径只显示在桌面窗口标题中。
+- Rust 侧对打开文件路径执行 `fs::canonicalize` 后会剥离安全可回退的 Windows `\\?\` / `\\?\UNC\` 扩展路径前缀（通过二次 `fs::canonicalize` 验证指向同一文件），并在加载 `state-v1.json` 时同步清理遗留的 `\\?\` 前缀。
 - 尾部提供日志着色三态图标按钮（完整着色、仅 severity、关闭）以及 跟随 Tail/阅读锁定 切换按钮。
 
 中间主工作区分为左、中、右：
