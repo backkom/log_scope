@@ -41,6 +41,15 @@ export type HttpServiceLogListResponse = {
   packages: string[];
 };
 
+type FavoriteLog = {
+  serverUrl: string;
+  item: HttpServiceLogItem;
+};
+
+function logKey(serverUrl: string, id: number): string {
+  return `${serverUrl}\0${id}`;
+}
+
 type FilterValues = {
   rid: string;
   rolename: string;
@@ -61,6 +70,7 @@ const STORAGE_KEYS = {
   packageName: "logscope_http_log_package",
   lastFilters: "logscope_http_log_last_filters",
   history: "logscope_http_log_history",
+  favorites: "logscope_http_log_favorites",
 };
 
 const MAX_HISTORY_ITEMS = 10;
@@ -78,6 +88,19 @@ function safeStorageSet(key: string, value: string): void {
     window.localStorage.setItem(key, value);
   } catch {
     // Ignore storage errors
+  }
+}
+
+function loadFavorites(): FavoriteLog[] {
+  try {
+    const parsed: unknown = JSON.parse(safeStorageGet(STORAGE_KEYS.favorites) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is FavoriteLog =>
+      typeof entry?.serverUrl === "string" && Number.isSafeInteger(entry.item?.id)
+      && Array.isArray(entry.item.contexts),
+    );
+  } catch {
+    return [];
   }
 }
 
@@ -147,15 +170,38 @@ function formatFileSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-function formatContextLabel(ctx: HttpServiceLogContext): string {
-  const parts: string[] = [];
-  if (ctx.rid) parts.push(`rid: ${ctx.rid}`);
-  if (ctx.rolename) parts.push(`角色: ${ctx.rolename}`);
-  if (ctx.serverIp || ctx.serverPort) {
-    const portPart = ctx.serverPort ? `:${ctx.serverPort}` : "";
-    parts.push(`${ctx.serverIp || ""}${portPart}`);
-  }
-  return parts.join(" | ");
+function CopyableLogField({
+  value,
+  label,
+  onCopy,
+  children,
+}: {
+  value: string;
+  label: string;
+  onCopy: (value: string, label: string) => Promise<void>;
+  children?: React.ReactNode;
+}) {
+  return (
+    <span className="http-copyable-field">
+      <span className="http-ellipsis" title={value}>{children ?? value}</span>
+      <button
+        type="button"
+        className="http-row-action http-copy-button"
+        aria-label={`复制${label} ${value}`}
+        title={`复制${label}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          void onCopy(value, label);
+        }}
+        onDoubleClick={(event) => event.stopPropagation()}
+      >
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="8" y="8" width="12" height="12" rx="2" />
+          <path d="M16 4H6a2 2 0 0 0-2 2v10" />
+        </svg>
+      </button>
+    </span>
+  );
 }
 
 function PlatformBadge({ platform }: { platform: string }) {
@@ -236,7 +282,7 @@ function PlatformBadge({ platform }: { platform: string }) {
   return (
     <span className="http-platform-badge" title={label || "未知平台"} aria-label={label || "未知平台"}>
       {icon}
-      {!isKnown && label ? <span className="http-platform-fallback">{label}</span> : null}
+      {!isKnown && label ? <span className="http-platform-fallback http-ellipsis">{label}</span> : null}
     </span>
   );
 }
@@ -259,9 +305,21 @@ export function HttpLogModal({
   const [udidFilter, setUdidFilter] = React.useState(initialFilters.udid);
   const [filterHistory, setFilterHistory] = React.useState<FilterValues[]>(() => loadHistory());
   const [logList, setLogList] = React.useState<HttpServiceLogListResponse | null>(null);
+  const [isSavingUrl, setIsSavingUrl] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(false);
   const [errorText, setErrorText] = React.useState<string | null>(null);
   const [selectedLogId, setSelectedLogId] = React.useState<number | null>(null);
+  const [activeList, setActiveList] = React.useState<"recent" | "favorites" | "lookup">("recent");
+  const [logIdInput, setLogIdInput] = React.useState("");
+  const [lookupItem, setLookupItem] = React.useState<HttpServiceLogItem | null>(null);
+  const [lookupError, setLookupError] = React.useState("");
+  const [isLookingUp, setIsLookingUp] = React.useState(false);
+  const [favorites, setFavorites] = React.useState(loadFavorites);
+  const [actionFeedback, setActionFeedback] = React.useState("");
+  const feedbackTimer = React.useRef<number | undefined>(undefined);
+  const isFavorites = activeList === "favorites";
+  const isLookup = activeList === "lookup";
+  const isRecent = activeList === "recent";
   const isFetchingRef = React.useRef(false);
   const fetchSeqRef = React.useRef(0);
 
@@ -347,7 +405,7 @@ export function HttpLogModal({
   }, []);
 
   React.useEffect(() => {
-    if (!hasActiveQueryCondition || !activeServerUrl.trim()) {
+    if (!isRecent || !hasActiveQueryCondition || !activeServerUrl.trim()) {
       return;
     }
     const timer = window.setInterval(() => {
@@ -356,7 +414,9 @@ export function HttpLogModal({
       }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [activeServerUrl, fetchLogs, hasActiveQueryCondition]);
+  }, [activeServerUrl, fetchLogs, hasActiveQueryCondition, isRecent]);
+
+  React.useEffect(() => () => window.clearTimeout(feedbackTimer.current), []);
 
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -371,14 +431,24 @@ export function HttpLogModal({
 
   const handleSaveAndFetch = async (event?: React.FormEvent) => {
     event?.preventDefault();
+    if (isLookingUp || isSavingUrl) return;
     setErrorText(null);
+    setIsSavingUrl(true);
     try {
       const savedUrl = await onSaveUrl(urlInput);
+      if (savedUrl !== activeServerUrl) {
+        setLogList(null);
+        setSelectedLogId(null);
+        setLookupItem(null);
+        setLookupError("");
+      }
       setUrlInput(savedUrl);
       setActiveServerUrl(savedUrl);
-      await fetchLogs(savedUrl);
+      void fetchLogs(savedUrl);
     } catch (err) {
       setErrorText(String(err));
+    } finally {
+      setIsSavingUrl(false);
     }
   };
 
@@ -402,12 +472,77 @@ export function HttpLogModal({
     return map;
   }, [configuredProjects]);
 
-  const items = logList?.items ?? [];
-  const selectedItem = items.find((item) => item.id === selectedLogId) ?? null;
+  const items = isLookup ? (lookupItem ? [lookupItem] : []) : logList?.items ?? [];
+  const selectedItem = isLookup ? lookupItem : items.find((item) => item.id === selectedLogId) ?? null;
+
+  const favoriteKeys = new Set(favorites.map(({ item, serverUrl }) => logKey(serverUrl, item.id)));
+  const rows = isFavorites ? favorites : items.map((item) => ({ item, serverUrl: activeServerUrl }));
+
+  const showFeedback = (message: string) => {
+    window.clearTimeout(feedbackTimer.current);
+    setActionFeedback(message);
+    feedbackTimer.current = window.setTimeout(() => setActionFeedback(""), 2000);
+  };
+
+  const toggleFavorite = (row: FavoriteLog) => {
+    const key = logKey(row.serverUrl, row.item.id);
+    const next = favoriteKeys.has(key)
+      ? favorites.filter(({ item, serverUrl }) => logKey(serverUrl, item.id) !== key)
+      : [row, ...favorites];
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(next));
+      setFavorites(next);
+    } catch {
+      showFeedback("无法保存收藏");
+    }
+  };
+
+  const copyLogField = async (value: string, label: string) => {
+    try {
+      await invoke("copy_text_to_clipboard", { text: value });
+      showFeedback(`${label} 已复制`);
+    } catch {
+      showFeedback(`无法复制 ${label}`);
+    }
+  };
+
+  const lookupLog = async (input?: string) => {
+    if (isLookingUp) return;
+    setIsLookingUp(true);
+    setLookupItem(null);
+    setLookupError("");
+    try {
+      const text = input ?? await invoke<string>("read_text_from_clipboard").catch(() => {
+        throw new Error("无法读取剪贴板中的文本");
+      });
+      const normalized = text.trim().replace(/^#/, "");
+      setLogIdInput(normalized);
+      const logId = Number(normalized);
+      if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(logId) || logId <= 0) {
+        setLookupError("请输入有效的日志 ID");
+        return;
+      }
+      if (!activeServerUrl) {
+        setLookupError("请先在「服务日志」中设置服务器 URL");
+        return;
+      }
+
+      const item = await invoke<HttpServiceLogItem | null>("fetch_http_service_log_by_id", {
+        serverUrl: activeServerUrl,
+        logId,
+      });
+      setLookupItem(item);
+      if (!item) setLookupError(`未找到日志 #${logId}`);
+    } catch (err) {
+      setLookupError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsLookingUp(false);
+    }
+  };
 
   const confirmOpenItem = React.useCallback(
-    async (item: HttpServiceLogItem) => {
-      const targetUrl = (activeServerUrl || urlInput).trim();
+    async (item: HttpServiceLogItem, targetUrl = activeServerUrl) => {
+      if (isOpening) return;
       if (!targetUrl) {
         setErrorText("请先设置日志服务器 URL");
         return;
@@ -417,7 +552,7 @@ export function HttpLogModal({
         onClose();
       }
     },
-    [activeServerUrl, onClose, onOpenLog, urlInput],
+    [activeServerUrl, isOpening, onClose, onOpenLog],
   );
 
   return createPortal(
@@ -443,18 +578,20 @@ export function HttpLogModal({
             <h2>HTTP 日志服务器</h2>
           </div>
           <div className="http-modal-header-actions">
-            {hasActiveQueryCondition && activeServerUrl ? (
+            {isRecent && hasActiveQueryCondition && activeServerUrl ? (
               <span className="http-auto-refresh-pill">每 5 秒自动刷新中</span>
             ) : null}
-            <button
-              type="button"
-              className="refresh-button"
-              disabled={isLoading || !activeServerUrl.trim()}
-              onClick={() => void fetchLogs(activeServerUrl || urlInput)}
-              title="刷新日志列表"
-            >
-              ⟳
-            </button>
+            {isRecent && (
+              <button
+                type="button"
+                className="refresh-button"
+                disabled={isLoading || !activeServerUrl.trim()}
+                onClick={() => void fetchLogs(activeServerUrl)}
+                title="刷新日志列表"
+              >
+                ⟳
+              </button>
+            )}
             <button
               type="button"
               className="modal-close-button"
@@ -466,255 +603,322 @@ export function HttpLogModal({
           </div>
         </div>
 
-        <form className="http-server-url-bar" onSubmit={(e) => void handleSaveAndFetch(e)}>
-          <label className="modal-field-inline http-url-field" htmlFor="http-server-url-input">
-            <span>服务器</span>
-            <input
-              id="http-server-url-input"
-              list="http-recent-servers"
-              value={urlInput}
-              onChange={(event) => setUrlInput(event.target.value)}
-              placeholder="例如 http://127.0.0.1:7848"
-              autoComplete="off"
-              spellCheck={false}
-            />
-            {recentUrls.length > 0 && (
-              <datalist id="http-recent-servers">
-                {recentUrls.map((url) => (
-                  <option key={url} value={url} />
-                ))}
-              </datalist>
-            )}
-          </label>
-          <button
-            type="submit"
-            className="primary-button http-url-save-button"
-            disabled={isLoading || !urlInput.trim()}
-          >
-            {isLoading ? "获取中…" : "保存并获取"}
-          </button>
-        </form>
-
-        <div className="http-sub-tabs" role="tablist" aria-label="按 Project 过滤">
+        <div className="http-sub-tabs" role="tablist" aria-label="日志列表">
           <button
             type="button"
             role="tab"
-            aria-selected={projectFilter === ""}
-            className={`http-sub-tab${projectFilter === "" ? " is-active" : ""}`}
-            onClick={() => {
-              setProjectFilter("");
-              safeStorageSet(STORAGE_KEYS.project, "");
-              if (activeServerUrl.trim()) {
-                void fetchLogs(activeServerUrl, { project: "" });
-              }
-            }}
+            aria-selected={isRecent}
+            className={`http-sub-tab${isRecent ? " is-active" : ""}`}
+            onClick={() => setActiveList("recent")}
           >
-            全部
+            服务日志
           </button>
-          {configuredProjects.map((proj) => (
-            <button
-              key={proj.name}
-              type="button"
-              role="tab"
-              aria-selected={projectFilter === proj.name}
-              className={`http-sub-tab${projectFilter === proj.name ? " is-active" : ""}`}
-              onClick={() => {
-                const nextProj = proj.name;
-                const nextPkg = proj.packages.includes(packageFilter) ? packageFilter : "";
-                setProjectFilter(nextProj);
-                setPackageFilter(nextPkg);
-                safeStorageSet(STORAGE_KEYS.project, nextProj);
-                safeStorageSet(STORAGE_KEYS.packageName, nextPkg);
-                if (activeServerUrl.trim()) {
-                  void fetchLogs(activeServerUrl, { project: nextProj, packageName: nextPkg });
-                }
-              }}
-            >
-              {proj.name}
-            </button>
-          ))}
-        </div>
-
-        <div className="http-tertiary-tabs" role="tablist" aria-label="按 Package 过滤">
-          <span className="http-tertiary-label">Package：</span>
           <button
             type="button"
             role="tab"
-            aria-selected={packageFilter === ""}
-            className={`http-tertiary-tab${packageFilter === "" ? " is-active" : ""}`}
-            onClick={() => {
-              setPackageFilter("");
-              safeStorageSet(STORAGE_KEYS.packageName, "");
-              if (activeServerUrl.trim()) {
-                void fetchLogs(activeServerUrl, { packageName: "" });
-              }
-            }}
+            aria-selected={isFavorites}
+            className={`http-sub-tab${isFavorites ? " is-active" : ""}`}
+            onClick={() => setActiveList("favorites")}
           >
-            全部
+            收藏
           </button>
-          {activePackages.map((pkg) => (
-            <button
-              key={pkg}
-              type="button"
-              role="tab"
-              aria-selected={packageFilter === pkg}
-              className={`http-tertiary-tab${packageFilter === pkg ? " is-active" : ""}`}
-              onClick={() => {
-                setPackageFilter(pkg);
-                safeStorageSet(STORAGE_KEYS.packageName, pkg);
-                if (activeServerUrl.trim()) {
-                  void fetchLogs(activeServerUrl, { packageName: pkg });
-                }
-              }}
-            >
-              {pkg}
-            </button>
-          ))}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={isLookup}
+            className={`http-sub-tab${isLookup ? " is-active" : ""}`}
+            disabled={isSavingUrl}
+            onClick={() => setActiveList("lookup")}
+          >
+            按 ID 查询
+          </button>
         </div>
 
-        <form
-          className="http-filter-form"
-          onSubmit={(event) => {
+        {isLookup && (
+          <form className="http-id-lookup" onSubmit={(event) => {
             event.preventDefault();
-            if (activeServerUrl.trim()) {
-              void fetchLogs(activeServerUrl, { recordHistory: true });
-            } else {
-              void handleSaveAndFetch();
-            }
-          }}
-        >
-          <label className="http-filter-field">
-            <span>RID</span>
-            <input
-              value={ridFilter}
-              onChange={(event) => {
-                const next = event.target.value;
-                setRidFilter(next);
-                safeStorageSet(STORAGE_KEYS.lastFilters, JSON.stringify({
-                  rid: next.trim(),
-                  rolename: rolenameFilter.trim(),
-                  udid: udidFilter.trim(),
-                }));
-              }}
-              placeholder="例如：10086"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-          <label className="http-filter-field">
-            <span>角色名 (rolename)</span>
-            <input
-              value={rolenameFilter}
-              onChange={(event) => {
-                const next = event.target.value;
-                setRolenameFilter(next);
-                safeStorageSet(STORAGE_KEYS.lastFilters, JSON.stringify({
-                  rid: ridFilter.trim(),
-                  rolename: next.trim(),
-                  udid: udidFilter.trim(),
-                }));
-              }}
-              placeholder="例如：Hero"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-          <label className="http-filter-field">
-            <span>UDID</span>
-            <input
-              value={udidFilter}
-              onChange={(event) => {
-                const next = event.target.value;
-                setUdidFilter(next);
-                safeStorageSet(STORAGE_KEYS.lastFilters, JSON.stringify({
-                  rid: ridFilter.trim(),
-                  rolename: rolenameFilter.trim(),
-                  udid: next.trim(),
-                }));
-              }}
-              placeholder="例如：device-001"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-          <div className="http-filter-actions">
-            <button type="submit" className="primary-button" disabled={isLoading}>
+            void lookupLog(logIdInput);
+          }}>
+            <label className="modal-field-inline" htmlFor="http-log-id-input">
+              <span>日志 ID</span>
+              <input
+                id="http-log-id-input"
+                value={logIdInput}
+                onChange={(event) => {
+                  setLogIdInput(event.target.value);
+                  setLookupError("");
+                  setLookupItem(null);
+                }}
+                inputMode="numeric"
+                autoComplete="off"
+                disabled={isLookingUp}
+              />
+            </label>
+            <button type="button" className="secondary-button" disabled={isLookingUp} onClick={() => void lookupLog()}>
+              粘贴并查询
+            </button>
+            <button type="submit" className="primary-button" disabled={isLookingUp || !logIdInput.trim()}>
               查询
             </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => {
-                setRidFilter("");
-                setRolenameFilter("");
-                setUdidFilter("");
-                safeStorageSet(STORAGE_KEYS.lastFilters, JSON.stringify({ rid: "", rolename: "", udid: "" }));
+          </form>
+        )}
+
+        {isRecent && (
+          <>
+            <form className="http-server-url-bar" onSubmit={(e) => void handleSaveAndFetch(e)}>
+              <label className="modal-field-inline http-url-field" htmlFor="http-server-url-input">
+                <span>服务器</span>
+                <input
+                  id="http-server-url-input"
+                  list="http-recent-servers"
+                  value={urlInput}
+                  onChange={(event) => setUrlInput(event.target.value)}
+                  placeholder="例如 http://127.0.0.1:7848"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                {recentUrls.length > 0 && (
+                  <datalist id="http-recent-servers">
+                    {recentUrls.map((url) => (
+                      <option key={url} value={url} />
+                    ))}
+                  </datalist>
+                )}
+              </label>
+              <button
+                type="submit"
+                className="primary-button http-url-save-button"
+                disabled={isLoading || isSavingUrl || isLookingUp || !urlInput.trim()}
+              >
+                {isLoading || isSavingUrl ? "获取中…" : "保存并获取"}
+              </button>
+            </form>
+
+            <div className="http-sub-tabs" role="tablist" aria-label="按 Project 过滤">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={projectFilter === ""}
+                className={`http-sub-tab${projectFilter === "" ? " is-active" : ""}`}
+                onClick={() => {
+                  setProjectFilter("");
+                  safeStorageSet(STORAGE_KEYS.project, "");
+                  if (activeServerUrl.trim()) {
+                    void fetchLogs(activeServerUrl, { project: "" });
+                  }
+                }}
+              >
+                全部
+              </button>
+              {configuredProjects.map((proj) => (
+                <button
+                  key={proj.name}
+                  type="button"
+                  role="tab"
+                  aria-selected={projectFilter === proj.name}
+                  className={`http-sub-tab${projectFilter === proj.name ? " is-active" : ""}`}
+                  onClick={() => {
+                    const nextProj = proj.name;
+                    const nextPkg = proj.packages.includes(packageFilter) ? packageFilter : "";
+                    setProjectFilter(nextProj);
+                    setPackageFilter(nextPkg);
+                    safeStorageSet(STORAGE_KEYS.project, nextProj);
+                    safeStorageSet(STORAGE_KEYS.packageName, nextPkg);
+                    if (activeServerUrl.trim()) {
+                      void fetchLogs(activeServerUrl, { project: nextProj, packageName: nextPkg });
+                    }
+                  }}
+                >
+                  {proj.name}
+                </button>
+              ))}
+            </div>
+
+            <div className="http-tertiary-tabs" role="tablist" aria-label="按 Package 过滤">
+              <span className="http-tertiary-label">Package：</span>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={packageFilter === ""}
+                className={`http-tertiary-tab${packageFilter === "" ? " is-active" : ""}`}
+                onClick={() => {
+                  setPackageFilter("");
+                  safeStorageSet(STORAGE_KEYS.packageName, "");
+                  if (activeServerUrl.trim()) {
+                    void fetchLogs(activeServerUrl, { packageName: "" });
+                  }
+                }}
+              >
+                全部
+              </button>
+              {activePackages.map((pkg) => (
+                <button
+                  key={pkg}
+                  type="button"
+                  role="tab"
+                  aria-selected={packageFilter === pkg}
+                  className={`http-tertiary-tab${packageFilter === pkg ? " is-active" : ""}`}
+                  onClick={() => {
+                    setPackageFilter(pkg);
+                    safeStorageSet(STORAGE_KEYS.packageName, pkg);
+                    if (activeServerUrl.trim()) {
+                      void fetchLogs(activeServerUrl, { packageName: pkg });
+                    }
+                  }}
+                >
+                  {pkg}
+                </button>
+              ))}
+            </div>
+
+            <form
+              className="http-filter-form"
+              onSubmit={(event) => {
+                event.preventDefault();
                 if (activeServerUrl.trim()) {
-                  void fetchLogs(activeServerUrl, { rid: "", rolename: "", udid: "" });
+                  void fetchLogs(activeServerUrl, { recordHistory: true });
+                } else {
+                  void handleSaveAndFetch();
                 }
               }}
             >
-              重置
-            </button>
-          </div>
-        </form>
+              <label className="http-filter-field">
+                <span>RID</span>
+                <input
+                  value={ridFilter}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setRidFilter(next);
+                    safeStorageSet(STORAGE_KEYS.lastFilters, JSON.stringify({
+                      rid: next.trim(),
+                      rolename: rolenameFilter.trim(),
+                      udid: udidFilter.trim(),
+                    }));
+                  }}
+                  placeholder="例如：10086"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <label className="http-filter-field">
+                <span>角色名 (rolename)</span>
+                <input
+                  value={rolenameFilter}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setRolenameFilter(next);
+                    safeStorageSet(STORAGE_KEYS.lastFilters, JSON.stringify({
+                      rid: ridFilter.trim(),
+                      rolename: next.trim(),
+                      udid: udidFilter.trim(),
+                    }));
+                  }}
+                  placeholder="例如：Hero"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <label className="http-filter-field">
+                <span>UDID</span>
+                <input
+                  value={udidFilter}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setUdidFilter(next);
+                    safeStorageSet(STORAGE_KEYS.lastFilters, JSON.stringify({
+                      rid: ridFilter.trim(),
+                      rolename: rolenameFilter.trim(),
+                      udid: next.trim(),
+                    }));
+                  }}
+                  placeholder="例如：device-001"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <div className="http-filter-actions">
+                <button type="submit" className="primary-button" disabled={isLoading}>
+                  查询
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setRidFilter("");
+                    setRolenameFilter("");
+                    setUdidFilter("");
+                    safeStorageSet(STORAGE_KEYS.lastFilters, JSON.stringify({ rid: "", rolename: "", udid: "" }));
+                    if (activeServerUrl.trim()) {
+                      void fetchLogs(activeServerUrl, { rid: "", rolename: "", udid: "" });
+                    }
+                  }}
+                >
+                  重置
+                </button>
+              </div>
+            </form>
 
-        {filterHistory.length > 0 && (
-          <div className="http-filter-history">
-            <span>历史条件：</span>
-            <div className="http-history-chips">
-              {filterHistory.map((item) => {
-                const parts: string[] = [];
-                if (item.rid) parts.push(`rid: ${item.rid}`);
-                if (item.rolename) parts.push(`角色: ${item.rolename}`);
-                if (item.udid) parts.push(`udid: ${item.udid}`);
-                const label = parts.join(" | ");
-                return (
+            {filterHistory.length > 0 && (
+              <div className="http-filter-history">
+                <span>历史条件：</span>
+                <div className="http-history-chips">
+                  {filterHistory.map((item) => {
+                    const parts: string[] = [];
+                    if (item.rid) parts.push(`rid: ${item.rid}`);
+                    if (item.rolename) parts.push(`角色: ${item.rolename}`);
+                    if (item.udid) parts.push(`udid: ${item.udid}`);
+                    const label = parts.join(" | ");
+                    return (
+                      <button
+                        key={label}
+                        type="button"
+                        className="http-history-chip"
+                        onClick={() => {
+                          setRidFilter(item.rid);
+                          setRolenameFilter(item.rolename);
+                          setUdidFilter(item.udid);
+                          if (activeServerUrl.trim()) {
+                            void fetchLogs(activeServerUrl, {
+                              rid: item.rid,
+                              rolename: item.rolename,
+                              udid: item.udid,
+                              recordHistory: true,
+                            });
+                          }
+                        }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
                   <button
-                    key={label}
                     type="button"
-                    className="http-history-chip"
+                    className="http-history-clear"
                     onClick={() => {
-                      setRidFilter(item.rid);
-                      setRolenameFilter(item.rolename);
-                      setUdidFilter(item.udid);
-                      if (activeServerUrl.trim()) {
-                        void fetchLogs(activeServerUrl, {
-                          rid: item.rid,
-                          rolename: item.rolename,
-                          udid: item.udid,
-                          recordHistory: true,
-                        });
-                      }
+                      setFilterHistory([]);
+                      safeStorageSet(STORAGE_KEYS.history, "[]");
                     }}
                   >
-                    {label}
+                    清空历史
                   </button>
-                );
-              })}
-              <button
-                type="button"
-                className="http-history-clear"
-                onClick={() => {
-                  setFilterHistory([]);
-                  safeStorageSet(STORAGE_KEYS.history, "[]");
-                }}
-              >
-                清空历史
-              </button>
-            </div>
-          </div>
+                </div>
+              </div>
+            )}
+          </>
         )}
 
-        {errorText ? <div className="http-modal-error">{errorText}</div> : null}
+        {isRecent && errorText ? <div className="http-modal-error">{errorText}</div> : null}
+        {isLookup && lookupError ? <div className="http-modal-error" role="alert">{lookupError}</div> : null}
 
         <div className="http-log-summary-row">
           <span>
-            {logList
+            {isFavorites ? `共 ${favorites.length} 条收藏` : isLookup
+              ? (activeServerUrl || "请先设置日志服务器")
+              : logList
               ? `显示最近 ${items.length} 条（共 ${logList.total} 条匹配，最多显示 100 条）`
               : "输入并保存日志服务器 URL 后获取日志列表"}
           </span>
-          {selectedItem ? (
+          {!isFavorites && selectedItem ? (
             <span className="http-selected-summary">
               已选: #{selectedItem.id} · {selectedItem.fileName} ({formatFileSize(selectedItem.fileSize)})
             </span>
@@ -722,10 +926,22 @@ export function HttpLogModal({
         </div>
 
         <div className="http-log-table-wrap">
-          {items.length > 0 ? (
+          {rows.length > 0 ? (
             <table className="http-log-table">
+              <colgroup>
+                <col className="http-col-favorite" />
+                <col className="http-col-id" />
+                <col className="http-col-time" />
+                <col className="http-col-package" />
+                <col className="http-col-platform" />
+                <col className="http-col-udid" />
+                <col className="http-col-context" />
+                <col />
+                <col className="http-col-status" />
+              </colgroup>
               <thead>
                 <tr>
+                  <th aria-label="收藏" />
                   <th>ID</th>
                   <th>创建时间</th>
                   <th>Package / Project</th>
@@ -737,50 +953,102 @@ export function HttpLogModal({
                 </tr>
               </thead>
               <tbody>
-                {items.map((item) => {
-                  const isSelected = item.id === selectedLogId;
+                {rows.map((row) => {
+                  const { item, serverUrl } = row;
+                  const key = logKey(serverUrl, item.id);
+                  const isFavorite = favoriteKeys.has(key);
+                  const isSelected = !isFavorites && item.id === selectedItem?.id;
                   const primaryPkg = item.package || item.project;
                   const projectLabel = item.package
                     ? item.project
                     : (packageToProjects.get(item.project) ?? []).join(", ");
+                  const packageText = [primaryPkg, projectLabel].filter(Boolean).join(" / ") || "-";
+                  const fileSize = formatFileSize(item.fileSize);
+                  const fileDetails = [item.fileName, `${fileSize} (${item.fileSize} B)`, isFavorites ? serverUrl : ""]
+                    .filter(Boolean).join("\n");
                   return (
                     <tr
-                      key={item.id}
+                      key={key}
                       className={isSelected ? "is-selected" : undefined}
-                      onClick={() => setSelectedLogId(item.id)}
-                      onDoubleClick={() => void confirmOpenItem(item)}
+                      onClick={isFavorites ? () => void confirmOpenItem(item, serverUrl) : isRecent ? () => setSelectedLogId(item.id) : undefined}
+                      onDoubleClick={isFavorites ? undefined : () => void confirmOpenItem(item, serverUrl)}
                     >
-                      <td className="http-mono">{item.id}</td>
+                      <td className="http-favorite-cell">
+                        <button
+                          type="button"
+                          className="http-row-action http-favorite-button"
+                          aria-label="收藏日志"
+                          aria-pressed={isFavorite}
+                          title={isFavorite ? "取消收藏" : "收藏日志"}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleFavorite(row);
+                          }}
+                          onDoubleClick={(event) => event.stopPropagation()}
+                        >
+                          <span aria-hidden="true">{isFavorite ? "★" : "☆"}</span>
+                        </button>
+                      </td>
+                      <td className="http-mono">
+                        <CopyableLogField value={String(item.id)} label="日志 ID" onCopy={copyLogField} />
+                      </td>
                       <td className="http-nowrap">{formatUtcToCst(item.createdAt)}</td>
-                      <td>
-                        <div className="http-mono">{primaryPkg || "-"}</div>
-                        {projectLabel ? <div className="http-sub-meta">{projectLabel}</div> : null}
+                      <td className="http-mono">
+                        <span className="http-ellipsis" title={packageText}>{packageText}</span>
                       </td>
                       <td className="http-platform-cell">
                         <PlatformBadge platform={item.platform} />
                       </td>
-                      <td className="http-mono">{item.udid}</td>
+                      <td className="http-mono">
+                        {item.udid ? <CopyableLogField value={item.udid} label="UDID" onCopy={copyLogField} /> : "-"}
+                      </td>
                       <td>
                         {item.contexts.length > 0 ? (
                           <div className="http-contexts">
                             {item.contexts.map((ctx, idx) => {
-                              const label = formatContextLabel(ctx);
-                              if (!label) return null;
+                              const address = ctx.serverIp + (ctx.serverPort ? `:${ctx.serverPort}` : "");
+                              if (!ctx.rid && !ctx.rolename && !address) return null;
                               return (
-                                <span key={idx} className="http-context-chip">
-                                  {label}
+                                <span
+                                  key={idx}
+                                  className="http-context-chip"
+                                  title={[ctx.rid && `RID ${ctx.rid}`, ctx.rolename, address].filter(Boolean).join(" · ")}
+                                >
+                                  {ctx.rid && (
+                                    <CopyableLogField value={ctx.rid} label="RID" onCopy={copyLogField}>
+                                      RID {ctx.rid}
+                                    </CopyableLogField>
+                                  )}
+                                  {ctx.rolename && (
+                                    <CopyableLogField value={ctx.rolename} label="角色名" onCopy={copyLogField}>
+                                      {ctx.rolename}
+                                    </CopyableLogField>
+                                  )}
+                                  {address && <span className="http-ellipsis" title={address}>{address}</span>}
                                 </span>
                               );
                             })}
                           </div>
                         ) : (
-                          <span className="http-sub-meta">-</span>
+                          <span>-</span>
                         )}
                       </td>
                       <td>
-                        <div className="http-mono">{item.fileName}</div>
-                        <div className="http-sub-meta" title={`${item.fileSize} B`}>
-                          {formatFileSize(item.fileSize)}
+                        <div className="http-file-cell" title={fileDetails}>
+                          {isFavorites ? (
+                            <button
+                              type="button"
+                              className="http-favorite-open http-mono http-ellipsis"
+                              disabled={isOpening}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void confirmOpenItem(item, serverUrl);
+                              }}
+                            >
+                              {item.fileName}
+                            </button>
+                          ) : <span className="http-mono http-ellipsis">{item.fileName}</span>}
+                          <span className="http-file-size">{fileSize}</span>
                         </div>
                       </td>
                       <td>
@@ -795,7 +1063,9 @@ export function HttpLogModal({
             </table>
           ) : (
             <div className="http-log-empty">
-              {isLoading
+              {isFavorites ? "暂无收藏的日志。" : isLookup
+                ? (isLookingUp ? "正在查询日志…" : "")
+                : isLoading
                 ? "正在从服务器获取日志列表…"
                 : activeServerUrl.trim()
                   ? "暂无符合条件的服务日志。"
@@ -805,10 +1075,11 @@ export function HttpLogModal({
         </div>
 
         <div className="http-modal-footer">
+          <span className="http-action-feedback" role="status">{actionFeedback}</span>
           <button type="button" className="secondary-button" onClick={onClose}>
             取消
           </button>
-          <button
+          {!isFavorites && <button
             type="button"
             className="primary-button"
             disabled={!selectedItem || isOpening}
@@ -819,7 +1090,7 @@ export function HttpLogModal({
             }}
           >
             {isOpening ? "打开中…" : "打开日志"}
-          </button>
+          </button>}
         </div>
       </div>
     </div>,

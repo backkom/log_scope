@@ -3181,9 +3181,10 @@ body.is-reordering-tabs {
 
 .http-log-modal {
   width: min(1060px, calc(100vw - 32px));
-  max-height: calc(100vh - 36px);
+  height: min(700px, calc(100vh - 36px));
   display: flex;
   flex-direction: column;
+  overflow: auto;
   padding: 22px 24px;
 }
 
@@ -3217,6 +3218,20 @@ body.is-reordering-tabs {
   gap: 10px;
   margin-bottom: 12px;
   flex-shrink: 0;
+}
+
+.http-id-lookup {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.http-id-lookup .modal-field-inline {
+  min-width: 0;
+  flex: 0 1 270px;
 }
 
 .http-url-field {
@@ -3442,8 +3457,7 @@ body.is-reordering-tabs {
 
 .http-log-table-wrap {
   flex: 1;
-  min-height: 200px;
-  max-height: 360px;
+  min-height: 110px;
   overflow: auto;
   border: 1px solid var(--border-default);
   border-radius: 10px;
@@ -3468,10 +3482,22 @@ body.is-reordering-tabs {
 
 .http-log-table {
   width: 100%;
+  min-width: 930px;
+  table-layout: fixed;
+  line-height: 18px;
   border-collapse: collapse;
   font-size: 12px;
   color: var(--text-primary);
 }
+
+.http-col-favorite { width: 32px; }
+.http-col-id { width: 78px; }
+.http-col-time { width: 130px; }
+.http-col-package { width: 116px; }
+.http-col-platform { width: 54px; }
+.http-col-udid { width: 114px; }
+.http-col-context { width: 24%; }
+.http-col-status { width: 62px; }
 
 .http-log-table th {
   position: sticky;
@@ -3481,15 +3507,89 @@ body.is-reordering-tabs {
   color: var(--text-secondary);
   font-weight: 600;
   text-align: left;
-  padding: 9px 10px;
+  padding: 5px 7px;
   border-bottom: 1px solid var(--border-default);
   white-space: nowrap;
 }
 
 .http-log-table td {
-  padding: 8px 10px;
+  padding: 4.5px 7px;
   border-bottom: 1px solid var(--border-subtle);
   vertical-align: middle;
+}
+
+.http-log-table .http-favorite-cell {
+  padding-inline: 7px 0;
+}
+
+.http-ellipsis {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.http-copyable-field,
+.http-file-cell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+}
+
+.http-file-size {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.http-copy-button {
+  flex-shrink: 0;
+}
+
+.http-row-action {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  vertical-align: middle;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.http-row-action:hover,
+.http-row-action:focus-visible {
+  background: var(--toolbar-tray-bg);
+  color: var(--text-primary);
+}
+
+.http-favorite-button {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.http-favorite-button[aria-pressed="true"] {
+  color: var(--warning);
+}
+
+.http-favorite-open {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.http-favorite-open:hover {
+  text-decoration: underline;
 }
 
 .http-log-table tbody tr {
@@ -3517,18 +3617,13 @@ body.is-reordering-tabs {
   font-variant-numeric: tabular-nums;
 }
 
-.http-sub-meta {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 2px;
-}
-
 .http-platform-cell {
   white-space: nowrap;
 }
 
 .http-platform-badge {
-  display: inline-flex;
+  display: flex;
+  min-width: 0;
   align-items: center;
   gap: 5px;
   color: var(--text-primary);
@@ -3547,25 +3642,30 @@ body.is-reordering-tabs {
 
 .http-contexts {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .http-context-chip {
-  display: inline-block;
-  padding: 2px 7px;
-  border: 1px solid var(--border-default);
-  border-radius: 5px;
-  background: var(--bg-surface-elevated);
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  max-width: 100%;
+  gap: 6px;
   font-size: 11px;
-  white-space: nowrap;
+}
+
+.http-context-chip + .http-context-chip {
+  padding-inline-start: 6px;
+  border-inline-start: 1px solid var(--border-default);
 }
 
 .http-status-pill {
   display: inline-flex;
   align-items: center;
-  min-height: 20px;
-  padding: 0 8px;
+  min-height: 18px;
+  padding: 0 6px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
@@ -3595,6 +3695,13 @@ body.is-reordering-tabs {
   gap: 10px;
   margin-top: 14px;
   flex-shrink: 0;
+}
+
+.http-action-feedback {
+  align-self: center;
+  margin-right: auto;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .http-modal-footer .secondary-button {

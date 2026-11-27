@@ -34,6 +34,10 @@
    - 通过工具栏按钮或 File 菜单打开“HTTP 日志服务器”弹窗，设置并保存日志服务器 URL 到 `state-v1.json`（`httpServerUrl` 与 `recentHttpServers`）。
    - HTTP 日志和自动更新共用 Rustls 的 `ring` provider。应用入口在构造 HTTP 客户端前注册它，满足 `reqwest` 的 `rustls-no-provider` 配置。
    - 前端通过 Rust command `fetch_http_service_logs` 请求服务端 `GET /api/service_logs/recent`，支持按 Project 二级标签、Package 三级标签以及 `rid`、`rolename`、`udid` 过滤（含历史条件记录与有过滤条件时 5 秒自动刷新），列表展示包含平台图标、上下文（`rid` / 角色 / 服务器地址）、文件大小与保护状态。
+   - HTTP 弹窗提供「服务日志」和「收藏」标签页。行首星标切换收藏，按规范化服务器 URL 与日志 ID 去重，收藏的服务器地址与列表元数据存入 WebView 本地存储。收藏不受查询条件限制，单击条目连接原服务器打开日志。
+   - 「按 ID 查询」使用当前服务器的 `GET /api/service_logs/{log_id}/meta` 精确查询，支持手动输入或从原生剪贴板粘贴并立即查询。结果可打开或收藏。
+   - 各日志列表支持通过原生剪贴板复制日志 ID、UDID，以及每条上下文中的 RID 和角色名，成功提示保留 2 秒。
+   - HTTP 弹窗尺寸随窗口可用空间设定，切换标签页时保持一致。日志行采用约 29 px 的单行布局，长字段截断并支持悬停查看全文，同一日志的多条上下文可在单元格内横向滚动。
    - 用户选择日志并确认后立即打开标签页，Rust command `open_http_log` 创建临时缓存文件（`std::env::temp_dir()/log_scope/http/`）并异步流式下载初始日志，同时复用 `LogSession` 虚拟化展示、Marker 解析、查找和 follow tail。
    - 服务端（`qq-bot-notifier`）新增 `GET /api/service_logs/{log_id}/meta` 返回实际文件大小，并在 `GET /api/service_logs/{log_id}/download?offset=<bytes>` 支持按字节偏移增量拉取（未变化返回 `204`，截断返回 `X-Log-Truncated: 1`）。
    - 激活且未暂停的 HTTP 标签通过 `refresh_log_file` 增量同步服务端追加字节；非活跃或已暂停的 HTTP 标签通过 `get_log_source_changes` 每 1.5 秒查询 `/meta` 检查远程文件大小变化，展示标签页更新提示点，切回或恢复后再同步内容。关闭标签页或退出应用时取消下载并清理临时文件。

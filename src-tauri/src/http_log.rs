@@ -325,6 +325,40 @@ pub async fn fetch_service_log_list(
     Ok(envelope.data.unwrap_or_default())
 }
 
+pub async fn fetch_service_log_by_id(
+    client: &reqwest::Client,
+    server_url: &str,
+    log_id: u64,
+) -> Result<Option<HttpServiceLogItem>, String> {
+    let base_url = normalize_http_server_url(server_url)?;
+    let response = client
+        .get(format!("{base_url}/api/service_logs/{log_id}/meta"))
+        .send()
+        .await
+        .map_err(|err| format!("查询日志失败: {err}"))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(format!("查询日志失败 (HTTP {status})"));
+    }
+
+    let envelope = response
+        .json::<ApiEnvelope<MetaPayload>>()
+        .await
+        .map_err(|err| format!("解析日志元数据失败: {err}"))?;
+    if let (0, Some(payload)) = (envelope.code, envelope.data) {
+        if payload.log.id == log_id {
+            return Ok(Some(payload.log));
+        }
+    }
+    Err(envelope
+        .message
+        .filter(|message| !message.trim().is_empty() && envelope.code != 0)
+        .unwrap_or_else(|| "服务器未返回匹配的日志元数据".to_string()))
+}
+
 pub async fn fetch_remote_file_size(
     client: &reqwest::Client,
     control: &HttpLogControl,

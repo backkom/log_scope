@@ -1234,6 +1234,15 @@ async fn fetch_http_service_logs(
 }
 
 #[tauri::command]
+async fn fetch_http_service_log_by_id(
+    server_url: String,
+    log_id: u64,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<http_log::HttpServiceLogItem>, String> {
+    http_log::fetch_service_log_by_id(&state.http_meta_client, &server_url, log_id).await
+}
+
+#[tauri::command]
 async fn open_http_log(
     server_url: String,
     log_id: u64,
@@ -1682,6 +1691,15 @@ fn get_marker_copy_text(
         .ok_or_else(|| format!("marker {marker_id} payload was not found"))?;
 
     build_marker_copy_text(&session.path, &marker, &payload)
+}
+
+#[tauri::command]
+fn read_text_from_clipboard() -> Result<String, String> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|err| format!("failed to open clipboard: {err}"))?;
+    clipboard
+        .get_text()
+        .map_err(|err| format!("failed to read clipboard text: {err}"))
 }
 
 #[tauri::command]
@@ -4145,6 +4163,7 @@ pub fn run() {
             save_ui_state,
             save_http_server_url,
             fetch_http_service_logs,
+            fetch_http_service_log_by_id,
             open_http_log,
             get_log_http_status,
             retry_http_log_sync,
@@ -4160,6 +4179,7 @@ pub fn run() {
             get_marker_payload,
             get_marker_copy_text,
             copy_text_to_clipboard,
+            read_text_from_clipboard,
             refresh_log_file,
             rescan_log_markers,
             search_log_text,
