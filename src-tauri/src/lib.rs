@@ -3470,7 +3470,7 @@ impl Default for PersistedStore {
 impl Default for PersistedUiState {
     fn default() -> Self {
         Self {
-            theme: "dark".to_string(),
+            theme: "monokai".to_string(),
             follow_tail: true,
             show_source_panel: false,
             show_global_minimap: true,
@@ -3671,8 +3671,11 @@ fn sanitize_store(mut store: PersistedStore) -> PersistedStore {
 }
 
 fn sanitize_ui_state(mut ui_state: PersistedUiState) -> PersistedUiState {
-    if !matches!(ui_state.theme.as_str(), "dark" | "light") {
-        ui_state.theme = "dark".to_string();
+    if !matches!(
+        ui_state.theme.as_str(),
+        "monokai" | "nord" | "dracula" | "forest" | "obsidian"
+    ) {
+        ui_state.theme = "monokai".to_string();
     }
     if !matches!(
         ui_state.log_color_mode.as_str(),
@@ -4007,18 +4010,6 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             let app_handle = app.handle();
-            if let Some(main_window) = app.get_webview_window("main") {
-                let initial_theme = load_persisted_store(app_handle)
-                    .ok()
-                    .map(|store| store.ui_state.theme)
-                    .unwrap_or_else(|| "dark".to_string());
-                let native_theme = if initial_theme == "light" {
-                    tauri::Theme::Light
-                } else {
-                    tauri::Theme::Dark
-                };
-                let _ = main_window.set_theme(Some(native_theme));
-            }
             let _ = update_app_menu(app_handle);
             update::check_for_updates_on_startup(app_handle.clone());
 

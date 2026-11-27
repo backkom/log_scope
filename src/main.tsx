@@ -334,7 +334,15 @@ const FAVORITE_COLORS = [
 
 const DEFAULT_FAVORITE_COLOR = FAVORITE_COLORS[0].value;
 
-type ThemeMode = "dark" | "light";
+const DARK_THEMES = [
+  { id: "monokai", label: "暗榄灰", canvasBg: "rgb(40, 41, 35)", swatch: "#4fd1be" },
+  { id: "nord", label: "极夜蓝", canvasBg: "#242933", swatch: "#88c0d0" },
+  { id: "dracula", label: "暮夜紫", canvasBg: "#262836", swatch: "#bd93f9" },
+  { id: "forest", label: "松翠绿", canvasBg: "#1e2724", swatch: "#52d1a2" },
+  { id: "obsidian", label: "黑曜琥珀", canvasBg: "#1b1c20", swatch: "#f0a94d" },
+] as const;
+
+type ThemeMode = (typeof DARK_THEMES)[number]["id"];
 
 type PersistedUiState = {
   theme?: ThemeMode | string;
@@ -717,26 +725,14 @@ function LogScopeEmblem() {
   );
 }
 
-function SunIcon() {
+function PaletteIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2" />
-      <path d="M12 20v2" />
-      <path d="m4.93 4.93 1.41 1.41" />
-      <path d="m17.66 17.66 1.41 1.41" />
-      <path d="M2 12h2" />
-      <path d="M20 12h2" />
-      <path d="m6.34 17.66-1.41 1.41" />
-      <path d="m19.07 4.93-1.41 1.41" />
-    </svg>
-  );
-}
-
-function MoonIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
+      <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" />
+      <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />
+      <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
+      <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />
     </svg>
   );
 }
@@ -838,9 +834,9 @@ function App() {
   const [logColorMode, setLogColorMode] = React.useState<"full" | "severity" | "off">("full");
   const [themeMode, setThemeMode] = React.useState<ThemeMode>(() => {
     try {
-      return localStorage.getItem("logscope-theme") === "light" ? "light" : "dark";
+      return normalizeThemeMode(localStorage.getItem("logscope-theme"));
     } catch {
-      return "dark";
+      return "monokai";
     }
   });
   const [perfSnapshot, setPerfSnapshot] = React.useState<FrontendPerfSnapshot>({
@@ -1325,8 +1321,8 @@ function App() {
         }
 
         const uiState = store.uiState;
-        if (uiState.theme && isThemeMode(uiState.theme)) {
-          setThemeMode(uiState.theme);
+        if (uiState.theme) {
+          setThemeMode(normalizeThemeMode(uiState.theme));
         }
         setFollowTail(uiState.followTail);
         setShowSourcePanel(uiState.showSourcePanel ?? false);
@@ -1412,7 +1408,6 @@ function App() {
     } catch {
       // ignore storage errors
     }
-    getCurrentWindow().setTheme(themeMode).catch(() => {});
   }, [themeMode]);
 
   React.useEffect(() => {
@@ -3154,14 +3149,14 @@ function App() {
       return;
     }
 
-    const canvasBg = themeMode === "light" ? "#fafbfa" : "rgb(40, 41, 35)";
+    const canvasBg = getThemePreset(themeMode).canvasBg;
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     context.clearRect(0, 0, width, GLOBAL_MINIMAP_HEIGHT);
     context.fillStyle = canvasBg;
     context.fillRect(0, 0, width, GLOBAL_MINIMAP_HEIGHT);
 
     const frame = getGlobalMinimapFrame(firstVisibleLine, viewportLineCount, logFile.lineCount, width);
-    drawViewportFrame(context, frame.left, 0, frame.width, GLOBAL_MINIMAP_HEIGHT, "#ff5a5f", themeMode);
+    drawViewportFrame(context, frame.left, 0, frame.width, GLOBAL_MINIMAP_HEIGHT, "#ff5a5f");
 
     for (const marker of markers) {
       const point = markerGlobalMinimapPoint(marker, logFile.lineCount, width, GLOBAL_MINIMAP_HEIGHT);
@@ -3175,7 +3170,7 @@ function App() {
         context.fill();
       }
       if (isSelected) {
-        drawSelectedMarkerRing(context, point.x, point.y, marker.kind === "message" ? 8 : 7, themeMode);
+        drawSelectedMarkerRing(context, point.x, point.y, marker.kind === "message" ? 8 : 7);
       }
     }
     const drawDurationMs = performance.now() - drawStartedAt;
@@ -3199,14 +3194,14 @@ function App() {
       return;
     }
 
-    const canvasBg = themeMode === "light" ? "#fafbfa" : "rgb(40, 41, 35)";
+    const canvasBg = getThemePreset(themeMode).canvasBg;
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     context.clearRect(0, 0, MINIMAP_WIDTH, height);
     context.fillStyle = canvasBg;
     context.fillRect(0, 0, MINIMAP_WIDTH, height);
 
     const frame = getRightMinimapFrame(firstVisibleLine, viewportLineCount, logFile.lineCount, height);
-    drawViewportFrame(context, 0, frame.top, MINIMAP_WIDTH, frame.height, undefined, themeMode);
+    drawViewportFrame(context, 0, frame.top, MINIMAP_WIDTH, frame.height);
 
     for (const marker of markers) {
       if (marker.startLine < rightMinimapRange.startLine || marker.startLine > rightMinimapRange.endLine) {
@@ -3224,7 +3219,7 @@ function App() {
         context.fill();
       }
       if (isSelected) {
-        drawSelectedMarkerRing(context, point.x, point.y, marker.kind === "message" ? 9 : 7, themeMode);
+        drawSelectedMarkerRing(context, point.x, point.y, marker.kind === "message" ? 9 : 7);
       }
     }
     const drawDurationMs = performance.now() - drawStartedAt;
@@ -3448,16 +3443,23 @@ function App() {
           </div>
           <span className="toolbar-spacer" />
           <div className="toolbar-group" role="group" aria-label="外观与配置">
-            <button
-              type="button"
-              className="toolbar-icon-button"
-              onClick={() => setThemeMode((current) => (current === "dark" ? "light" : "dark"))}
-              title={themeMode === "dark" ? "切换到浅色风格 (Light)" : "切换到深色风格 (Dark)"}
-              aria-label={themeMode === "dark" ? "切换到浅色风格" : "切换到深色风格"}
-              aria-pressed={themeMode === "light"}
-            >
-              {themeMode === "dark" ? <SunIcon /> : <MoonIcon />}
-            </button>
+            {(() => {
+              const currentIndex = DARK_THEMES.findIndex((item) => item.id === themeMode);
+              const currentTheme = DARK_THEMES[currentIndex >= 0 ? currentIndex : 0];
+              const nextTheme = DARK_THEMES[(currentIndex + 1) % DARK_THEMES.length];
+              return (
+                <button
+                  type="button"
+                  className="toolbar-icon-button toolbar-theme-button"
+                  onClick={() => setThemeMode(nextTheme.id)}
+                  title={`配色方案：${currentTheme.label}（点击切换为 ${nextTheme.label}）`}
+                  aria-label={`切换配色方案，当前 ${currentTheme.label}`}
+                >
+                  <PaletteIcon />
+                  <span className="toolbar-theme-dot" style={{ backgroundColor: currentTheme.swatch }} aria-hidden="true" />
+                </button>
+              );
+            })()}
             <button
               type="button"
               className="toolbar-icon-button"
@@ -5006,8 +5008,15 @@ function formatBytes(bytes: number) {
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
-function isThemeMode(value: string): value is ThemeMode {
-  return value === "dark" || value === "light";
+function normalizeThemeMode(value: string | null | undefined): ThemeMode {
+  if (value && DARK_THEMES.some((item) => item.id === value)) {
+    return value as ThemeMode;
+  }
+  return "monokai";
+}
+
+function getThemePreset(themeMode: ThemeMode) {
+  return DARK_THEMES.find((item) => item.id === themeMode) ?? DARK_THEMES[0];
 }
 
 function isLogColorMode(value: string): value is "full" | "severity" | "off" {
@@ -5108,10 +5117,9 @@ function drawViewportFrame(
   width: number,
   height: number,
   strokeStyle?: string,
-  themeMode: ThemeMode = "dark",
 ) {
   context.save();
-  context.fillStyle = themeMode === "light" ? "rgba(24, 112, 106, 0.1)" : "rgba(219, 235, 224, 0.08)";
+  context.fillStyle = "rgba(219, 235, 224, 0.08)";
   const safeWidth = Math.max(1, width);
   const safeHeight = Math.max(1, height);
   context.fillRect(left, top, safeWidth, safeHeight);
@@ -5150,10 +5158,9 @@ function drawSelectedMarkerRing(
   x: number,
   y: number,
   radius: number,
-  themeMode: ThemeMode = "dark",
 ) {
   context.save();
-  context.strokeStyle = themeMode === "light" ? "#1a231e" : "#f8f0c9";
+  context.strokeStyle = "#f8f0c9";
   context.lineWidth = 2;
   context.beginPath();
   context.arc(x, y, radius, 0, Math.PI * 2);

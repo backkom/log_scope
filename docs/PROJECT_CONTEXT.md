@@ -54,7 +54,7 @@
 主视图采用上下+左右的全局布局结构：
 
 顶部工具栏：
-- 支持 Dark / Light 双主题工作台风格切换（与主 Viewer、Canvas Minimap 及弹窗共享主题 token，并在工具栏尾部提供明暗主题切换按钮），同时提供打开文件/连接 Socket/HTTP 日志服务器、暂停/恢复更新（仅作用于当前标签）、显示/隐藏左侧数据源栏、显示/隐藏顶部和右侧 Minimap，以及尾部的标记规则配置入口。
+- 前端界面专注于暗色风格（移除 Light 配色），原生窗口标题栏与菜单栏保留系统默认外观；内置多套 Dark 配色方案（`monokai` 暗榄灰、`nord` 极夜蓝、`dracula` 暮夜紫、`forest` 松翠绿、`obsidian` 黑曜琥珀），在工具栏尾部提供配色切换按钮循环切换并持久化保存（与主 Viewer、Canvas Minimap 及弹窗共享主题 token），同时提供打开文件/连接 Socket/HTTP 日志服务器、暂停/恢复更新（仅作用于当前标签）、显示/隐藏左侧数据源栏、显示/隐藏顶部和右侧 Minimap，以及尾部的标记规则配置入口。标签页签取消激活态顶部亮边，未选中标签保留清晰边框以区分边界。
 
 底部状态栏：
 - 全局固定在应用底部，不参与 viewer 高度计算，集中展示文件大小、总行数、索引耗时、查找耗时和 marker 总数；当前路径只显示在桌面窗口标题中。
@@ -314,7 +314,7 @@ Frame 格式：
 - 最近连接 socket：host、port、显示名、最近打开时间，最多保留 12 条。
 - 最近数据源：记录上一次打开的是文件还是 socket endpoint；启动时不自动打开或连接，用户可从数据源面板主动恢复。
 - 收藏（Favorites）：文件路径或 socket endpoint、自定义显示名、颜色标签，最多保留 50 条；收藏只出现在原生应用菜单，不在页面内渲染列表。
-- 低风险 UI 状态：主题风格（Dark / Light）、follow tail、顶部全局 marker 条显示状态、右侧 minimap 显示状态、日志着色模式、最近搜索词和查找选项。
+- 低风险 UI 状态：Dark 配色方案（`monokai` / `nord` / `dracula` / `forest` / `obsidian`）、follow tail、顶部全局 marker 条显示状态、右侧 minimap 显示状态、日志着色模式、最近搜索词和查找选项。
 
 Rust command：
 
