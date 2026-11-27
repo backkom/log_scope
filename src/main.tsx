@@ -334,7 +334,10 @@ const FAVORITE_COLORS = [
 
 const DEFAULT_FAVORITE_COLOR = FAVORITE_COLORS[0].value;
 
+type ThemeMode = "dark" | "light";
+
 type PersistedUiState = {
+  theme?: ThemeMode | string;
   followTail: boolean;
   showSourcePanel: boolean;
   showGlobalMinimap: boolean;
@@ -665,6 +668,79 @@ function TabScrollRightIcon() {
   );
 }
 
+function SearchIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  );
+}
+
+function SourceKindIcon({ kind }: { kind: TabSource["kind"] }) {
+  if (kind === "socket") {
+    return (
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+        <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+        <circle cx="12" cy="20" r="1" fill="currentColor" />
+      </svg>
+    );
+  }
+  if (kind === "http") {
+    return (
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" />
+        <line x1="3" y1="12" x2="21" y2="12" />
+        <path d="M12 3a13 13 0 0 1 3.5 9 13 13 0 0 1-3.5 9 13 13 0 0 1-3.5-9A13 13 0 0 1 12 3z" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+    </svg>
+  );
+}
+
+function LogScopeEmblem() {
+  return (
+    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" opacity="0.85" />
+      <polyline points="14 2 14 8 20 8" opacity="0.85" />
+      <line x1="8" y1="12" x2="12" y2="12" opacity="0.7" />
+      <line x1="8" y1="16" x2="11" y2="16" opacity="0.7" />
+      <circle cx="16.5" cy="16.5" r="3.5" fill="rgba(34, 139, 127, 0.25)" />
+      <line x1="19" y1="19" x2="21.5" y2="21.5" />
+    </svg>
+  );
+}
+
+function SunIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2" />
+      <path d="M12 20v2" />
+      <path d="m4.93 4.93 1.41 1.41" />
+      <path d="m17.66 17.66 1.41 1.41" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
+      <path d="m6.34 17.66-1.41 1.41" />
+      <path d="m19.07 4.93-1.41 1.41" />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+    </svg>
+  );
+}
+
 function App() {
   const [tabs, setTabs] = React.useState<SessionTab[]>([]);
   const [activeTabId, setActiveTabId] = React.useState<string | null>(null);
@@ -760,6 +836,13 @@ function App() {
   const findInputRef = React.useRef<HTMLInputElement | null>(null);
   const gotoInputRef = React.useRef<HTMLInputElement | null>(null);
   const [logColorMode, setLogColorMode] = React.useState<"full" | "severity" | "off">("full");
+  const [themeMode, setThemeMode] = React.useState<ThemeMode>(() => {
+    try {
+      return localStorage.getItem("logscope-theme") === "light" ? "light" : "dark";
+    } catch {
+      return "dark";
+    }
+  });
   const [perfSnapshot, setPerfSnapshot] = React.useState<FrontendPerfSnapshot>({
     renderedRows: 0,
     cachedLines: 0,
@@ -1242,6 +1325,9 @@ function App() {
         }
 
         const uiState = store.uiState;
+        if (uiState.theme && isThemeMode(uiState.theme)) {
+          setThemeMode(uiState.theme);
+        }
         setFollowTail(uiState.followTail);
         setShowSourcePanel(uiState.showSourcePanel ?? false);
         setShowGlobalMinimap(uiState.showGlobalMinimap);
@@ -1281,6 +1367,7 @@ function App() {
     }
     saveUiStateTimerRef.current = window.setTimeout(() => {
       const uiState: PersistedUiState = {
+        theme: themeMode,
         followTail,
         showSourcePanel,
         showGlobalMinimap,
@@ -1304,6 +1391,7 @@ function App() {
       }
     };
   }, [
+    themeMode,
     followTail,
     showSourcePanel,
     showGlobalMinimap,
@@ -1316,6 +1404,16 @@ function App() {
     searchWrapAround,
     searchFindAll,
   ]);
+
+  React.useLayoutEffect(() => {
+    document.documentElement.dataset.theme = themeMode;
+    try {
+      localStorage.setItem("logscope-theme", themeMode);
+    } catch {
+      // ignore storage errors
+    }
+    getCurrentWindow().setTheme(themeMode).catch(() => {});
+  }, [themeMode]);
 
   React.useEffect(() => {
     if (saveMarkerConfigTimerRef.current !== null) {
@@ -1684,6 +1782,8 @@ function App() {
     };
   }, []);
 
+  const hasOpenLog = Boolean(logFile);
+
   React.useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) {
@@ -1695,7 +1795,7 @@ function App() {
     const observer = new ResizeObserver(updateHeight);
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, []);
+  }, [hasOpenLog]);
 
   React.useEffect(() => {
     const canvas = globalMinimapRef.current;
@@ -1708,7 +1808,7 @@ function App() {
     const observer = new ResizeObserver(updateWidth);
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, []);
+  }, [hasOpenLog, showGlobalMinimap]);
 
   const firstVisibleLine = logFile
     ? scrollTopToLine(scrollTop, logFile.lineCount, viewportHeight)
@@ -3054,13 +3154,14 @@ function App() {
       return;
     }
 
+    const canvasBg = themeMode === "light" ? "#fafbfa" : "rgb(40, 41, 35)";
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     context.clearRect(0, 0, width, GLOBAL_MINIMAP_HEIGHT);
-    context.fillStyle = "rgb(40, 41, 35)";
+    context.fillStyle = canvasBg;
     context.fillRect(0, 0, width, GLOBAL_MINIMAP_HEIGHT);
 
     const frame = getGlobalMinimapFrame(firstVisibleLine, viewportLineCount, logFile.lineCount, width);
-    drawViewportFrame(context, frame.left, 0, frame.width, GLOBAL_MINIMAP_HEIGHT, "#ff5a5f");
+    drawViewportFrame(context, frame.left, 0, frame.width, GLOBAL_MINIMAP_HEIGHT, "#ff5a5f", themeMode);
 
     for (const marker of markers) {
       const point = markerGlobalMinimapPoint(marker, logFile.lineCount, width, GLOBAL_MINIMAP_HEIGHT);
@@ -3074,12 +3175,12 @@ function App() {
         context.fill();
       }
       if (isSelected) {
-        drawSelectedMarkerRing(context, point.x, point.y, marker.kind === "message" ? 8 : 7);
+        drawSelectedMarkerRing(context, point.x, point.y, marker.kind === "message" ? 8 : 7, themeMode);
       }
     }
     const drawDurationMs = performance.now() - drawStartedAt;
     setPerfSnapshot((current) => ({ ...current, globalMinimapMs: drawDurationMs }));
-  }, [firstVisibleLine, globalMinimapWidth, logFile, markers, markerRuleConfig, selectedMarker?.id, viewportLineCount]);
+  }, [firstVisibleLine, globalMinimapWidth, logFile, markers, markerRuleConfig, selectedMarker?.id, themeMode, viewportLineCount]);
 
   React.useEffect(() => {
     const canvas = localMinimapRef.current;
@@ -3098,13 +3199,14 @@ function App() {
       return;
     }
 
+    const canvasBg = themeMode === "light" ? "#fafbfa" : "rgb(40, 41, 35)";
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     context.clearRect(0, 0, MINIMAP_WIDTH, height);
-    context.fillStyle = "rgb(40, 41, 35)";
+    context.fillStyle = canvasBg;
     context.fillRect(0, 0, MINIMAP_WIDTH, height);
 
     const frame = getRightMinimapFrame(firstVisibleLine, viewportLineCount, logFile.lineCount, height);
-    drawViewportFrame(context, 0, frame.top, MINIMAP_WIDTH, frame.height);
+    drawViewportFrame(context, 0, frame.top, MINIMAP_WIDTH, frame.height, undefined, themeMode);
 
     for (const marker of markers) {
       if (marker.startLine < rightMinimapRange.startLine || marker.startLine > rightMinimapRange.endLine) {
@@ -3122,12 +3224,12 @@ function App() {
         context.fill();
       }
       if (isSelected) {
-        drawSelectedMarkerRing(context, point.x, point.y, marker.kind === "message" ? 9 : 7);
+        drawSelectedMarkerRing(context, point.x, point.y, marker.kind === "message" ? 9 : 7, themeMode);
       }
     }
     const drawDurationMs = performance.now() - drawStartedAt;
     setPerfSnapshot((current) => ({ ...current, localMinimapMs: drawDurationMs }));
-  }, [firstVisibleLine, logFile, markers, markerRuleConfig, rightMinimapRange, selectedMarker?.id, viewportHeight, viewportLineCount]);
+  }, [firstVisibleLine, logFile, markers, markerRuleConfig, rightMinimapRange, selectedMarker?.id, themeMode, viewportHeight, viewportLineCount]);
 
   const handleGlobalMinimapClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!logFile) {
@@ -3238,167 +3340,196 @@ function App() {
     return () => window.removeEventListener("keydown", handleTabShortcut);
   }, [activeTabId, tabs, closeTab, activateTab, showSocketModal, showHttpModal, showMarkerConfigModal, showFavoriteDialog]);
 
+  const openFilePicker = () => {
+    open({ multiple: true, directory: false }).then((selected) => {
+      const paths = typeof selected === "string" ? [selected] : Array.isArray(selected) ? selected : [];
+      if (paths.length > 0) {
+        setFilePath(paths[paths.length - 1]);
+        void openPaths(paths);
+      }
+    }).catch(console.error);
+  };
+  const openSocketPicker = () => {
+    setShowSocketModal(true);
+    setServerFilterText("");
+  };
+  const isMacPlatform = /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
+  const modKeyLabel = isMacPlatform ? "⌘" : "Ctrl+";
+
   return (
     <main className="app-shell">
       <header className="viewer-toolbar">
         <div className="toolbar-buttons">
-          <button
-            type="button"
-            className="toolbar-icon-button"
-            onClick={() => open({ multiple: true, directory: false }).then((selected) => {
-              const paths = typeof selected === "string" ? [selected] : Array.isArray(selected) ? selected : [];
-              if (paths.length > 0) {
-                setFilePath(paths[paths.length - 1]);
-                void openPaths(paths);
-              }
-            }).catch(console.error)}
-            title="打开文件 (⌘O)"
-          >
-            <OpenFileIcon />
-          </button>
-          <button
-            type="button"
-            className="toolbar-icon-button"
-            onClick={() => { setShowSocketModal(true); setServerFilterText(""); }}
-            title="连接 Socket (⌘⇧O)"
-          >
-            <ConnectSocketIcon />
-          </button>
-          <button
-            type="button"
-            className="toolbar-icon-button"
-            onClick={() => setShowHttpModal(true)}
-            title="从 HTTP 服务器打开 (⌘⇧H)"
-          >
-            <HttpServerIcon />
-          </button>
-          <span className="toolbar-separator" />
-          <button
-            type="button"
-            className="toolbar-icon-button"
-            style={{
-              backgroundColor: isDisconnected ? "#ffe9e9" : "#e9f2ef",
-              color: isDisconnected ? "#c92a2a" : "#18706a",
-            }}
-            disabled={!logFile && !isConnectingSocket && !isOpeningHttp}
-            onClick={() => setIsDisconnected((current) => !current)}
-            title={isDisconnected ? "恢复更新" : "暂停更新"}
-          >
-            {isDisconnected ? <PlayIcon /> : <PauseIcon />}
-          </button>
-          {activeTab?.source.kind === "socket" &&
-            activeTab.connectionStatus !== "connected" &&
-            activeTab.connectionStatus !== "quota" && (
+          <div className="toolbar-group" role="group" aria-label="打开数据源">
             <button
               type="button"
               className="toolbar-icon-button"
-              onClick={() => void reconnectActiveSocket()}
-              title="重新连接 Socket"
-              aria-label="重新连接 Socket"
-            ><ConnectSocketIcon /></button>
-          )}
-          {activeTab?.source.kind === "http" &&
-            (activeTab.connectionStatus === "disconnected" || activeTab.connectionStatus === "error") && (
+              onClick={openFilePicker}
+              title={`打开文件 (${modKeyLabel}O)`}
+            >
+              <OpenFileIcon />
+            </button>
             <button
               type="button"
               className="toolbar-icon-button"
-              onClick={() => void retryActiveHttpSync()}
-              title="重新同步 HTTP 日志"
-              aria-label="重新同步 HTTP 日志"
-            ><HttpServerIcon /></button>
-          )}
+              onClick={openSocketPicker}
+              title={`连接 Socket (${isMacPlatform ? "⌘⇧O" : "Ctrl+Shift+O"})`}
+            >
+              <ConnectSocketIcon />
+            </button>
+            <button
+              type="button"
+              className="toolbar-icon-button"
+              onClick={() => setShowHttpModal(true)}
+              title={`从 HTTP 服务器打开 (${isMacPlatform ? "⌘⇧H" : "Ctrl+Shift+H"})`}
+            >
+              <HttpServerIcon />
+            </button>
+          </div>
           <span className="toolbar-separator" />
-          <button
-            type="button"
-            className={`toolbar-icon-button${showSourcePanel ? " is-active" : ""}`}
-            onClick={() => setShowSourcePanel((current) => !current)}
-            title="显示/隐藏左侧栏"
-          >
-            <SidebarIcon />
-          </button>
-          <button
-            type="button"
-            className={`toolbar-icon-button${showGlobalMinimap ? " is-active" : ""}`}
-            onClick={() => setShowGlobalMinimap((current) => !current)}
-            title="显示/隐藏顶部 Minimap"
-          >
-            <TopPanelIcon />
-          </button>
-          <button
-            type="button"
-            className={`toolbar-icon-button${showLocalMinimap ? " is-active" : ""}`}
-            onClick={() => setShowLocalMinimap((current) => !current)}
-            title="显示/隐藏右侧 Minimap"
-          >
-            <RightPanelIcon />
-          </button>
+          <div className="toolbar-group" role="group" aria-label="实时更新控制">
+            <button
+              type="button"
+              className={`toolbar-icon-button${logFile || isConnectingSocket || isOpeningHttp ? (isDisconnected ? " is-paused" : " is-streaming") : ""}`}
+              disabled={!logFile && !isConnectingSocket && !isOpeningHttp}
+              onClick={() => setIsDisconnected((current) => !current)}
+              title={isDisconnected ? "恢复更新" : "暂停更新"}
+            >
+              {isDisconnected ? <PlayIcon /> : <PauseIcon />}
+            </button>
+            {activeTab?.source.kind === "socket" &&
+              activeTab.connectionStatus !== "connected" &&
+              activeTab.connectionStatus !== "quota" && (
+              <button
+                type="button"
+                className="toolbar-icon-button"
+                onClick={() => void reconnectActiveSocket()}
+                title="重新连接 Socket"
+                aria-label="重新连接 Socket"
+              ><ConnectSocketIcon /></button>
+            )}
+            {activeTab?.source.kind === "http" &&
+              (activeTab.connectionStatus === "disconnected" || activeTab.connectionStatus === "error") && (
+              <button
+                type="button"
+                className="toolbar-icon-button"
+                onClick={() => void retryActiveHttpSync()}
+                title="重新同步 HTTP 日志"
+                aria-label="重新同步 HTTP 日志"
+              ><HttpServerIcon /></button>
+            )}
+          </div>
           <span className="toolbar-separator" />
-          <button
-            type="button"
-            className="toolbar-icon-button"
-            onClick={() => setShowMarkerConfigModal(true)}
-            title="标记规则配置"
-          >
-            <SettingsIcon />
-          </button>
+          <div className="toolbar-group" role="group" aria-label="视图布局">
+            <button
+              type="button"
+              className={`toolbar-icon-button${showSourcePanel ? " is-active" : ""}`}
+              onClick={() => setShowSourcePanel((current) => !current)}
+              title="显示/隐藏左侧栏"
+            >
+              <SidebarIcon />
+            </button>
+            <button
+              type="button"
+              className={`toolbar-icon-button${showGlobalMinimap ? " is-active" : ""}`}
+              onClick={() => setShowGlobalMinimap((current) => !current)}
+              title="显示/隐藏顶部 Minimap"
+            >
+              <TopPanelIcon />
+            </button>
+            <button
+              type="button"
+              className={`toolbar-icon-button${showLocalMinimap ? " is-active" : ""}`}
+              onClick={() => setShowLocalMinimap((current) => !current)}
+              title="显示/隐藏右侧 Minimap"
+            >
+              <RightPanelIcon />
+            </button>
+          </div>
+          <span className="toolbar-spacer" />
+          <div className="toolbar-group" role="group" aria-label="外观与配置">
+            <button
+              type="button"
+              className="toolbar-icon-button"
+              onClick={() => setThemeMode((current) => (current === "dark" ? "light" : "dark"))}
+              title={themeMode === "dark" ? "切换到浅色风格 (Light)" : "切换到深色风格 (Dark)"}
+              aria-label={themeMode === "dark" ? "切换到浅色风格" : "切换到深色风格"}
+              aria-pressed={themeMode === "light"}
+            >
+              {themeMode === "dark" ? <SunIcon /> : <MoonIcon />}
+            </button>
+            <button
+              type="button"
+              className="toolbar-icon-button"
+              onClick={() => setShowMarkerConfigModal(true)}
+              title="标记规则配置"
+            >
+              <SettingsIcon />
+            </button>
+          </div>
         </div>
       </header>
 
-      <nav className="source-tabs" aria-label="打开的数据源">
-        <div ref={tabListRef} className="source-tab-list" role="tablist">
-          {tabs.map((tab) => (
-            <SourceTabItem
-              key={tab.id}
-              tab={tab}
-              tabs={tabs}
-              isActive={tab.id === activeTabId}
-              isDragging={tab.id === draggingTabId}
-              dropEdge={tabDropTarget?.tabId === tab.id ? tabDropTarget.edge : null}
-              onActivate={activateTab}
-              onClickSelect={(tabId) => {
-                if (consumeSuppressedTabClick(tabId)) return;
-                void activateTab(tabId);
-              }}
-              onClose={closeTab}
-              onPointerDown={beginTabPointerDrag}
-            />
-          ))}
-        </div>
-        {tabScrollState.hasOverflow && (
-          <div className="source-tab-scroll-controls" role="group" aria-label="标签列表滚动">
-            <button
-              type="button"
-              className="source-tab-scroll-button"
-              title="向左滚动标签"
-              aria-label="向左滚动标签"
-              disabled={!tabScrollState.canScrollLeft}
-              onClick={() => scrollTabs(-1)}
-            ><TabScrollLeftIcon /></button>
-            <button
-              type="button"
-              className="source-tab-scroll-button"
-              title="向右滚动标签"
-              aria-label="向右滚动标签"
-              disabled={!tabScrollState.canScrollRight}
-              onClick={() => scrollTabs(1)}
-            ><TabScrollRightIcon /></button>
+      {tabs.length > 0 && (
+        <nav className="source-tabs" aria-label="打开的数据源">
+          <div ref={tabListRef} className="source-tab-list" role="tablist">
+            {tabs.map((tab) => (
+              <SourceTabItem
+                key={tab.id}
+                tab={tab}
+                tabs={tabs}
+                isActive={tab.id === activeTabId}
+                isDragging={tab.id === draggingTabId}
+                dropEdge={tabDropTarget?.tabId === tab.id ? tabDropTarget.edge : null}
+                onActivate={activateTab}
+                onClickSelect={(tabId) => {
+                  if (consumeSuppressedTabClick(tabId)) return;
+                  void activateTab(tabId);
+                }}
+                onClose={closeTab}
+                onPointerDown={beginTabPointerDrag}
+              />
+            ))}
           </div>
-        )}
-      </nav>
+          {tabScrollState.hasOverflow && (
+            <div className="source-tab-scroll-controls" role="group" aria-label="标签列表滚动">
+              <button
+                type="button"
+                className="source-tab-scroll-button"
+                title="向左滚动标签"
+                aria-label="向左滚动标签"
+                disabled={!tabScrollState.canScrollLeft}
+                onClick={() => scrollTabs(-1)}
+              ><TabScrollLeftIcon /></button>
+              <button
+                type="button"
+                className="source-tab-scroll-button"
+                title="向右滚动标签"
+                aria-label="向右滚动标签"
+                disabled={!tabScrollState.canScrollRight}
+                onClick={() => scrollTabs(1)}
+              ><TabScrollRightIcon /></button>
+            </div>
+          )}
+        </nav>
+      )}
 
-      <div className="app-body" style={{ gridTemplateColumns: showSourcePanel ? `${sourcePanelWidth}px 4px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
-        <aside className="source-panel" style={{ display: showSourcePanel ? 'flex' : 'none' }}>
+      <div className="app-body" style={{ gridTemplateColumns: showSourcePanel && logFile ? `${sourcePanelWidth}px 4px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+        <aside className="source-panel" style={{ display: showSourcePanel && logFile ? 'flex' : 'none' }}>
 
           <section className="panel-section marker-panel" style={{ flex: 1, minHeight: 0 }}>
             <div className="marker-filter-row">
-              <input
-                className="marker-filter-input"
-                value={markerFilterText}
-                onChange={(e) => setMarkerFilterText(e.target.value)}
-                placeholder={`搜索 Marker (${markers.length})`}
-                aria-label="过滤 Marker"
-                onKeyDown={(e) => e.stopPropagation()}
-              />
+              <div className="marker-filter-input-wrap">
+                <SearchIcon className="marker-filter-icon" />
+                <input
+                  className="marker-filter-input"
+                  value={markerFilterText}
+                  onChange={(e) => setMarkerFilterText(e.target.value)}
+                  placeholder={`搜索 Marker (${markers.length})`}
+                  aria-label="过滤 Marker"
+                  onKeyDown={(e) => e.stopPropagation()}
+                />
+              </div>
               <button
                 type="button"
                 className={`shader-missing-copy-button${shaderVariantMissingCopied ? " is-copied" : ""}`}
@@ -3570,7 +3701,7 @@ function App() {
 
         <div
           className="panel-resizer"
-          style={{ display: showSourcePanel ? 'block' : 'none' }}
+          style={{ display: showSourcePanel && logFile ? 'block' : 'none' }}
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId);
           }}
@@ -3583,114 +3714,154 @@ function App() {
         />
 
         <section
-          className={`viewer-area${showGlobalMinimap ? "" : " is-global-minimap-hidden"}${showLocalMinimap ? "" : " is-local-minimap-hidden"
+          className={`viewer-area${logFile ? "" : " is-empty"}${showGlobalMinimap ? "" : " is-global-minimap-hidden"}${showLocalMinimap ? "" : " is-local-minimap-hidden"
             }`}
         >
-          {showGlobalMinimap ? (
-            <div className="global-minimap-bar">
-              <canvas
-                className="global-minimap"
-                ref={globalMinimapRef}
-                width="1024"
-                height={GLOBAL_MINIMAP_HEIGHT}
-                aria-label="global marker minimap"
-                onClick={handleGlobalMinimapClick}
-              />
-            </div>
-          ) : (
-            <div className="global-minimap-bar is-hidden" aria-hidden="true" />
-          )}
-
-          <div
-            className="viewer-layout"
-            ref={viewportRef}
-            aria-label="log viewer"
-            tabIndex={-1}
-            onScroll={(event) => {
-              const nextScrollTop = event.currentTarget.scrollTop;
-              setScrollTop(nextScrollTop);
-              if (logFile) {
-                const line = scrollTopToLine(nextScrollTop, logFile.lineCount, event.currentTarget.clientHeight);
-                const viewLines = Math.ceil(event.currentTarget.clientHeight / ROW_HEIGHT);
-                if (line + viewLines >= logFile.lineCount - 2) {
-                  setPendingTailLines(0);
-                }
-              }
-            }}
-          >
-            {logFile ? (
-              <div className="viewer-scroll-space" style={{ height: scrollSpaceHeight }}>
-                <div className="log-viewport" ref={logViewportRef} style={{ height: viewportHeight || undefined }}>
-                  <div className="visible-lines" style={{ transform: `translateY(${visibleOffset}px)` }}>
-                    {renderedLines.map((line) => {
-                      const isSelectedMarkerLine =
-                        selectedMarkerRange !== null &&
-                        line.lineNumber >= selectedMarkerRange.startLine &&
-                        line.lineNumber <= selectedMarkerRange.endLine;
-                      return (
-                        <div
-                          className={`log-row${line.text === undefined ? " is-loading" : ""}${visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
-                            }${isSelectedMarkerLine ? " has-selected-marker" : ""
-                            }${activeSearchLine === line.lineNumber ? " has-active-search" : ""}${selectedLine === line.lineNumber ? " has-selected-line" : ""
-                            } ${getSeverityClass(line.text, logColorMode, markerRuleConfig.severityRules)}`}
-                          key={line.lineNumber}
-                          data-line-number={line.lineNumber}
-                        >
-                          <span className={`line-number${isSelectedMarkerLine ? " is-selected-marker" : ""}`}>{line.lineNumber}</span>
-                          <code title={line.text ?? ""}>
-                            {line.text === undefined
-                              ? " "
-                              : renderLogLine(
-                                line.text,
-                                searchQuery,
-                                searchCaseSensitive,
-                                searchRegex,
-                                searchWholeWord,
-                                logColorMode,
-                                line.lineNumber,
-                                activeSearchLine === line.lineNumber,
-                                selectedWord,
-                                selectedWordRange,
-                              )}
-                          </code>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {showLocalMinimap ? (
+          {logFile ? (
+            <>
+              {showGlobalMinimap ? (
+                <div className="global-minimap-bar">
                   <canvas
-                    className="minimap-placeholder local-minimap"
-                    ref={localMinimapRef}
-                    width={MINIMAP_WIDTH}
-                    height="640"
-                    aria-label="local marker minimap"
-                    onPointerDown={handleLocalMinimapPointerDown}
-                    onPointerMove={handleLocalMinimapPointerMove}
-                    onPointerUp={stopLocalMinimapDrag}
-                    onPointerCancel={stopLocalMinimapDrag}
+                    className="global-minimap"
+                    ref={globalMinimapRef}
+                    width="1024"
+                    height={GLOBAL_MINIMAP_HEIGHT}
+                    aria-label="global marker minimap"
+                    onClick={handleGlobalMinimapClick}
                   />
-                ) : null}
-              </div>
-            ) : (
-              <div className="viewer-scroll-space empty-scroll-space">
-                <div className="log-viewport">
-                  <div className="empty-state">
-                    <strong>等待文件</strong>
-                    <span>将文件拖拽入后打开；viewer 只渲染当前可见行。</span>
-                  </div>
                 </div>
+              ) : (
+                <div className="global-minimap-bar is-hidden" aria-hidden="true" />
+              )}
 
-                {showLocalMinimap ? (
-                  <canvas className="minimap-placeholder" width={MINIMAP_WIDTH} height="640" aria-label="minimap placeholder" />
-                ) : null}
+              <div
+                className="viewer-layout"
+                ref={viewportRef}
+                aria-label="log viewer"
+                tabIndex={-1}
+                onScroll={(event) => {
+                  const nextScrollTop = event.currentTarget.scrollTop;
+                  setScrollTop(nextScrollTop);
+                  const line = scrollTopToLine(nextScrollTop, logFile.lineCount, event.currentTarget.clientHeight);
+                  const viewLines = Math.ceil(event.currentTarget.clientHeight / ROW_HEIGHT);
+                  if (line + viewLines >= logFile.lineCount - 2) {
+                    setPendingTailLines(0);
+                  }
+                }}
+              >
+                <div className="viewer-scroll-space" style={{ height: scrollSpaceHeight }}>
+                  <div className="log-viewport" ref={logViewportRef} style={{ height: viewportHeight || undefined }}>
+                    <div className="visible-lines" style={{ transform: `translateY(${visibleOffset}px)` }}>
+                      {renderedLines.map((line) => {
+                        const isSelectedMarkerLine =
+                          selectedMarkerRange !== null &&
+                          line.lineNumber >= selectedMarkerRange.startLine &&
+                          line.lineNumber <= selectedMarkerRange.endLine;
+                        return (
+                          <div
+                            className={`log-row${line.text === undefined ? " is-loading" : ""}${visibleMarkerLines.has(line.lineNumber) ? " has-marker" : ""
+                              }${isSelectedMarkerLine ? " has-selected-marker" : ""
+                              }${activeSearchLine === line.lineNumber ? " has-active-search" : ""}${selectedLine === line.lineNumber ? " has-selected-line" : ""
+                              } ${getSeverityClass(line.text, logColorMode, markerRuleConfig.severityRules)}`}
+                            key={line.lineNumber}
+                            data-line-number={line.lineNumber}
+                          >
+                            <span className={`line-number${isSelectedMarkerLine ? " is-selected-marker" : ""}`}>{line.lineNumber}</span>
+                            <code title={line.text ?? ""}>
+                              {line.text === undefined
+                                ? " "
+                                : renderLogLine(
+                                  line.text,
+                                  searchQuery,
+                                  searchCaseSensitive,
+                                  searchRegex,
+                                  searchWholeWord,
+                                  logColorMode,
+                                  line.lineNumber,
+                                  activeSearchLine === line.lineNumber,
+                                  selectedWord,
+                                  selectedWordRange,
+                                )}
+                            </code>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {showLocalMinimap ? (
+                    <canvas
+                      className="minimap-placeholder local-minimap"
+                      ref={localMinimapRef}
+                      width={MINIMAP_WIDTH}
+                      height="640"
+                      aria-label="local marker minimap"
+                      onPointerDown={handleLocalMinimapPointerDown}
+                      onPointerMove={handleLocalMinimapPointerMove}
+                      onPointerUp={stopLocalMinimapDrag}
+                      onPointerCancel={stopLocalMinimapDrag}
+                    />
+                  ) : null}
+                </div>
               </div>
-            )}
-          </div>
+            </>
+          ) : (
+            <div className="empty-state" onWheel={(event) => event.preventDefault()}>
+              <div className="empty-state-card">
+                <div className="empty-state-emblem">
+                  <LogScopeEmblem />
+                </div>
+                <h2 className="empty-state-title">LogScope</h2>
+                <p className="empty-state-subtitle">
+                  拖拽日志文件到窗口即可打开，或从下方选择数据源开始查看。
+                </p>
+                <div className="empty-state-actions">
+                  <button
+                    type="button"
+                    className="empty-action-button"
+                    onClick={openFilePicker}
+                  >
+                    <OpenFileIcon />
+                    <span>打开本地文件</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="empty-action-button"
+                    onClick={openSocketPicker}
+                  >
+                    <ConnectSocketIcon />
+                    <span>连接 Socket</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="empty-action-button"
+                    onClick={() => setShowHttpModal(true)}
+                  >
+                    <HttpServerIcon />
+                    <span>HTTP 服务器</span>
+                  </button>
+                </div>
+                <div className="empty-state-shortcuts">
+                  <span className="empty-shortcut-item">
+                    <kbd>{modKeyLabel}O</kbd>
+                    <span>打开文件</span>
+                  </span>
+                  <span className="empty-shortcut-item">
+                    <kbd>{modKeyLabel}F</kbd>
+                    <span>查找</span>
+                  </span>
+                  <span className="empty-shortcut-item">
+                    <kbd>Control+G</kbd>
+                    <span>跳转行号</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {gotoBarOpen ? (
             <form className="goto-line-bar" onSubmit={jumpToInputLine}>
+              <span className="goto-line-label">跳转</span>
               <input
                 ref={gotoInputRef}
                 value={jumpLine}
@@ -3852,9 +4023,11 @@ function App() {
       </div>
 
       <footer className="viewer-status-bar" aria-label="log 状态栏">
-        {statusItems.map((item) => (
-          <strong key={item}>{item}</strong>
-        ))}
+        <div className="viewer-status-items">
+          {statusItems.map((item) => (
+            <strong key={item}>{item}</strong>
+          ))}
+        </div>
         <div className="status-actions" aria-label="状态栏操作">
           <div className="status-button-group" role="group" aria-label="日志着色模式">
             <button
@@ -3904,7 +4077,8 @@ function App() {
             title={followTail ? "点击切换为阅读锁定" : "点击切换为跟随 tail"}
             aria-pressed={followTail}
           >
-            {followTail ? "跟随 Tail" : "阅读锁定"}
+            <span className="status-tail-dot" aria-hidden="true" />
+            <span>{followTail ? "跟随 Tail" : "阅读锁定"}</span>
           </button>
         </div>
       </footer>
@@ -3924,7 +4098,7 @@ function App() {
           >
             <div className="modal-header">
               <div className="modal-header-left">
-                <svg className="modal-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg className="modal-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M5 12.55a11 11 0 0 1 14.08 0" />
                   <path d="M1.42 9a16 16 0 0 1 21.16 0" />
                   <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
@@ -3957,7 +4131,7 @@ function App() {
                 </button>
               </div>
               <div className="server-filter-bar">
-                <svg className="server-filter-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg className="server-filter-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="11" cy="11" r="8" />
                   <line x1="21" y1="21" x2="16.65" y2="16.65" />
                 </svg>
@@ -3984,7 +4158,7 @@ function App() {
               <div className="discovered-servers-list">
                 {discoveredServers.length === 0 ? (
                   <div className="discovered-servers-empty">
-                    <svg className="discovery-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <svg className="discovery-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="12" cy="12" r="10" />
                       <path d="M12 6v6l4 2" />
                     </svg>
@@ -3996,7 +4170,7 @@ function App() {
                   </div>
                 ) : filteredServers.length === 0 ? (
                   <div className="discovered-servers-empty">
-                    <svg className="discovery-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <svg className="discovery-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="11" cy="11" r="8" />
                       <line x1="21" y1="21" x2="16.65" y2="16.65" />
                     </svg>
@@ -4025,11 +4199,11 @@ function App() {
                           <span className="server-address">{server.host}:{server.port}</span>
                         </div>
                         {isSelected ? (
-                          <svg className="server-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                          <svg className="server-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="20 6 9 17 4 12" />
                           </svg>
                         ) : (
-                          <svg className="server-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <svg className="server-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="9 18 15 12 9 6" />
                           </svg>
                         )}
@@ -4120,7 +4294,7 @@ function App() {
           >
             <div className="modal-header">
               <div className="modal-header-left">
-                <svg className="modal-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg className="modal-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
                 </svg>
                 <h2>{favoriteDialogMode === "edit" ? "编辑收藏" : "添加到收藏"}</h2>
@@ -4747,8 +4921,13 @@ function SourceTabItem({
           void onActivate(nextTab.id);
         }}
       >
-        <span className={"source-tab-status " + tab.connectionStatus} aria-hidden="true" />
+        <span className="source-tab-kind-icon" aria-hidden="true">
+          <SourceKindIcon kind={tab.source.kind} />
+        </span>
         <span className="source-tab-title">{getTabDisplayTitle(tab, tabs)}</span>
+        {(tab.source.kind !== "file" || tab.connectionStatus !== "connected") && (
+          <span className={"source-tab-status " + tab.connectionStatus} aria-hidden="true" />
+        )}
         {tab.dirty && <span className="source-tab-dirty" aria-hidden="true" />}
       </button>
       <button
@@ -4825,6 +5004,10 @@ function formatBytes(bytes: number) {
   }
 
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
+function isThemeMode(value: string): value is ThemeMode {
+  return value === "dark" || value === "light";
 }
 
 function isLogColorMode(value: string): value is "full" | "severity" | "off" {
@@ -4925,9 +5108,10 @@ function drawViewportFrame(
   width: number,
   height: number,
   strokeStyle?: string,
+  themeMode: ThemeMode = "dark",
 ) {
   context.save();
-  context.fillStyle = "rgba(219, 235, 224, 0.08)";
+  context.fillStyle = themeMode === "light" ? "rgba(24, 112, 106, 0.1)" : "rgba(219, 235, 224, 0.08)";
   const safeWidth = Math.max(1, width);
   const safeHeight = Math.max(1, height);
   context.fillRect(left, top, safeWidth, safeHeight);
@@ -4966,9 +5150,10 @@ function drawSelectedMarkerRing(
   x: number,
   y: number,
   radius: number,
+  themeMode: ThemeMode = "dark",
 ) {
   context.save();
-  context.strokeStyle = "#f8f0c9";
+  context.strokeStyle = themeMode === "light" ? "#1a231e" : "#f8f0c9";
   context.lineWidth = 2;
   context.beginPath();
   context.arc(x, y, radius, 0, Math.PI * 2);

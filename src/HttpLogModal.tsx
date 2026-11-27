@@ -169,7 +169,7 @@ function PlatformBadge({ platform }: { platform: string }) {
     icon = (
       <svg className="http-platform-icon" viewBox="0 0 24 24" aria-hidden="true">
         <path
-          fill="#d8e2da"
+          fill="currentColor"
           d="M12 2.2 20.6 7.1v9.8L12 21.8 3.4 16.9V7.1L12 2.2Zm0 2.3L6.1 7.9 12 11.3l5.9-3.4L12 4.5Zm-6.6 5.2v6.1l5.6 3.2v-6.1L5.4 9.7Zm13.2 0-5.6 3.2V19l5.6-3.2V9.7Z"
         />
       </svg>
@@ -187,7 +187,7 @@ function PlatformBadge({ platform }: { platform: string }) {
     icon = (
       <svg className="http-platform-icon" viewBox="0 0 24 24" aria-hidden="true">
         <path
-          fill="#e2e8f0"
+          fill="currentColor"
           d="M16.4 12.6c0-2.1 1.7-3.1 1.8-3.2-1-1.4-2.5-1.6-3-1.6-1.3-.1-2.5.8-3.1.8s-1.6-.8-2.7-.7c-1.4 0-2.6.8-3.3 2-.1.2-1.5 2.7-.3 5.9.6 1.5 1.4 3.2 2.5 3.1 1 0 1.4-.6 2.6-.6s1.5.6 2.6.6c1.1 0 1.8-1.5 2.4-3 .7-1.6 1-3.1 1-3.2-.1 0-2.5-1-2.5-3.1ZM14.3 6.3c.6-.7 1-1.7.9-2.7-.9 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6 1 .1 1.9-.5 2.5-1.2Z"
         />
       </svg>
@@ -205,7 +205,7 @@ function PlatformBadge({ platform }: { platform: string }) {
     icon = (
       <svg className="http-platform-icon" viewBox="0 0 24 24" aria-hidden="true">
         <path
-          fill="#d8e2da"
+          fill="currentColor"
           d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5Zm3.3 3.7 3.5 3.3-3.5 3.3 1.4 1.4L13.6 12 8.7 7.3 7.3 8.7Zm5.7 6.8h4v-2h-4v2Z"
         />
       </svg>
